@@ -3156,6 +3156,28 @@ sub process {
 			}
 		}
 
+# warn about long msleep
+		if ($line =~ /\bmsleep\s*\((\d+)\);/) {
+			if (!($1 < 100)) {
+				WARN("MSLEEP",
+				     "msleep >= 100ms is long, please consider how to avoid a long sleep\n" . $line);
+			}
+		}
+
+# warn about long usleep
+		if ($line =~ /\busleep_range\s*\((\d+), (\d+)\);/) {
+			if (!($1 < 100000)) {
+				WARN("USLEEP_RANGE",
+				     "usleep_range >= 100000us is long, please consider how to avoid a long sleep\n" . $line);
+			}
+		}
+
+# warn about long delay
+		if ($line =~ /\bmdelay\s*\(\s*(\w+)\s*\)/) {
+			WARN("USLEEP_RANGE",
+			    "usleep_range is preferred over mdelay; see Documentation/timers/timers-howto.txt\n" . $line);
+		}
+
 # warn about #ifdefs in C files
 #		if ($line =~ /^.\s*\#\s*if(|n)def/ && ($realfile =~ /\.c$/)) {
 #			print "#ifdef in C files should be avoided\n";

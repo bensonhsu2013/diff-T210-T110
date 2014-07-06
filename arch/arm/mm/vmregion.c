@@ -4,6 +4,7 @@
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
+#include <linux/mm_types.h>
 
 #include "vmregion.h"
 
@@ -76,6 +77,7 @@ arm_vmregion_alloc(struct arm_vmregion_head *head, size_t align,
 	new->vm_start = addr;
 	new->vm_end = addr + size;
 	new->vm_active = 1;
+	new->vm_pages = head->vm_pages + ((new->vm_start - head->vm_start) >> PAGE_SHIFT);
 
 	spin_unlock_irqrestore(&head->vm_lock, flags);
 	return new;

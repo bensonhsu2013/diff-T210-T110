@@ -20,6 +20,7 @@
 #include <linux/highmem.h>
 #include <linux/gfp.h>
 #include <linux/memblock.h>
+#include <linux/dma-contiguous.h>
 
 #include <asm/mach-types.h>
 #include <asm/memblock.h>
@@ -45,11 +46,7 @@ static int __init early_initrd(char *p)
 
 	start = memparse(p, &endp);
 	if (*endp == ',') {
-#ifndef CONFIG_CMDLINE_INITRD_SIZE_OVERRIDE
 		size = memparse(endp + 1, NULL);
-#else
-		size = memparse(CONFIG_CMDLINE_INITRD_SIZE, NULL);
-#endif
 
 		phys_initrd_start = start;
 		phys_initrd_size = size;
@@ -230,6 +227,17 @@ static void __init arm_adjust_dma_zone(unsigned long *size, unsigned long *hole,
 }
 #endif
 
+void __init setup_dma_zone(struct machine_desc *mdesc)
+{
+#ifdef CONFIG_ZONE_DMA
+	if (mdesc->dma_zone_size) {
+		arm_dma_zone_size = mdesc->dma_zone_size;
+		arm_dma_limit = PHYS_OFFSET + arm_dma_zone_size - 1;
+	} else
+		arm_dma_limit = 0xffffffff;
+#endif
+}
+
 static void __init arm_bootmem_free(unsigned long min, unsigned long max_low,
 	unsigned long max_high)
 {
@@ -277,12 +285,9 @@ static void __init arm_bootmem_free(unsigned long min, unsigned long max_low,
 	 * Adjust the sizes according to any special requirements for
 	 * this machine type.
 	 */
-	if (arm_dma_zone_size) {
+	if (arm_dma_zone_size)
 		arm_adjust_dma_zone(zone_size, zhole_size,
 			arm_dma_zone_size >> PAGE_SHIFT);
-		arm_dma_limit = PHYS_OFFSET + arm_dma_zone_size - 1;
-	} else
-		arm_dma_limit = 0xffffffff;
 #endif
 
 	free_area_init_node(0, zone_size, min, zhole_size);
@@ -291,6 +296,11 @@ static void __init arm_bootmem_free(unsigned long min, unsigned long max_low,
 #ifdef CONFIG_HAVE_ARCH_PFN_VALID
 int pfn_valid(unsigned long pfn)
 {
+#ifdef CONFIG_SPARSEMEM
+	if (pfn_to_section_nr(pfn) >= NR_MEM_SECTIONS
+		|| !valid_section(__nr_to_section(pfn_to_section_nr(pfn))))
+		return 0;
+#endif
 	return memblock_is_memory(__pfn_to_phys(pfn));
 }
 EXPORT_SYMBOL(pfn_valid);
@@ -367,6 +377,12 @@ void __init arm_memblock_init(struct meminfo *mi, struct machine_desc *mdesc)
 	/* reserve any platform specific memblock areas */
 	if (mdesc->reserve)
 		mdesc->reserve();
+
+	/*
+	 * reserve memory for DMA contigouos allocations,
+	 * must come from DMA area inside low memory
+	 */
+	dma_contiguous_reserve(min(arm_dma_limit, arm_lowmem_limit));
 
 	arm_memblock_steal_permitted = false;
 	memblock_allow_resize();
@@ -609,21 +625,19 @@ void __init mem_init(void)
 	for_each_bank(i, &meminfo) {
 		struct membank *bank = &meminfo.bank[i];
 		unsigned int pfn1, pfn2;
-		struct page *page, *end;
+		struct page *page;
 
 		pfn1 = bank_pfn_start(bank);
 		pfn2 = bank_pfn_end(bank);
 
-		page = pfn_to_page(pfn1);
-		end  = pfn_to_page(pfn2 - 1) + 1;
-
 		do {
+			page = pfn_to_page(pfn1);
 			if (PageReserved(page))
 				reserved_pages++;
 			else if (!page_count(page))
 				free_pages++;
-			page++;
-		} while (page < end);
+			pfn1++;
+		} while (pfn1 < pfn2);
 	}
 
 	/*
@@ -761,3 +775,24 @@ static int __init keepinitrd_setup(char *__unused)
 
 __setup("keepinitrd", keepinitrd_setup);
 #endif
+
+#ifdef CONFIG_MEMORY_HOTPLUG
+int arch_add_memory(int nid, u64 start, u64 size)
+{
+	/*
+	 * This function is used to support memory hotplug on arm architecture.
+	 */
+	struct pglist_data *pgdata = NODE_DATA(nid);
+#ifdef CONFIG_MEMORY_FORCE_MOVABLE_HIGHMEM
+	struct zone *zone = pgdata->node_zones + ZONE_MOVABLE;
+#else
+	struct zone *zone = pgdata->node_zones + ZONE_HIGHMEM;
+#endif
+	unsigned long start_pfn = start >> PAGE_SHIFT;
+	unsigned long nr_pages = size >> PAGE_SHIFT;
+
+	memblock_add(start, 1 << SECTION_SIZE_BITS);
+
+	return __add_pages(0, zone, start_pfn, nr_pages);
+}
+#endif /* CONFIG_MEMORY_HOTPLUG */

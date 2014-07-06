@@ -45,17 +45,18 @@ static ssize_t power_supply_show_property(struct device *dev,
 					  char *buf) {
 	static char *type_text[] = {
 		"Unknown", "Battery", "UPS", "Mains", "USB",
-		"USB_DCP", "USB_CDP", "USB_ACA"
+		"USB_DCP", "USB_CDP", "USB_ACA",
+		"MISC", "CARDOCK", "WIRELESS", "UARTOFF", "OTG"
 	};
 	static char *status_text[] = {
 		"Unknown", "Charging", "Discharging", "Not charging", "Full"
 	};
 	static char *charge_type[] = {
-		"Unknown", "N/A", "Trickle", "Fast"
+		"Unknown", "N/A", "Trickle", "Fast", "slow"
 	};
 	static char *health_text[] = {
 		"Unknown", "Good", "Overheat", "Dead", "Over voltage",
-		"Unspecified failure", "Cold",
+		"Unspecified failure", "Cold", "under voltage"
 	};
 	static char *technology_text[] = {
 		"Unknown", "NiMH", "Li-ion", "Li-poly", "LiFe", "NiCd",
@@ -177,7 +178,6 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(time_to_full_avg),
 	POWER_SUPPLY_ATTR(type),
 #if defined(CONFIG_SPA)//book
-	/* *#0228# */
 	POWER_SUPPLY_ATTR(batt_vol),
 	POWER_SUPPLY_ATTR(batt_vol_aver),
 	POWER_SUPPLY_ATTR(batt_temp),
@@ -185,7 +185,6 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(batt_temp_aver),
 	POWER_SUPPLY_ATTR(batt_temp_adc_aver),
 	POWER_SUPPLY_ATTR(batt_charging_source),
-	/* *#0228# */
 	/* DFT */
 	POWER_SUPPLY_ATTR(batt_read_raw_soc),
 	/* DFT */

@@ -13,6 +13,23 @@
 #define _PXA_DVFS_H_
 
 #include "clock.h"
+
+#define DVFS_FREQUENCY_NOTIFIER		0
+#define DVFS_FREQ_PRECHANGE		0
+#define DVFS_FREQ_POSTCHANGE		1
+
+struct dvfs_freqs {
+	struct dvfs *dvfs;
+	unsigned int old;	/*old frequency */
+	unsigned int new;	/*new frequency */
+};
+
+extern int dvfs_notifier_frequency(struct dvfs_freqs *freqs,
+				   unsigned int state);
+extern int dvfs_register_notifier(struct notifier_block *nb, unsigned int list);
+extern int dvfs_unregister_notifier(struct notifier_block *nb,
+				    unsigned int list);
+
 /*
  * dvfs_relationship between to rails, "from" and "to"
  * when the rail changes, it will call dvfs_rail_update on the rails

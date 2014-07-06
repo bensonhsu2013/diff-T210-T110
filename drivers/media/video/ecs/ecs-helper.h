@@ -45,6 +45,10 @@ int xic_write_burst_wb(struct x_i2c *xic, u16 start_addr, \
 			const u8 *values, int cnt);
 int xic_detect_wb(struct x_i2c *xic);
 
-extern struct x_i2c xic_wb;
-
+int xic_read_bb(struct x_i2c *xic, u16 reg, u8 *val);
+int xic_write_bb(struct x_i2c *xic, u16 reg, u8 val);
+int xic_write_array_bb(struct x_i2c *xic, const void *table, int count);
+int xic_write_burst_bb(struct x_i2c *xic, u16 start_addr, \
+			const u8 *values, int cnt);
+int xic_detect_bb(struct x_i2c *xic);
 #endif

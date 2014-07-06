@@ -492,6 +492,11 @@ void tick_broadcast_oneshot_control(unsigned long reason)
 		if (cpumask_test_cpu(cpu, tick_get_broadcast_oneshot_mask())) {
 			cpumask_clear_cpu(cpu,
 					  tick_get_broadcast_oneshot_mask());
+			if (cpumask_empty(tick_get_broadcast_oneshot_mask())) {
+				clockevents_set_mode(tick_broadcast_device.evtdev,
+								CLOCK_EVT_MODE_SHUTDOWN);
+				tick_broadcast_device.evtdev->next_event.tv64 = KTIME_MAX;
+			}
 			clockevents_set_mode(dev, CLOCK_EVT_MODE_ONESHOT);
 			if (dev->next_event.tv64 != KTIME_MAX)
 				tick_program_event(dev->next_event, 1);

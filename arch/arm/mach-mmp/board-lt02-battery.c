@@ -30,10 +30,6 @@
 
 #include "board-lt02.h"
 
-#if defined(CONFIG_MFD_88PM800)
-#include <linux/mfd/88pm80x.h>
-#endif
-
 #define SEC_CHARGER_I2C_ID	2
 #define SEC_FUELGAUGE_I2C_ID	6
 
@@ -45,31 +41,21 @@
 /* cable state */
 bool is_cable_attached;
 unsigned int lpcharge;
-EXPORT_SYMBOL(lpcharge);
 
 static struct s3c_adc_client *temp_adc_client;
 
 static sec_bat_adc_table_data_t lt02_temp_table[] = {
-        {64,  700},
-        {69,  670},
-        {82,  640},
-        {87,  620},
-        {93,  600},
-        {97,  580},
-        {108, 550},
-        {123, 500},
-        {146, 440},
-        {157, 420},
-        {169, 400},
-        {233, 300},
-        {343, 200},
-        {498, 100},
-        {692, 20},
-        {753, 0},
-        {819, -20},
-        {875, -40},
-        {930, -50},
-        {1010, -70},
+        {404, 600},
+        {548, 500},
+        {696, 420},
+        {725, 400},
+        {927, 300},
+        {1144, 200},
+        {1377, 100},
+        {1460, 50},
+        {1582, 0},
+        {1647, -50},
+        {1738, -100},
 };
 
 static sec_bat_adc_region_t cable_adc_value_table[] = {
@@ -87,31 +73,28 @@ static sec_charging_current_t charging_current_table[] = {
 	{0,     0,      0,      0},     /* POWER_SUPPLY_TYPE_UNKNOWN */
 	{0,     0,      0,      0},     /* POWER_SUPPLY_TYPE_BATTERY */
 	{0,     0,      0,      0},     /* POWER_SUPPLY_TYPE_UPS */
-	{1800,  2000,   200,    40 * 60},     /* POWER_SUPPLY_TYPE_MAINS */
-	{500,   500,    200,    40 * 60},     /* POWER_SUPPLY_TYPE_USB */
-	{500,   500,    200,    40 * 60},     /* POWER_SUPPLY_TYPE_USB_DCP */
-	{500,   500,    200,    40 * 60},     /* POWER_SUPPLY_TYPE_USB_CDP */
-	{500,   500,    200,    40 * 60},     /* POWER_SUPPLY_TYPE_USB_ACA */
-	{1800,  2000,   200,    40 * 60},     /* POWER_SUPPLY_TYPE_MISC */
+	{1800,  2000,   200,    200},     /* POWER_SUPPLY_TYPE_MAINS */
+	{500,   500,    200,    200},     /* POWER_SUPPLY_TYPE_USB */
+	{500,   500,    200,    200},     /* POWER_SUPPLY_TYPE_USB_DCP */
+	{500,   500,    200,    200},     /* POWER_SUPPLY_TYPE_USB_CDP */
+	{500,   500,    200,    200},     /* POWER_SUPPLY_TYPE_USB_ACA */
+	{500,   500,    200,   200},     /* POWER_SUPPLY_TYPE_MISC */
 	{0,     0,      0,      0},     /* POWER_SUPPLY_TYPE_CARDOCK */
-	{500,   500,    200,    40 * 60},     /* POWER_SUPPLY_TYPE_WPC */
-	{1800,  2000,   200,    40 * 60},     /* POWER_SUPPLY_TYPE_UARTOFF */
+	{500,   500,    200,    200},     /* POWER_SUPPLY_TYPE_WPC */
+	{1800,  2000,   200,    200},     /* POWER_SUPPLY_TYPE_UARTOFF */
 };
 
 /* unit: seconds */
 static int polling_time_table[] = {
 	10,     /* BASIC */
 	30,     /* CHARGING */
-	60,     /* DISCHARGING */
+	30,     /* DISCHARGING */
 	30,     /* NOT_CHARGING */
 	1800,    /* SLEEP */
 };
 
 static struct power_supply *charger_supply;
 static bool is_jig_on;
-int current_cable_type = POWER_SUPPLY_TYPE_BATTERY;
-EXPORT_SYMBOL(current_cable_type);
-u8 attached_cable;
 
 static bool sec_bat_gpio_init(void)
 {
@@ -144,20 +127,22 @@ static bool sec_bat_is_lpm(void)
 	return lpcharge == 1 ? true : false;
 }
 
-static bool sec_bat_check_jig_status(void)
+void check_jig_status(int status)
 {
-	if ((attached_cable == CABLE_TYPE2_JIG_UART_OFF_VB_MUIC) ||
-	    (attached_cable == CABLE_TYPE2_JIG_UART_OFF_MUIC) ||
-	    (attached_cable == CABLE_TYPE2_JIG_USB_OFF_MUIC) ||
-	    (attached_cable == CABLE_TYPE2_JIG_USB_ON_MUIC)) {
+	if (status) {
 		pr_info("%s: JIG On so reset fuel gauge capacity\n", __func__);
 		is_jig_on = true;
-	} else {
-		is_jig_on = false;
 	}
 
+}
+
+static bool sec_bat_check_jig_status(void)
+{
 	return is_jig_on;
 }
+
+int current_cable_type = POWER_SUPPLY_TYPE_BATTERY;
+u8 attached_cable;
 
 void sec_charger_cb(u8 attached)
 {
@@ -185,6 +170,12 @@ void sec_charger_cb(u8 attached)
 	case CABLE_TYPE1_CARKIT_T1OR2_MUIC:
 		current_cable_type = POWER_SUPPLY_TYPE_MISC;
 		break;
+	case CABLE_TYPE2_JIG_UART_OFF_MUIC:
+		current_cable_type = POWER_SUPPLY_TYPE_BATTERY;
+		break;
+	case CABLE_TYPE2_JIG_UART_OFF_VB_MUIC:
+		current_cable_type = POWER_SUPPLY_TYPE_UARTOFF;
+		break;
 	case CABLE_TYPE2_JIG_USB_ON_MUIC:
 	case CABLE_TYPE2_JIG_USB_OFF_MUIC:
 		current_cable_type = POWER_SUPPLY_TYPE_USB;
@@ -196,7 +187,6 @@ void sec_charger_cb(u8 attached)
 		goto skip;
 	case CABLE_TYPE3_U200CHG_MUIC:
 	case CABLE_TYPE3_NONSTD_SDP_MUIC:
-	case CABLE_TYPE3_APPLECHG_MUIC:
 		current_cable_type = POWER_SUPPLY_TYPE_MAINS;
 		break;
 	case CABLE_TYPE_AUDIODOCK_MUIC:
@@ -337,41 +327,17 @@ static int sec_bat_check_cable_callback(void)
 	union power_supply_propval value;
 	struct power_supply *psy = power_supply_get_by_name("battery");
 	int ret;
-#if defined(CONFIG_MACH_LT02LGT)
-	int retry_cnt = 0;
-#endif
 
 	ta_nconnected = gpio_get_value(mfp_to_gpio(GPIO005_GPIO_5));
 
 	pr_info("%s : ta_nconnected : %d\n", __func__, ta_nconnected);
 
-#if defined(CONFIG_MACH_LT02LGT)
-	do {
-		msleep(300);
-
-		ta_nconnected = gpio_get_value(mfp_to_gpio(GPIO005_GPIO_5));
-		if (!(ta_nconnected && !attached_cable))
-			break;
-
-		pr_info("%s : ta_nconnected : %d (%d)\n",
-			__func__, ta_nconnected, retry_cnt);
-	} while(retry_cnt++ < 13);
-#else
-	msleep(300);
-#endif
-
 	if((attached_cable == CABLE_TYPE2_DESKDOCK_MUIC) ||
 	   (attached_cable == CABLE_TYPE3_DESKDOCK_VB_MUIC)) {
-		if (!ta_nconnected)
+		if (ta_nconnected)
 			current_cable_type = POWER_SUPPLY_TYPE_BATTERY;
 		else
 			current_cable_type = POWER_SUPPLY_TYPE_MISC;
-	} else if((attached_cable == CABLE_TYPE2_JIG_UART_OFF_MUIC) ||
-		  (attached_cable == CABLE_TYPE2_JIG_UART_OFF_VB_MUIC)) {
-		if (!ta_nconnected)
-			current_cable_type = POWER_SUPPLY_TYPE_BATTERY;
-		else
-			current_cable_type = POWER_SUPPLY_TYPE_UARTOFF;
 	} else
 		return current_cable_type;
 
@@ -387,12 +353,6 @@ static int sec_bat_check_cable_callback(void)
 static void sec_bat_initial_check(void)
 {
 	union power_supply_propval value;
-	int ta_nconnected;
-
-	ta_nconnected = gpio_get_value(mfp_to_gpio(GPIO005_GPIO_5));
-
-	if (ta_nconnected == 1)
-		sec_bat_check_cable_callback();
 
 	if (POWER_SUPPLY_TYPE_BATTERY < current_cable_type) {
 		value.intval = current_cable_type;
@@ -409,6 +369,105 @@ static void sec_bat_initial_check(void)
 		}
 	}
 }
+
+#if 0 
+static int sec_bat_check_cable_callback(void)
+{
+/*	struct usb_gadget *gadget =
+ *			platform_get_drvdata(&s3c_device_usbgadget);
+ */
+	bool attach = true;
+	int ta_nconnected;
+	int adc = 0;
+
+	if (!charger_supply) {
+		charger_supply = power_supply_get_by_name("sec-charger");
+
+		if (!charger_supply)
+			pr_err("%s: failed to get power supplies\n", __func__);
+	}
+
+	/* delay 100ms */
+	msleep(100);
+
+//	usb_switch_lock();
+//	usb_switch_set_path(USB_PATH_ADCCHECK);
+
+//	adc = stmpe811_get_adc_data(6);
+
+//	usb_switch_clr_path(USB_PATH_ADCCHECK);
+//	usb_switch_unlock();
+
+	ta_nconnected = gpio_get_value(mfp_to_gpio(GPIO005_GPIO_5));
+
+	pr_info("%s : ta_nconnected : %d\n", __func__, ta_nconnected);
+
+	/* temp : set cable type always TA */
+	current_cable_type = !ta_nconnected ?
+				POWER_SUPPLY_TYPE_BATTERY :
+				POWER_SUPPLY_TYPE_MAINS;
+
+	attach = ta_nconnected ? true : false;
+
+	is_cable_attached = attach;
+
+	/* temp code : only set vbus enable when usb attaced */
+/*	if (gadget) {
+		if (attach && current_cable_type == POWER_SUPPLY_TYPE_USB)
+			usb_gadget_vbus_connect(gadget);
+		else
+			usb_gadget_vbus_disconnect(gadget);
+	} else {
+		pr_err("%s: usb gadget drive not exist\n", __func__);
+	}
+*/
+	pr_info("%s: Cable type(%s), Attach(%d), Adc(%d)\n", __func__,
+		current_cable_type == POWER_SUPPLY_TYPE_BATTERY ?
+		"Battery" : current_cable_type == POWER_SUPPLY_TYPE_USB ?
+		"USB" : "TA", attach, adc);
+
+	return current_cable_type;
+}
+
+static void sec_bat_initial_check(void)
+{
+	struct power_supply *psy = power_supply_get_by_name("battery");
+	struct power_supply *chg_psy = power_supply_get_by_name("sec-charger");
+	union power_supply_propval value;
+	int ta_nconnected = 0;
+	int ret = 0;
+
+	value.intval = sec_bat_check_cable_callback();
+	pr_info("%s: %d\n", __func__, value.intval);
+/*
+	if (value.intval != POWER_SUPPLY_TYPE_BATTERY)
+		ret = psy->set_property(psy, POWER_SUPPLY_PROP_ONLINE, &value);
+	else
+		ret = chg_psy->set_property(chg_psy, POWER_SUPPLY_PROP_ONLINE, &value);
+*/
+
+	ta_nconnected = gpio_get_value(mfp_to_gpio(GPIO005_GPIO_5));
+
+	pr_info("%s : ta_nconnected : %d\n", __func__, ta_nconnected);
+
+	if (ta_nconnected &&
+			value.intval != POWER_SUPPLY_TYPE_BATTERY) {
+		ret = psy->set_property(psy, POWER_SUPPLY_PROP_ONLINE, &value);
+		if (ret)
+			pr_err("%s: fail to set power_suppy ONLINE property\n",
+					__func__);
+	} else {
+		if (chg_psy) {
+			ret = chg_psy->set_property(chg_psy,
+					POWER_SUPPLY_PROP_ONLINE, &value);
+			if (ret)
+				pr_err("%s: fail to set ONLINE property\n",
+						__func__);
+		}
+	}
+
+}
+#endif
 
 static bool sec_bat_check_cable_result_callback(int cable_type)
 {
@@ -470,10 +529,10 @@ static bool sec_fg_fuelalert_process(bool is_fuel_alerted) { return true; }
 static struct battery_data_t stc3115_battery_data[] = {
 	{
 		.Vmode= 0,       /*REG_MODE, BIT_VMODE 1=Voltage mode, 0=mixed mode */
-		.Alm_SOC = 1,      /* SOC alm level %*/
-		.Alm_Vbat = 3400,   /* Vbat alm level mV*/
-		.CC_cnf = 870,      /* nominal CC_cnf, coming from battery characterisation*/
-		.VM_cnf = 422,      /* nominal VM cnf , coming from battery characterisation*/
+		.Alm_SOC = 10,      /* SOC alm level %*/
+		.Alm_Vbat = 3600,   /* Vbat alm level mV*/
+		.CC_cnf = 840,      /* nominal CC_cnf, coming from battery characterisation*/
+		.VM_cnf = 407,      /* nominal VM cnf , coming from battery characterisation*/
 		.Cnom = 4000,       /* nominal capacity in mAh, coming from battery characterisation*/
 		.Rsense = 10,       /* sense resistor mOhms*/
 		.RelaxCurrent = 150, /* current for relaxation in mA (< C/20) */
@@ -494,7 +553,7 @@ static struct battery_data_t stc3115_battery_data[] = {
 		.OCVOffset[12] = -6,    /* OCV curve adjustment */
 		.OCVOffset[11] = 0,    /* OCV curve adjustment */
 		.OCVOffset[10] = -6,    /* OCV curve adjustment */
-		.OCVOffset[9] = 2,     /* OCV curve adjustment */
+		.OCVOffset[9] = -2,     /* OCV curve adjustment */
 		.OCVOffset[8] = -9,      /* OCV curve adjustment */
 		.OCVOffset[7] = -1,      /* OCV curve adjustment */
 		.OCVOffset[6] = 11,    /* OCV curve adjustment */
@@ -525,112 +584,8 @@ static struct battery_data_t stc3115_battery_data[] = {
 			/*if the application temperature data is preferred than the STC3115 temperature*/
 		.ExternalTemperature = NULL, /*External temperature fonction, return C*/
 		.ForceExternalTemperature = 0, /* 1=External temperature, 0=STC3115 temperature */
-	},
-	{
-		.Vmode= 0,       /*REG_MODE, BIT_VMODE 1=Voltage mode, 0=mixed mode */
-		.Alm_SOC = 1,      /* SOC alm level %*/
-		.Alm_Vbat = 3400,   /* Vbat alm level mV*/
-		.CC_cnf = 872,      /* nominal CC_cnf, coming from battery characterisation*/
-		.VM_cnf = 412,      /* nominal VM cnf , coming from battery characterisation*/
-		.Cnom = 4000,       /* nominal capacity in mAh, coming from battery characterisation*/
-		.Rsense = 10,       /* sense resistor mOhms*/
-		.RelaxCurrent = 150, /* current for relaxation in mA (< C/20) */
-		.Adaptive = 1,     /* 1=Adaptive mode enabled, 0=Adaptive mode disabled */
-
-		/* Elentec Co Ltd Battery pack - 80 means 8% */
-		.CapDerating[6] = 80,   /* capacity derating in 0.1%, for temp = -20C */
-		.CapDerating[5] = 50,   /* capacity derating in 0.1%, for temp = -10C */
-		.CapDerating[4] = 20,    /* capacity derating in 0.1%, for temp = 0C */
-		.CapDerating[3] = 10,  /* capacity derating in 0.1%, for temp = 10C */
-		.CapDerating[2] = 0,  /* capacity derating in 0.1%, for temp = 25C */
-		.CapDerating[1] = 0,  /* capacity derating in 0.1%, for temp = 40C */
-		.CapDerating[0] = 0,  /* capacity derating in 0.1%, for temp = 60C */
-
-		.OCVOffset[15] = -110,    /* OCV curve adjustment */
-		.OCVOffset[14] = -10,   /* OCV curve adjustment */
-		.OCVOffset[13] = -6,    /* OCV curve adjustment */
-		.OCVOffset[12] = -6,    /* OCV curve adjustment */
-		.OCVOffset[11] = 0,    /* OCV curve adjustment */
-		.OCVOffset[10] = -6,    /* OCV curve adjustment */
-		.OCVOffset[9] = 2,     /* OCV curve adjustment */
-		.OCVOffset[8] = -9,      /* OCV curve adjustment */
-		.OCVOffset[7] = -1,      /* OCV curve adjustment */
-		.OCVOffset[6] = 11,    /* OCV curve adjustment */
-		.OCVOffset[5] = 9,    /* OCV curve adjustment */
-		.OCVOffset[4] = 16,     /* OCV curve adjustment */
-		.OCVOffset[3] = 37,    /* OCV curve adjustment */
-		.OCVOffset[2] = 26,     /* OCV curve adjustment */
-		.OCVOffset[1] = -44,    /* OCV curve adjustment */
-		.OCVOffset[0] = -66,     /* OCV curve adjustment */
-
-		.OCVOffset2[15] = -38,    /* OCV curve adjustment */
-		.OCVOffset2[14] = -38,   /* OCV curve adjustment */
-		.OCVOffset2[13] = -24,    /* OCV curve adjustment */
-		.OCVOffset2[12] = -26,    /* OCV curve adjustment */
-		.OCVOffset2[11] = -25,    /* OCV curve adjustment */
-		.OCVOffset2[10] = -31,    /* OCV curve adjustment */
-		.OCVOffset2[9] = -5,     /* OCV curve adjustment */
-		.OCVOffset2[8] = -3,      /* OCV curve adjustment */
-		.OCVOffset2[7] = -3,      /* OCV curve adjustment */
-		.OCVOffset2[6] = -17,  /* OCV curve adjustment */
-		.OCVOffset2[5] = -3,    /* OCV curve adjustment */
-		.OCVOffset2[4] = -5,     /* OCV curve adjustment */
-		.OCVOffset2[3] = 3,    /* OCV curve adjustment */
-		.OCVOffset2[2] = 48,     /* OCV curve adjustment */
-		.OCVOffset2[1] = 17,    /* OCV curve adjustment */
-		.OCVOffset2[0] = 0,     /* OCV curve adjustment */
-
-			/*if the application temperature data is preferred than the STC3115 temperature*/
-		.ExternalTemperature = NULL, /*External temperature fonction, return C*/
-		.ForceExternalTemperature = 0, /* 1=External temperature, 0=STC3115 temperature */
 	}
 };
-
-static struct battery_data_t *battery_data_sample;
-
-static void sec_bat_check_vf_callback(void)
-{
-        int vfbat;
-	int min = 1 << 11, max = -1;
-	int total = 0;
-	int vf_avg = 0;
-	int count;
-	int ret;
-
-	for (count = 0; count < 5; count++)
-	{
-		ret = pm80x_read_vf(&vfbat);
-		if (vfbat > max)
-			max = vfbat;
-	        if (vfbat < min)
-			min = vfbat;
-		total += vfbat;
-	}
-
-	vf_avg = (total - min - max) / 3;
-
-	if ((vf_avg > 0) && (vf_avg < 120)) {
-		battery_data_sample = &stc3115_battery_data[0];
-		sec_battery_pdata.vendor = "SDI SDI";
-		sec_battery_pdata.battery_data = (void *)battery_data_sample;
-
-		pr_info("%s : ADC = %d[%s]\n", __func__,
-			vf_avg, sec_battery_pdata.vendor);
-
-	} else if((vf_avg > 290) && (vf_avg < 390)) {
-		battery_data_sample = &stc3115_battery_data[1];
-		sec_battery_pdata.vendor = "ATL ATL";
-		sec_battery_pdata.battery_data = (void *)battery_data_sample;
-
-		pr_info("%s : ADC = %d[%s]\n", __func__,
-			vf_avg, sec_battery_pdata.vendor);
-
-	} else
-		pr_info("%s : ADC = %d[VF ADC ERROR]\n",
-			__func__, vf_avg);
-
-	sec_battery_pdata.vf_adc = vf_avg;
-}
 
 static bool sec_bat_adc_none_init(struct platform_device *pdev) { return true; }
 static bool sec_bat_adc_none_exit(void) { return true; }
@@ -638,15 +593,36 @@ static int sec_bat_adc_none_read(unsigned int channel) { return 0; }
 
 static bool sec_bat_adc_ap_init(struct platform_device *pdev) { return true; }
 static bool sec_bat_adc_ap_exit(void) { return true; }
+#if 0
 static int sec_bat_adc_ap_read(unsigned int channel)
 {
-        int data;
+        int i;
         int ret = 0;
 
-	ret = pm80x_read_temperature(&data);
+	ret = s3c_adc_read(temp_adc_client, 2);
 
-	return data;
+	if (ret == -ETIMEDOUT) {
+		for (i = 0; i < 5; i++) {
+			msleep(20);
+			ret = s3c_adc_read(temp_adc_client, 2);
+			if (ret > 0)
+				break;
+		}
+
+		if (i >= 5)
+			pr_err("%s: Retry count exceeded\n", __func__);
+
+	} else if (ret < 0) {
+		pr_err("%s: Failed read adc value : %d\n",
+		__func__, ret);
+	}
+
+out:
+        pr_info("%s: temp acd : %d\n", __func__, ret);
+        return ret;
 }
+#endif
+
 static bool sec_bat_adc_ic_init(struct platform_device *pdev) { return true; }
 static bool sec_bat_adc_ic_exit(void) { return true; }
 static int sec_bat_adc_ic_read(unsigned int channel) { return 0; }
@@ -676,8 +652,6 @@ sec_battery_platform_data_t sec_battery_pdata = {
 	.fuelalert_process = sec_fg_fuelalert_process,
 	.get_temperature_callback =
 		sec_bat_get_temperature_callback,
-	.check_vf_callback =
-	        sec_bat_check_vf_callback,
 
 	.adc_api[SEC_BATTERY_ADC_TYPE_NONE] = {
 		.init = sec_bat_adc_none_init,
@@ -687,7 +661,7 @@ sec_battery_platform_data_t sec_battery_pdata = {
 	.adc_api[SEC_BATTERY_ADC_TYPE_AP] = {
 		.init = sec_bat_adc_ap_init,
 		.exit = sec_bat_adc_ap_exit,
-		.read = sec_bat_adc_ap_read
+//		.read = sec_bat_adc_ap_read
 	},
 	.adc_api[SEC_BATTERY_ADC_TYPE_IC] = {
 		.init = sec_bat_adc_ic_init,
@@ -706,7 +680,7 @@ sec_battery_platform_data_t sec_battery_pdata = {
 	.adc_type = {
 		SEC_BATTERY_ADC_TYPE_NONE,	/* CABLE_CHECK */
 		SEC_BATTERY_ADC_TYPE_NONE,      /* BAT_CHECK */
-		SEC_BATTERY_ADC_TYPE_AP,	/* TEMP */
+		SEC_BATTERY_ADC_TYPE_NONE,	/* TEMP */
 		SEC_BATTERY_ADC_TYPE_NONE,	/* TEMP_AMB */
 		SEC_BATTERY_ADC_TYPE_NONE,      /* FULL_CHECK */
 	},
@@ -720,7 +694,7 @@ sec_battery_platform_data_t sec_battery_pdata = {
 	.cable_check_type =
 		SEC_BATTERY_CABLE_CHECK_NOUSBCHARGE |
 		SEC_BATTERY_CABLE_CHECK_INT,
-	.cable_source_type = SEC_BATTERY_CABLE_SOURCE_CALLBACK |
+	.cable_source_type = //SEC_BATTERY_CABLE_SOURCE_CALLBACK,
 	SEC_BATTERY_CABLE_SOURCE_EXTERNAL,
 //	SEC_BATTERY_CABLE_SOURCE_EXTENDED,
 
@@ -742,75 +716,41 @@ sec_battery_platform_data_t sec_battery_pdata = {
 	/* OVP/UVLO check */
 	.ovp_uvlo_check_type = SEC_BATTERY_OVP_UVLO_CHGPOLLING,
 
-	.thermal_source = SEC_BATTERY_THERMAL_SOURCE_ADC,
+	.thermal_source = SEC_BATTERY_THERMAL_SOURCE_FG,
 	.temp_check_type = SEC_BATTERY_TEMP_CHECK_TEMP,
-	.temp_adc_table = lt02_temp_table,
-	.temp_adc_table_size =
-	sizeof(lt02_temp_table)/sizeof(sec_bat_adc_table_data_t),
-	.temp_amb_adc_table = lt02_temp_table,
-	.temp_amb_adc_table_size =
-		sizeof(lt02_temp_table)/sizeof(sec_bat_adc_table_data_t),
 
         .temp_check_count = 1,
-#if defined(CONFIG_MACH_LT02LGT)
-        .temp_high_threshold_event = 640,
-        .temp_high_recovery_event = 420,
-        .temp_low_threshold_event = -70,
-        .temp_low_recovery_event = 0,
-        .temp_high_threshold_normal = 640,
-        .temp_high_recovery_normal = 420,
-        .temp_low_threshold_normal = -70,
-        .temp_low_recovery_normal = 0,
-        .temp_high_threshold_lpm = 640,
-        .temp_high_recovery_lpm = 420,
-        .temp_low_threshold_lpm = -70,
-        .temp_low_recovery_lpm = 0,
-#elif defined(CONFIG_MACH_LT02_BBY)
-	.temp_high_threshold_event = 600,
-	.temp_high_recovery_event = 420,
-	.temp_low_threshold_event = -50,
-	.temp_low_recovery_event = 0,
-	.temp_high_threshold_normal = 480,
-	.temp_high_recovery_normal = 420,
-	.temp_low_threshold_normal = -50,
-	.temp_low_recovery_normal = 0,
-	.temp_high_threshold_lpm = 480,
-	.temp_high_recovery_lpm = 420,
-	.temp_low_threshold_lpm = -50,
-	.temp_low_recovery_lpm = 0,
-#else
-        .temp_high_threshold_event = 600,
-        .temp_high_recovery_event = 420,
+        .temp_high_threshold_event = 500,
+        .temp_high_recovery_event = 400,
         .temp_low_threshold_event = -50,
         .temp_low_recovery_event = 0,
-        .temp_high_threshold_normal = 600,
-        .temp_high_recovery_normal = 420,
+        .temp_high_threshold_normal = 500,
+        .temp_high_recovery_normal = 400,
         .temp_low_threshold_normal = -50,
         .temp_low_recovery_normal = 0,
-        .temp_high_threshold_lpm = 600,
-        .temp_high_recovery_lpm = 420,
+        .temp_high_threshold_lpm = 500,
+        .temp_high_recovery_lpm = 400,
         .temp_low_threshold_lpm = -50,
         .temp_low_recovery_lpm = 0,
-#endif
 
-	.full_check_type = SEC_BATTERY_FULLCHARGED_FG_CURRENT,
-	.full_check_type_2nd = SEC_BATTERY_FULLCHARGED_TIME,
-	.full_check_count = 2,
+	.full_check_type = SEC_BATTERY_FULLCHARGED_CHGPSY,
+	.full_check_type_2nd = SEC_BATTERY_FULLCHARGED_NONE,
+	.full_check_count = 1,
 	/* .full_check_adc_1st = 26500, */
 	/*.full_check_adc_2nd = 25800, */
 	.chg_polarity_full_check = 1,
-	.full_condition_type = SEC_BATTERY_FULL_CONDITION_NOTIMEFULL |
+	.full_condition_type =
 		SEC_BATTERY_FULL_CONDITION_SOC |
 		SEC_BATTERY_FULL_CONDITION_OCV,
-	.full_condition_soc = 95,
-	.full_condition_ocv = 4150,
+	.full_condition_soc = 99,
+	.full_condition_ocv = 4170,
 
 	.recharge_condition_type =
                 SEC_BATTERY_RECHARGE_CONDITION_VCELL,
 
 	.recharge_condition_soc = 98,
-	.recharge_condition_avgvcell = 4150,
-	.recharge_condition_vcell = 4150,
+	.recharge_condition_avgvcell = 4135,
+	.recharge_condition_vcell = 4135,
 
 	.charging_total_time = 6 * 60 * 60,
         .recharging_total_time = 90 * 60,
@@ -821,8 +761,7 @@ sec_battery_platform_data_t sec_battery_pdata = {
 	.fuel_alert_soc = 1,
 	.repeated_fuelalert = false,
 	.capacity_calculation_type =
-		SEC_FUELGAUGE_CAPACITY_TYPE_DYNAMIC_SCALE |
-		SEC_FUELGAUGE_CAPACITY_TYPE_SKIP_ABNORMAL,
+		SEC_FUELGAUGE_CAPACITY_TYPE_DYNAMIC_SCALE,
 	.capacity_max = 1000,
 	.capacity_min = 0,
 	.capacity_max_margin = 30,
@@ -832,13 +771,7 @@ sec_battery_platform_data_t sec_battery_pdata = {
 	.chg_polarity_status = 0,
 	.chg_irq_attr = IRQF_TRIGGER_RISING,
 
-#if defined(CONFIG_MACH_LT02LGT)
-	.chg_float_voltage = 4180,
-#else
 	.chg_float_voltage = 4200,
-#endif
-	.siop_activated = 0,
-	.siop_level = 0,
 };
 
 /* set STC3115 Fuel Gauge gpio i2c */
@@ -905,6 +838,7 @@ void __init pxa986_lt02_charger_init(void)
 	i2c_register_board_info(SEC_FUELGAUGE_I2C_ID, sec_brdinfo_fuelgauge,
 			ARRAY_SIZE(sec_brdinfo_fuelgauge));
 
+//	temp_adc_client = s3c_adc_register(&sec_device_battery, NULL, NULL, 0);
 }
 
 

@@ -50,8 +50,6 @@ union gic_base {
 	void __percpu __iomem **percpu_base;
 };
 
-static void __iomem *common_base_store;
-
 struct gic_chip_data {
 	union gic_base dist_base;
 	union gic_base cpu_base;
@@ -153,20 +151,6 @@ static void gic_mask_irq(struct irq_data *d)
 		gic_arch_extn.irq_mask(d);
 	raw_spin_unlock(&irq_controller_lock);
 }
-
-void gic_dump(void)
-{
-	u32 val;
-//	int i = 0;
-	raw_spin_lock(&irq_controller_lock);
-//	for(;i<4;i++) {
-		val = readl_relaxed(common_base_store + GIC_DIST_ENABLE_CLEAR + 2 * 4);
-		printk("*** gic[%d]: %x\n", 2, val);
-//	}
-	raw_spin_unlock(&irq_controller_lock);
-
-}
-EXPORT_SYMBOL_GPL(gic_dump);
 
 static void gic_unmask_irq(struct irq_data *d)
 {
@@ -703,7 +687,6 @@ void __init gic_init_bases(unsigned int gic_nr, int irq_start,
 		     "GIC_NON_BANKED not enabled, ignoring %08x offset!",
 		     percpu_offset);
 		gic->dist_base.common_base = dist_base;
-		common_base_store = dist_base;
 		gic->cpu_base.common_base = cpu_base;
 		gic_set_base_accessor(gic, gic_get_common_base);
 	}

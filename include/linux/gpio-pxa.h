@@ -11,6 +11,9 @@
  */
 extern int pxa_last_gpio;
 
+#ifdef CONFIG_SEC_GPIO_DVS
+extern int pxa_direction_get(unsigned int* gpdr);
+#endif
 extern int pxa_irq_to_gpio(int irq);
 
 struct pxa_gpio_platform_data {

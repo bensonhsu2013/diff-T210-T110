@@ -92,6 +92,8 @@ struct lcd_platform_data {
 	void *pdata;
 };
 
+extern struct class *lcd_class;
+
 static inline void lcd_set_power(struct lcd_device *ld, int power)
 {
 	mutex_lock(&ld->update_lock);

@@ -25,10 +25,4 @@ void pxa986_lt02_charger_init(void);
 void sec_charger_cb(u8 attached);
 
 void mmp_pins_init(void);
-
-/** @category IRLED */
-#ifdef CONFIG_SEC_IRLED
-void pxa986_lt02_irled_init(void);
-#endif
-
 #endif

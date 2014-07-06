@@ -232,6 +232,38 @@ static int ak7343_get_ctrl(struct v4l2_ctrl *ctrl)
 	}
 
 }
+void ak7343_io_power(struct i2c_client *client, char on)
+{
+	static unsigned long mfp_pin[2];
+	unsigned long i2c0_mfps[] = {
+		GPIO053_GPIO_53,
+		GPIO054_GPIO_54,
+	};
+	static unsigned long scl, sda;
+	if (on)	{
+		scl = MFP_PIN_GPIO53;
+		sda = MFP_PIN_GPIO54;
+		i2c_lock_adapter(client->adapter);
+		if (gpio_request(scl, "SCL"))
+			pr_err("Failed to request GPIO for SCL pin!\n");
+		if (gpio_request(sda, "SDA"))
+			pr_err("Failed to request GPIO for SDA pin!\n");
+		mfp_pin[0] = mfp_read(MFP_PIN_GPIO53);
+		mfp_pin[1] = mfp_read(MFP_PIN_GPIO54);
+		mfp_config(i2c0_mfps, ARRAY_SIZE(i2c0_mfps));
+		gpio_direction_output(sda, 0);
+		gpio_direction_output(scl, 0);
+	} else {
+		gpio_direction_output(sda, 1);
+		gpio_direction_output(scl, 1);
+		mfp_write(MFP_PIN_GPIO53, mfp_pin[0]);
+		mfp_write(MFP_PIN_GPIO54, mfp_pin[1]);
+		gpio_free(sda);
+		gpio_free(scl);
+		i2c_unlock_adapter(client->adapter);
+	}
+}
+EXPORT_SYMBOL(ak7343_io_power);
 static void vcm_power(struct ak7343 *vcm, int on)
 {
 	/* Enable voltage for camera sensor vcm */
@@ -256,45 +288,11 @@ static int ak7343_subdev_open(struct v4l2_subdev *sd,
 {
 	struct ak7343 *core = to_ak7343(sd);
 	struct i2c_client *client = v4l2_get_subdevdata(&core->subdev);
-	unsigned long mfp_pin[2];
-	unsigned long i2c0_mfps[] = {
-		GPIO053_GPIO_53,
-		GPIO054_GPIO_54,
-	};
-	unsigned long scl, sda;
 	if (core->openflag == 1)
 		return -EBUSY;
 	core->openflag = 1;
-
-	scl = MFP_PIN_GPIO53;
-	sda = MFP_PIN_GPIO54;
-	i2c_lock_adapter(client->adapter);
-	if (gpio_request(scl, "SCL"))
-		pr_err("Failed to request GPIO for SCL pin!\n");
-	if (gpio_request(sda, "SDA"))
-		pr_err("Failed to request GPIO for SDA pin!\n");
-	mfp_pin[0] = mfp_read(MFP_PIN_GPIO53);
-	mfp_pin[1] = mfp_read(MFP_PIN_GPIO54);
-	mfp_config(i2c0_mfps, ARRAY_SIZE(i2c0_mfps));
-	gpio_direction_output(sda, 0);
-	gpio_direction_output(scl, 0);
-	mdelay(100);
 	vcm_power(core, 1);
-	mdelay(10);
-	gpio_direction_output(sda, 1);
-	gpio_direction_output(scl, 1);
-
-	mfp_write(MFP_PIN_GPIO53, mfp_pin[0]);
-	mfp_write(MFP_PIN_GPIO54, mfp_pin[1]);
-	gpio_free(sda);
-	gpio_free(scl);
-	i2c_unlock_adapter(client->adapter);
-	mdelay(120);
-	ak7343_write(client, 0x05, 0x7a);
-	ak7343_write(client, 0x01, 0x01);
 	mdelay(200);
-	ak7343_write(client, 0x02, 0x01);
-	mdelay(120);
 	ak7343_write(client, 0x01, 0x00);
 	return 0;
 }
@@ -366,7 +364,6 @@ static int __devinit ak7343_probe(struct i2c_client *client,
 				  const struct i2c_device_id *id)
 {
 	int ret = -1;
-	unsigned long vcmid;
 	int pwdn = 0;
 	struct ak7343 *vcm;
 	struct vcm_platform_data *pdata = client->dev.platform_data;
@@ -377,15 +374,15 @@ static int __devinit ak7343_probe(struct i2c_client *client,
 	}
 	if (!pdata)
 		return -EIO;
+	ak7343_io_power(client, 1);
+	mdelay(1);
 	if (pdata->power_domain) {
 		vcm->af_vcc = regulator_get(&client->dev,
 					pdata->power_domain);
 		if (IS_ERR(vcm->af_vcc))
 			goto out_af_vcc;
-
 		vcm_power(vcm, 1);
 	}
-
 	if (pdata->pwdn_gpio) {
 		vcm->pwdn_gpio = pdata->pwdn_gpio;
 		if (gpio_request(vcm->pwdn_gpio, "VCM_ENABLE_LOW"))  {
@@ -396,11 +393,17 @@ static int __devinit ak7343_probe(struct i2c_client *client,
 		pwdn = gpio_get_value(vcm->pwdn_gpio);
 		gpio_direction_output(vcm->pwdn_gpio, pdata->pwdn_en);
 	}
-	mdelay(20);
-	if (ak7343_read(client, 0x00, &vcmid)) {
-		printk(KERN_ERR "VCM: ak7343 vcm detect failure!\n");
+	mdelay(3);
+	ak7343_io_power(client, 0);
+	mdelay(120);
+	if (ak7343_write(client, 0x05, 0x02) < 0)
 		goto out_pwdn;
-	}
+	if (ak7343_write(client, 0x01, 0x01) < 0)
+		goto out_pwdn;
+	mdelay(200);
+	if (ak7343_write(client, 0x02, 0x01) < 0)
+		goto out_pwdn;
+	mdelay(220);
 	if (vcm->pwdn_gpio) {
 		gpio_direction_output(vcm->pwdn_gpio, pwdn);
 		gpio_free(vcm->pwdn_gpio);

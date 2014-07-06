@@ -886,7 +886,7 @@ config CACHE_L2X0_PREFETCH_OFFSET
 
 config CACHE_TAUROS2
 	bool "Enable the Tauros2 L2 cache controller"
-	depends on (ARCH_DOVE || ARCH_MMP || CPU_PJ4)
+	depends on (ARCH_DOVE || ARCH_MMP || CPU_PJ4) && !CPU_EDEN
 	default y
 	select OUTER_CACHE
 	help

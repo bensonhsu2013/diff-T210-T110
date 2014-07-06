@@ -36,9 +36,17 @@
 				__func__, __LINE__, ## args); \
 	} while (0);
 
+#define bt532_err(fmt) \
+	do { \
+		pr_err("bt532_ts : %s " fmt, __func__); \
+	} while (0);
+
 struct bt532_ts_platform_data {
 	u32		gpio_int;
+	u32		gpio_scl;
+	u32		gpio_sda;
 	u32		gpio_ldo_en;
+	int (*tsp_power)(int on);
 	u16		x_resolution;
 	u16		y_resolution;
 	u16		page_size;

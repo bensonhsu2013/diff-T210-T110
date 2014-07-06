@@ -28,7 +28,7 @@
 #include <linux/types.h>
 #include <linux/videodev2.h>
 
-#include "ispvideo.h"
+#include <media/ispvideo.h>
 
 /* This is not an exhaustive list */
 enum isp_ccic_pix_formats {
@@ -37,16 +37,31 @@ enum isp_ccic_pix_formats {
 	CCIC_PIX_FMT_YUV422_8BIT_VP = 0x9e,
 };
 
-enum isp_ccic_identity {
-	CCIC_ID_INVALID = 0,
-	CCIC_ID_1,
-	CCIC_ID_2,
+enum {
+	AGENT_CCIC_CORE = 0,
+	AGENT_CCIC_DPHY,
+	AGENT_CCIC_END
 };
 
-#define CCIC_PAD_SINK			0
-#define CCIC_PAD_ISP_SRC		1
-#define CCIC_PAD_DMA_SRC		2
-#define CCIC_PADS_NUM			3
+enum {
+	CCIC_CLOCK_FUN = 0,
+	CCIC_CLOCK_PHY,
+	CCIC_CLOCK_AXI,
+	CCIC_CLOCK_AHB,
+	CCIC_CLOCK_END
+};
+
+enum {
+	CCIC_PADI_SNSR = 0,
+	CCIC_PADO_DXO,
+	CCIC_PADO_VDEV,
+	CCIC_PADI_DPHY,
+	CCIC_PAD_END,
+	DPHY_PADI = 0,
+	DPHY_PADO_CCIC,
+	DPHY_PADO_DXO,
+	DPHY_PAD_END,
+};
 
 enum ccic_dma_state {
 	CCIC_DMA_IDLE = 0,
@@ -75,35 +90,33 @@ enum ccic_mipi_state {
 	MIPI_SET,
 };
 
-enum mv_isp_sensor_type {
-	SENSOR_INVALID = 0,
-	SENSOR_OV882X,
-	SENSOR_OV5642,
-	SENSOR_OV5647,
-	SENSOR_LSI3H5,
+struct ccic_plat_data {
+	unsigned long	fclk_mhz;
+	unsigned long	mclk_mhz;
+	unsigned long	avail_fclk_rate_num;
+	unsigned long	avail_fclk_rate[CLK_RATE_NUM];
 };
 
-struct isp_ccic_device {
-	struct v4l2_subdev			subdev;
-	struct media_pad			pads[CCIC_PADS_NUM];
-	struct v4l2_mbus_framefmt	formats[CCIC_PADS_NUM];
-	struct mvisp_device			*isp;
-	struct isp_video			video_out;
+/* TODO: actually we need a ccic_phy struct here, with hw_agent*/
+
+struct ccic_device {
+	struct v4l2_mbus_framefmt	formats[CCIC_PAD_END];
+	struct mvisp_device		*isp;
 	enum ccic_output_type		output;
 	enum ccic_input_type		input;
 
-	enum isp_ccic_identity			ccic_id;
+	struct device		*dev;
+	struct map_agent	agent;
+	struct hw_event		event_irq;
+
 	enum isp_pipeline_stream_state	state;
-	spinlock_t				irq_lock;
+	spinlock_t			irq_lock;
 
 	struct mutex			ccic_mutex;
-	enum ccic_mipi_state	mipi_config_flag;
-	spinlock_t				mipi_flag_lock;
 
-	enum mv_isp_sensor_type sensor_type;
 	enum ccic_dma_state		dma_state;
 	int	stream_refcnt;
-	int lanes;
+	struct ccic_plat_data		pdata;
 #ifdef CONFIG_VIDEO_MRVL_CAM_DEBUG
 	struct mcd_dphy		mcd_dphy;
 	/* in current design, DPHY and CCIC is coupled, so have to put
@@ -112,15 +125,62 @@ struct isp_ccic_device {
 #endif
 };
 
-int pxa_ccic_init(struct mvisp_device *isp);
-void pxa_ccic_set_sensor_type(struct isp_ccic_device *ccic,
-					enum mv_isp_sensor_type sensor_type);
-void pxa_ccic_cleanup(struct mvisp_device *isp);
-void pxa_ccic_unregister_entities(struct isp_ccic_device *ccic);
-int pxa_ccic_register_entities(struct isp_ccic_device *ccic,
+struct ccic_dphy_t {
+	struct map_agent	agent;
+	struct mvisp_device	*isp;
+	struct device		*dev;
+	int			lanes;
+	struct csi_dphy_reg	dphy_cfg;
+	enum ccic_mipi_state	mipi_config_flag;
+	spinlock_t		mipi_flag_lock;
+	int dphy_set;
+	struct csi_dphy_desc dphy_desc;
+#ifdef CONFIG_VIDEO_MRVL_CAM_DEBUG
+	struct mcd_dphy		mcd_dphy;
+#endif
+};
+
+int pxa_ccic_init(struct ccic_device *ccic);
+void pxa_ccic_cleanup(struct ccic_device *ccic);
+void pxa_ccic_unregister_entities(struct ccic_device *ccic);
+int pxa_ccic_register_entities(struct ccic_device *ccic,
 				    struct v4l2_device *vdev);
-void pxa_ccic_dma_isr_handler(struct isp_ccic_device *ccic,
+void pxa_ccic_dma_isr_handler(struct ccic_device *ccic,
 					unsigned long irq_status);
-void pxa_ccic_ctrl_pixclk(struct mvisp_device *isp, int on);
+void ccic_set_mclk_rate(struct ccic_device *ccic, int on);
+
+#if 0
+static inline u32 ccic_read(struct ccic_device *ccic, const u32 addr)
+{
+	return readl(ccic->reg_base + addr);
+}
+
+static inline void ccic_write(struct ccic_device *ccic,
+				const u32 addr, const u32 value)
+{
+	writel(value, ccic->reg_base + addr);
+}
+
+static inline void ccic_setbit(struct ccic_device *ccic,
+				const u32 addr, const u32 mask)
+{
+	u32 val = readl(ccic->reg_base + addr);
+	val |= mask;
+	writel(val, ccic->reg_base + addr);
+}
+
+static inline void ccic_clrbit(struct ccic_device *ccic,
+				const u32 addr, const u32 mask)
+{
+	u32 val = readl(ccic->reg_base + addr);
+	val &= ~mask;
+	writel(val, ccic->reg_base + addr);
+}
+#else
+#define ccic_read(ccic, addr)		agent_read(&(ccic->agent.hw), addr)
+#define ccic_write(ccic, adr, val)	agent_write(&(ccic->agent.hw), adr, val)
+#define ccic_setbit(ccic, addr, mask)	agent_set(&(ccic->agent.hw), addr, mask)
+#define ccic_clrbit(ccic, addr, mask)	agent_clr(&(ccic->agent.hw), addr, mask)
+#endif
 
 #endif	/* ISP_CCIC_H */

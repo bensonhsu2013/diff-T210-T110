@@ -21,9 +21,14 @@
 #define CTI_SOC_VIRT_BASE	(CORESIGHT_VIRT_BASE + 0x6000)
 #define TPIU_VIRT_BASE		(CORESIGHT_VIRT_BASE + 0x8000)
 #define CSTF_VIRT_BASE		(CORESIGHT_VIRT_BASE + 0x9000)
+
 #define DBG_CORE0_VIRT_BASE	(CORESIGHT_VIRT_BASE + 0x10000)
 #define CTI_CORE0_VIRT_BASE	(CORESIGHT_VIRT_BASE + 0x18000)
 #define CTI_CORE1_VIRT_BASE	(CORESIGHT_VIRT_BASE + 0x19000)
+#if defined(CONFIG_CPU_PXA1088)
+#define CTI_CORE2_VIRT_BASE	(CORESIGHT_VIRT_BASE + 0x1A000)
+#define CTI_CORE3_VIRT_BASE	(CORESIGHT_VIRT_BASE + 0x1B000)
+#endif
 #define PTM_CORE0_VIRT_BASE	(CORESIGHT_VIRT_BASE + 0x1C000)
 #define PTM_CORE1_VIRT_BASE	(CORESIGHT_VIRT_BASE + 0x1D000)
 
@@ -32,12 +37,12 @@
 #define TPIU_REG(x)		(TPIU_VIRT_BASE + (x))
 #define CSTF_REG(x)		(CSTF_VIRT_BASE + (x))
 
-#define PTM_REG(x)		((smp_processor_id() ? \
-				PTM_CORE1_VIRT_BASE : PTM_CORE0_VIRT_BASE) \
+#define PTM_REG(x)		((PTM_CORE0_VIRT_BASE \
+				+ 0x1000 * raw_smp_processor_id()) \
 				+ (x))
 
-#define CTI_REG(x)		((smp_processor_id() ? \
-				CTI_CORE1_VIRT_BASE : CTI_CORE0_VIRT_BASE) \
+#define CTI_REG(x)		((CTI_CORE0_VIRT_BASE \
+				+ 0x1000 * raw_smp_processor_id()) \
 				+ (x))
 
 #define ETB_LOCK		ETB_REG(0xFB0)
@@ -50,8 +55,8 @@
 
 #define DBG_ID(cpu)		DBG_REG(cpu, 0x0)
 #define DBG_DTRRX(cpu)		DBG_REG(cpu, 0x80)
-#define DBG_ITR(cpu)		DBG_REG(cpu, 0x84)      /* Write only */
-#define DBG_PCSR(cpu)		DBG_REG(cpu, 0x84)      /* Read only */
+#define DBG_ITR(cpu)		DBG_REG(cpu, 0x84)	/* Write only */
+#define DBG_PCSR(cpu)		DBG_REG(cpu, 0x84)	/* Read only */
 #define DBG_DSCR(cpu)		DBG_REG(cpu, 0x88)
 #define DBG_DTRTX(cpu)		DBG_REG(cpu, 0x8C)
 #define DBG_DRCR(cpu)		DBG_REG(cpu, 0x90)
@@ -79,13 +84,17 @@
 #define CTI_LOCK_OFFSET		0xFB0
 
 #ifdef CONFIG_CORESIGHT_SUPPORT
-extern void v7_coresight_save(void);
-extern void v7_coresight_restore(void);
-extern void coresight_panic_locked_cpu(int cpu);
+void coresight_dump_pcsr(u32 cpu);
+void coresight_panic_locked_cpu(int cpu);
 #else
-#define v7_coresight_save(void)		do {} while (0)
-#define v7_coresight_restore(void)	do {} while (0)
-#define coresight_panic_locked_cpu(int cpu)    do {} while (0)
+#define coresight_dump_pcsr(u32 cpu)     do {} while (0)
+#define coresight_panic_locked_cpu(cpu)	do {} while (0)
+#endif
+
+#ifdef CONFIG_CORESIGHT_TRACE_SUPPORT
+void coresight_ptm_disable(u32 cpu);
+#else
+#define coresight_ptm_disable(cpu) do {} while (0)
 #endif
 
 #endif /* __ASM_MACH_CORSIGHT_H */

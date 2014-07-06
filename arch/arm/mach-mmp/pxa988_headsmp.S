@@ -43,7 +43,17 @@ pen:	ldr	r7, [r6]
 	 * we've been released from the holding pen: secondary_stack
 	 * should now contain the SVC stack for this core
 	 */
+
+/*
+ * Note: Architecturally, caches are not guaranteed to be in a known state
+ * at reset.
+ * - need to be invalidated by software on Cortex-A9.
+ * - not required on Cortex-A5/A7/A15.
+ */
+#ifdef CONFIG_CPU_CA9MP
 	bl	v7_invalidate_l1
+#endif
+
 	b	secondary_startup
 ENDPROC(pxa988_secondary_startup)
 
@@ -64,24 +74,102 @@ ENDPROC(pxa988_secondary_startup)
 
 #ifdef CONFIG_HOTPLUG_CPU
 
+#ifdef CONFIG_HAVE_ARM_SCU
 #define SCU_CPU_POWER_STATUS	(SCU_PHYS_BASE + 0x08)
+#endif
 
 #define PMU_PHYS_BASE		(AXI_PHYS_BASE + 0x82800)
 #define PMU_CORE0_IDLE_CFG_PHYS	(PMU_PHYS_BASE + 0x0124)
+#define PMU_CORE1_IDLE_CFG_PHYS	(PMU_PHYS_BASE + 0x0128)
+#define PMU_CORE2_IDLE_CFG_PHYS	(PMU_PHYS_BASE + 0x0160)
+#define PMU_CORE3_IDLE_CFG_PHYS	(PMU_PHYS_BASE + 0x0164)
+
 #define PMU_MP_IDLE_CFG0_PHYS	(PMU_PHYS_BASE + 0x0120)
 #define PMU_MP_IDLE_CFG1_PHYS	(PMU_PHYS_BASE + 0x00e4)
+#define PMU_MP_IDLE_CFG2_PHYS	(PMU_PHYS_BASE + 0x0150)
+#define PMU_MP_IDLE_CFG3_PHYS	(PMU_PHYS_BASE + 0x0154)
 
 #define ICU_PHYS_BASE		(AXI_PHYS_BASE + 0x82000)
+#if defined(CONFIG_CPU_PXA988)
 #define ICU_C0_GBL_INT_MSK_PHYS	(ICU_PHYS_BASE + 0x114)
 #define ICU_C1_GBL_INT_MSK_PHYS	(ICU_PHYS_BASE + 0x144)
+#elif defined(CONFIG_CPU_PXA1088)
+#define ICU_C0_GBL_INT_MSK_PHYS	(ICU_PHYS_BASE + 0x228)
+#define ICU_C1_GBL_INT_MSK_PHYS	(ICU_PHYS_BASE + 0x238)
+#endif
+#define ICU_C2_GBL_INT_MSK_PHYS	(ICU_PHYS_BASE + 0x248)
+#define ICU_C3_GBL_INT_MSK_PHYS	(ICU_PHYS_BASE + 0x258)
 
 #define GIC_GLABAL_MASK	(PMUA_GIC_IRQ_GLOBAL_MASK | PMUA_GIC_FIQ_GLOBAL_MASK)
 #define ICU_GLABAL_MASK	(ICU_MASK_FIQ | ICU_MASK_IRQ)
+
+#ifdef CONFIG_CPU_PXA988
 #define CORE_IDLE_MASK	(PMUA_CORE_IDLE | PMUA_CORE_POWER_DOWN | \
 			PMUA_CORE_L1_SRAM_POWER_DOWN)
 #define MP_IDLE_MASK	(PMUA_MP_IDLE | PMUA_MP_POWER_DOWN |	\
 			PMUA_MP_L2_SRAM_POWER_DOWN |		\
 			PMUA_MP_SCU_SRAM_POWER_DOWN)
+#elif defined(CONFIG_CPU_PXA1088)
+#define CORE_IDLE_MASK	(PMUA_CORE_IDLE | PMUA_CORE_POWER_DOWN)
+#define MP_IDLE_MASK	(PMUA_MP_IDLE | PMUA_MP_POWER_DOWN |	\
+			PMUA_MP_L2_SRAM_POWER_DOWN)
+#endif
+
+/* r0, keep to CPUID */
+ENTRY(pxa988_return_handler)
+	/* Get the physical address of pm_reserve_pa */
+	ldr	r1, =pm_reserve_pa
+	sub	r1, r1, #PAGE_OFFSET
+	add	r1, r1, #PLAT_PHYS_OFFSET
+
+	/* Load the reserved memory address */
+	ldr	r1, [r1]
+
+	@ barrier to make sure all cores have been waken
+	mov     r2, #OFFSET_BARRIER
+	add     r2, r2, r1
+
+	dmb
+
+	@ barrier_inc
+	ldr	r3, [r2, r0, lsl #2]
+	add	r3, r3, #1
+	str	r3, [r2, r0, lsl #2]
+	dmb
+
+	@ no need to spin checking other core's status here
+	@ since it is impossible first core to be here.
+
+	/* mask GIC interrtup */
+	cmp	r0, #0
+	ldreq   r1, =PMU_CORE0_IDLE_CFG_PHYS
+	cmp	r0, #1
+	ldreq   r1, =PMU_CORE1_IDLE_CFG_PHYS
+	cmp	r0, #2
+	ldreq   r1, =PMU_CORE2_IDLE_CFG_PHYS
+	cmp	r0, #3
+	ldreq   r1, =PMU_CORE3_IDLE_CFG_PHYS
+
+	ldr     r2, [r1]
+	orr	r2, r2, #GIC_GLABAL_MASK
+	str	r2, [r1]
+
+	/* Mask ICU global interrupt */
+	cmp	r0, #0
+	ldreq	r1, =ICU_C0_GBL_INT_MSK_PHYS
+	cmp	r0, #1
+	ldreq	r1, =ICU_C1_GBL_INT_MSK_PHYS
+	cmp	r0, #2
+	ldreq	r1, =ICU_C2_GBL_INT_MSK_PHYS
+	cmp	r0, #3
+	ldreq	r1, =ICU_C3_GBL_INT_MSK_PHYS
+
+	ldr     r2, [r1]
+	orr	r2, r2, #ICU_GLABAL_MASK
+	str 	r2, [r1]
+
+	b	cpu_v7_do_idle
+ENDPROC(pxa988_return_handler)
 
 /* r0, keep to CPUID */
 ENTRY(pxa988_hotplug_handler)
@@ -96,36 +184,66 @@ ENTRY(pxa988_hotplug_handler)
 	mov	r3, #0
 	str	r3, [r2, r0, lsl #2]    @ clear all flags
 
+#ifdef CONFIG_HAVE_ARM_SCU
 	/* scu_power_mode(scu_base_addr, SCU_PM_NORMAL) */
 	ldr     r1, =SCU_CPU_POWER_STATUS
 	ldrb    r2, [r1, r0]
 	bic     r2, r2, #0x3
 	strb    r2, [r1, r0]
-
+#endif
 	/* Unmask GIC interrtup */
-	ldr     r1, =PMU_CORE0_IDLE_CFG_PHYS
-	ldr     r2, [r1, r0, lsl #2]
+	cmp	r0, #0
+	ldreq   r1, =PMU_CORE0_IDLE_CFG_PHYS
+	cmp	r0, #1
+	ldreq   r1, =PMU_CORE1_IDLE_CFG_PHYS
+	cmp	r0, #2
+	ldreq   r1, =PMU_CORE2_IDLE_CFG_PHYS
+	cmp	r0, #3
+	ldreq   r1, =PMU_CORE3_IDLE_CFG_PHYS
+
+	ldr     r2, [r1]
 	bic	r2, r2, #GIC_GLABAL_MASK
-	str	r2, [r1, r0, lsl #2]
+	str	r2, [r1]
 
 	/* Mask ICU global interrupt */
 	cmp	r0, #0
 	ldreq	r1, =ICU_C0_GBL_INT_MSK_PHYS
-	ldrne	r1, =ICU_C1_GBL_INT_MSK_PHYS
+	cmp	r0, #1
+	ldreq	r1, =ICU_C1_GBL_INT_MSK_PHYS
+	cmp	r0, #2
+	ldreq	r1, =ICU_C2_GBL_INT_MSK_PHYS
+	cmp	r0, #3
+	ldreq	r1, =ICU_C3_GBL_INT_MSK_PHYS
+
 	ldr     r2, [r1]
 	orr	r2, r2, #ICU_GLABAL_MASK
 	str 	r2, [r1]
 
 	/* reset the core idle config register */
-	ldr     r1, =PMU_CORE0_IDLE_CFG_PHYS
-	ldr     r2, [r1, r0, lsl #2]
-	bic	r2, #CORE_IDLE_MASK
-	str	r2, [r1, r0, lsl #2]
+	cmp	r0, #0
+	ldreq   r1, =PMU_CORE0_IDLE_CFG_PHYS
+	cmp	r0, #1
+	ldreq   r1, =PMU_CORE1_IDLE_CFG_PHYS
+	cmp	r0, #2
+	ldreq   r1, =PMU_CORE2_IDLE_CFG_PHYS
+	cmp	r0, #3
+	ldreq   r1, =PMU_CORE3_IDLE_CFG_PHYS
+
+	ldr     r2, [r1]
+	bic	r2, r2, #CORE_IDLE_MASK
+	str 	r2, [r1]
+
 
 	/* reset the MP idle config register */
 	cmp     r0, #0
 	ldreq   r1, =PMU_MP_IDLE_CFG0_PHYS
-	ldrne   r1, =PMU_MP_IDLE_CFG1_PHYS
+	cmp     r0, #1
+	ldreq   r1, =PMU_MP_IDLE_CFG1_PHYS
+	cmp     r0, #2
+	ldreq   r1, =PMU_MP_IDLE_CFG2_PHYS
+	cmp     r0, #3
+	ldreq   r1, =PMU_MP_IDLE_CFG3_PHYS
+
 	ldr     r2, [r1]
 	bic	r2, r2, #MP_IDLE_MASK
 	str     r2, [r1]
@@ -157,3 +275,4 @@ reset_handler_pa:
 	.globl secondary_cpu_handler
 secondary_cpu_handler:
 	.long   0
+

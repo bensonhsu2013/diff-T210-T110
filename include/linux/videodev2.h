@@ -1265,7 +1265,7 @@ enum v4l2_colorfx {
 #define V4L2_CID_ALPHA_COMPONENT		(V4L2_CID_BASE+41)
 
 
-/**++ Add the Cam CTRL Functions : 20120531 dhee79.lee@samsung.com ++**/
+/**++ Add the Cam CTRL Functions : 20130401 dhee79.lee@samsung.com ++**/
 #define V4L2_CID_SCENE							(V4L2_CID_BASE+42)
 #define V4L2_CID_EFFECT							(V4L2_CID_BASE+43)
 #define V4L2_CID_ISO							(V4L2_CID_BASE+44)
@@ -1302,7 +1302,7 @@ enum v4l2_colorfx {
 #define V4L2_CID_SET_FLASH_STATUS	(V4L2_CID_BASE + 75)
 #define V4L2_CID_SET_FLASH_MODE	(V4L2_CID_BASE + 76)
 #define V4L2_CID_GET_FLASH_STATUS	(V4L2_CID_BASE + 77)
-/**-- Add the Cam CTRL Functions : 20120531 dhee79.lee@samsung.com --**/
+/**-- Add the Cam CTRL Functions : 20130401 dhee79.lee@samsung.com --**/
 
 /* last CID + 1 */
 #define V4L2_CID_LASTP1                         (V4L2_CID_BASE+78)
@@ -2033,11 +2033,6 @@ struct v4l2_decoder_cmd {
 		} raw;
 	};
 };
-/* For samsung project, transfer preview/capture mode into Linux driver, by Vincent Wan */
-struct v4l2_mode_transfer {
-	__u32				type;
-	__u32				reserved[7];
-};
 #endif
 
 
@@ -2379,13 +2374,13 @@ struct v4l2_create_buffers {
 #define VIDIOC_S_TUNER		 _IOW('V', 30, struct v4l2_tuner)
 #define VIDIOC_G_AUDIO		 _IOR('V', 33, struct v4l2_audio)
 #define VIDIOC_S_AUDIO		 _IOW('V', 34, struct v4l2_audio)
-#define VIDIOC_G_EXIF		_IOWR('V', 35, struct v4l2_exif_info) // Add by DHL : 20120531
+#define VIDIOC_G_EXIF          _IOWR('V', 35, struct v4l2_exif_info) // Add by DHL : 20120531
 #define VIDIOC_QUERYCTRL	_IOWR('V', 36, struct v4l2_queryctrl)
 #define VIDIOC_QUERYMENU	_IOWR('V', 37, struct v4l2_querymenu)
 #define VIDIOC_G_INPUT		 _IOR('V', 38, int)
 #define VIDIOC_S_INPUT		_IOWR('V', 39, int)
-#define VIDIOC_S_THUMBNAIL		_IOWR('V', 40, struct v4l2_pix_format) // Add by DHL : 20120531
-#define VIDIOC_AE_AWB_STATUS		 _IOWR('V', 41, int) // Add by DHL : 20120531
+#define VIDIOC_S_THUMBNAIL             _IOWR('V', 40, struct v4l2_pix_format) // Add by DHL : 20120531
+#define VIDIOC_AE_AWB_STATUS            _IOWR('V', 41, int) // Add by DHL : 20120531
 #define VIDIOC_G_OUTPUT		 _IOR('V', 46, int)
 #define VIDIOC_S_OUTPUT		_IOWR('V', 47, int)
 #define VIDIOC_ENUMOUTPUT	_IOWR('V', 48, struct v4l2_output)
@@ -2455,9 +2450,6 @@ struct v4l2_create_buffers {
    versions. */
 #define VIDIOC_DECODER_CMD	_IOWR('V', 96, struct v4l2_decoder_cmd)
 #define VIDIOC_TRY_DECODER_CMD	_IOWR('V', 97, struct v4l2_decoder_cmd)
-
-/* For samsung project, transfer preview/capture mode into Linux driver, by Vincent Wan */
-#define	VIDIOC_MODE_TRANSFER  _IOW('V', 98, struct v4l2_mode_transfer)
 
 /* Reminder: when adding new ioctls please add support for them to
    drivers/media/video/v4l2-compat-ioctl32.c as well! */

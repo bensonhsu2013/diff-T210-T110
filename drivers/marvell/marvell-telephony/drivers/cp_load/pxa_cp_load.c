@@ -39,6 +39,7 @@
 #include <asm/pgtable.h>
 
 #include <mach/cputype.h>
+#include <asm/gpio.h>
 
 #include "watchdog.h"
 #include "pxa9xx_cp.h"
@@ -58,6 +59,8 @@ struct cp_buffer {
 unsigned long arbel_bin_phys_addr;
 static void *arbel_bin_virt_addr;
 static void *reliable_bin_virt_addr;
+static int simcard = 0;
+int g_simcard = 0;
 
 extern const struct cp_load_table_head *get_cp_load_table(void);
 
@@ -155,10 +158,26 @@ static ssize_t cputype_show(struct device *dev, struct device_attribute *attr, c
 		cputype = "pxa986zx";
 	else if(cpu_is_pxa986_a0())
 		cputype = "pxa986ax";
+	else if(cpu_is_pxa1088()) /* FIXME: add 1088 support */
+		cputype = "pxa1t88";
 	else
 		cputype = "unknown";
 
 	len = sprintf(buf, "%s\n", cputype);
+
+	return len;
+}
+
+#define GRIP_SENSOR_COND_N 95           //0: RF cable is disconnected 1: RF cable is connected
+static ssize_t gripSensorGpio_show(struct device *dev, struct device_attribute *attr,
+			    char *buf)
+{
+	int len;
+	int state;
+
+	state = !!gpio_get_value(GRIP_SENSOR_COND_N);
+	printk(KERN_INFO "gpio %d status is %d\n", GRIP_SENSOR_COND_N, state);
+	len = sprintf(buf, "%d\n", state);
 
 	return len;
 }
@@ -203,9 +222,11 @@ static struct sysdev_driver cp_sysdev_driver = {
 #else
 static DEVICE_ATTR(cp, 0644, cp_show, cp_store);
 static DEVICE_ATTR(cputype, 0444, cputype_show, NULL);
+static DEVICE_ATTR(gripSensorGpio, 0444, gripSensorGpio_show, NULL);
 static struct attribute *cp_attr[] = {
 	&dev_attr_cp.attr,
 	&dev_attr_cputype.attr,
+	&dev_attr_gripSensorGpio.attr,
 };
 static int cp_add(struct device *dev, struct subsys_interface *sif)
 {
@@ -361,6 +382,8 @@ void __iomem *comm_timer_base_addr;
 static int __init cp_init(void)
 {
 	int ret;
+	printk(KERN_NOTICE "%s: simcard=%d\n", __func__, simcard);
+	g_simcard = simcard;
 
 	comm_timer_base_addr = ioremap(COMM_TIMER_PHY_ADDR, 0x100);
 
@@ -409,11 +432,13 @@ static void cp_exit(void)
 
 module_init(cp_init);
 module_exit(cp_exit);
+module_param(simcard, int, 0);
 
 EXPORT_SYMBOL(cp_releasecp);
 EXPORT_SYMBOL(comm_timer_base_addr);
 EXPORT_SYMBOL(cp_holdcp);
 EXPORT_SYMBOL(get_cp_load_table);
+EXPORT_SYMBOL(g_simcard);
 
 MODULE_DESCRIPTION("PXA9XX CP Related Operation");
 MODULE_LICENSE("GPL");

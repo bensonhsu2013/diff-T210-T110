@@ -54,12 +54,24 @@
 #include <plat/mfp.h>
 #include <mach/gpu_mem.h>
 
+#ifdef CONFIG_ARM_ARCH_TIMER
+#include <asm/arch_timer.h>
+#endif /* #ifdef CONFIG_ARM_ARCH_TIMER */
+
 #include "common.h"
+
+#include <linux/regdump_ops.h>
 
 #define MFPR_VIRT_BASE	(APB_VIRT_BASE + 0x1e000)
 #define RIPC3_VIRT_BASE	(APB_VIRT_BASE + 0x3D000)
 #define GPIOE_VIRT_BASE	(APB_VIRT_BASE + 0x19800)
 #define RIPC3_STATUS	(RIPC3_VIRT_BASE + 0x300)
+#define APMU_PHY_BASE  0xd4282800
+#define GIC_DIST_PHYS_BASE  (PERI_PHYS_BASE + 0x1000)
+
+#ifdef CONFIG_MACH_WILCOX_CMCC
+#define BOARD_ID_CMCC_REV05 (0x7)
+#endif
 
 static struct mfp_addr_map pxa988_addr_map[] __initdata = {
 
@@ -105,15 +117,226 @@ static struct mfp_addr_map pxa988_addr_map[] __initdata = {
 
 	MFP_ADDR_X(MMC1_DAT7, MMC1_WP, 0x84),
 
-	MFP_ADDR(GPIO123, 0xcc),
 	MFP_ADDR(GPIO124, 0xd0),
-	MFP_ADDR(VCXO_REQ, 0xd4),
+	MFP_ADDR(VCXO_REQ, 0xd4),       
 	MFP_ADDR(VCXO_OUT, 0xd8),
 
 	MFP_ADDR(CLK_REQ, 0xcc),
-
+#ifdef CONFIG_SEC_GPIO_DVS
+	MFP_ADDR(PRI_TDI, 0xB4),
+	MFP_ADDR(PRI_TMS, 0xB8),
+	MFP_ADDR(PRI_TCK, 0xBC),
+	MFP_ADDR(PRI_TDO, 0xC0),
+	MFP_ADDR(SLAVE_RESET_OUT, 0xC8),
+#endif
 	MFP_ADDR_END,
 };
+
+#ifdef CONFIG_REGDUMP
+static struct regdump_ops pmua_regdump_ops = {
+	.dev_name = "PXA1088-PMUA",
+};
+
+static struct regdump_region pmua_dump_region[] = {
+	{"PMUA_CC_CP",			0x000, 4, regdump_cond_true},
+	{"PMUA_CC_AP",			0x004, 4, regdump_cond_true},
+	{"PMUA_DM_CC_CP",		0x008, 4, regdump_cond_true},
+	{"PMUA_DM_CC_AP",		0x00c, 4, regdump_cond_true},
+	{"PMUA_FC_TIMER",		0x010, 4, regdump_cond_true},
+	{"PMUA_CP_IDLE_CFG",		0x014, 4, regdump_cond_true},
+	{"PMUA_AP_IDLE_CFG",		0x018, 4, regdump_cond_true},
+	{"PMUA_SQU_CLK_GATE_CTRL",		0x01c, 4, regdump_cond_true},
+#ifdef CONFIG_CPU_PXA1088
+	{"PMUA_IRE_CLK_GATE_CTRL",		0x020, 4, regdump_cond_true},
+#endif
+	{"PMUA_CCIC_CLK_GATE_CTRL",	0x028, 4, regdump_cond_true},
+	{"PMUA_FBRC0_CLK_GATE_CTRL",	0x02c, 4, regdump_cond_true},
+	{"PMUA_FBRC1_CLK_GATE_CTRL",	0x030, 4, regdump_cond_true},
+	{"PMUA_USB_CLK_GATE_CTRL",	0x034, 4, regdump_cond_true},
+	{"PMUA_ISP_CLK_RES_CTRL",	0x038, 4, regdump_cond_true},
+	{"PMUA_PMU_CLK_GATE_CTRL",	0x040, 4, regdump_cond_true},
+	{"PMUA_DSI_CLK_RES_CTRL",	0x044, 4, regdump_cond_true},
+#ifdef CONFIG_CPU_PXA1088
+	{"PMUA_HSI_CLK_RES_CTRL",	0x048, 4, regdump_cond_true},
+#endif
+	{"PMUA_LCD_DSI_CLK_RES_CTRL",	0x04c, 4, regdump_cond_true},
+	{"PMUA_CCIC_CLK_RES_CTRL",	0x050, 4, regdump_cond_true},
+	{"PMUA_SDH0_CLK_RES_CTRL",	0x054, 4, regdump_cond_true},
+	{"PMUA_SDH1_CLK_RES_CTRL",	0x058, 4, regdump_cond_true},
+	{"PMUA_USB_CLK_RES_CTRL",	0x05c, 4, regdump_cond_true},
+	{"PMUA_NF_CLK_RES_CTRL",	0x060, 4, regdump_cond_true},
+	{"PMUA_DMA_CLK_RES_CTRL",	0x064, 4, regdump_cond_true},
+	{"PMUA_AES_CLK_RES_CTRL",	0x068, 4, regdump_cond_true},
+	{"PMUA_MCB_CLK_RES_CTRL",	0x06c, 4, regdump_cond_true},
+	{"PMUA_CP_IMR",			0x070, 4, regdump_cond_true},
+	{"PMUA_CP_IRWC",			0x074, 4, regdump_cond_true},
+	{"PMUA_CP_ISR",			0x078, 4, regdump_cond_true},
+	{"PMUA_SD_ROT_WAKE_CLR",		0x07c, 4, regdump_cond_true},
+#ifdef CONFIG_CPU_PXA1088
+	{"PMUA_FBRC_CLK",		0x080, 4, regdump_cond_true},
+#endif
+	{"PMUA_PWR_STBL_TIMER",		0x084, 4, regdump_cond_true},
+	{"PMUA_DEBUG_REG",		0x088, 4, regdump_cond_true},
+	{"PMUA_SRAM_PWR_DWN",		0x08c, 4, regdump_cond_true},
+	{"PMUA_CORE_STATUS",		0x090, 4, regdump_cond_true},
+	{"PMUA_RES_FRM_SLP_CLR",	0x094, 4, regdump_cond_true},
+	{"PMUA_AP_IMR",			0x098, 4, regdump_cond_true},
+	{"PMUA_AP_IRWC",		0x09c, 4, regdump_cond_true},
+	{"PMUA_AP_ISR",			0x0a0, 4, regdump_cond_true},
+	{"PMUA_VPU_CLK_RES_CTRL",	0x0a4, 4, regdump_cond_true},
+#ifdef CONFIG_CPU_PXA1088
+	{"PMUA_VPRO_PWRDWN",	0x0a8, 4, regdump_cond_true},
+#endif
+	{"PMUA_DTC_CLK_RES_CTRL",	0x0ac, 4, regdump_cond_true},
+	{"PMUA_MC_HW_SLP_TYPE",		0x0b0, 4, regdump_cond_true},
+	{"PMUA_MC_SLP_REQ_AP",		0x0b4, 4, regdump_cond_true},
+	{"PMUA_MC_SLP_REQ_CP",		0x0b8, 4, regdump_cond_true},
+	{"PMUA_MC_SLP_REQ_MSA",		0x0bc, 4, regdump_cond_true},
+	{"PMUA_MC_SW_SLP_TYPE",		0x0c0, 4, regdump_cond_true},
+	{"PMUA_PLL_SEL_STATUS",		0x0c4, 4, regdump_cond_true},
+	{"PMUA_SYNC_MODE_BYPASS",	0x0c8, 4, regdump_cond_true},
+	{"PMUA_GPU_3D_CLK_RES_CTRL",	0x0cc, 4, regdump_cond_true},
+#ifdef CONFIG_CPU_PXA1088
+	{"PMUA_GPU_3D_PWRDWN",	0x0d0, 4, regdump_cond_true},
+#endif
+	{"PMUA_SMC_CLK_RES_CTRL",	0x0d4, 4, regdump_cond_true},
+	{"PMUA_PWR_CTRL_REG",	0x0d8, 4, regdump_cond_true},
+	{"PMUA_PWR_BLK_TMR_REG",		0x0dc, 4, regdump_cond_true},
+	{"PMUA_SDH2_CLK_RES_CTRL",	0x0e0, 4, regdump_cond_true},
+	{"PMUA_CA7MP_IDLE_CFG1",		0x0e4, 4, regdump_cond_true},
+	{"PMUA_MC_CTRL",	0x0e8, 4, regdump_cond_true},
+	{"PMUA_PWR_STATUS_REG",	0x0f0, 4, regdump_cond_true},
+	{"PMUA_GPU_2D_CLK_RES_CTRL",	0x0f4, 4, regdump_cond_true},
+	{"PMUA_CC2_AP",	0x100, 4, regdump_cond_true},
+	{"PMUA_DM_CC2_AP",	0x104, 4, regdump_cond_true},
+	{"PMUA_TRACE_CONFIG",	0x108, 4, regdump_cond_true},
+	{"PMUA_CA7MP_IDLE_CFG0",		0x120, 4, regdump_cond_true},
+	{"PMUA_CA7_CORE0_IDLE_CFG",		0x124, 4, regdump_cond_true},
+	{"PMUA_CA7_CORE1_IDLE_CFG",		0x128, 4, regdump_cond_true},
+	{"PMUA_CA7_CORE0_WAKEUP",		0x12c, 4, regdump_cond_true},
+	{"PMUA_CA7_CORE1_WAKEUP",		0x130, 4, regdump_cond_true},
+	{"PMUA_CA7_CORE2_WAKEUP",		0x134, 4, regdump_cond_true},
+	{"PMUA_CA7_CORE3_WAKEUP",		0x138, 4, regdump_cond_true},
+	{"PMUA_DVC_DEBUG",		0x140, 4, regdump_cond_true},
+	{"PMUA_CA7MP_IDLE_CFG2",		0x150, 4, regdump_cond_true},
+	{"PMUA_CA7MP_IDLE_CFG3",		0x154, 4, regdump_cond_true},
+	{"PMUA_CA7_CORE2_IDLE_CFG",		0x160, 4, regdump_cond_true},
+	{"PMUA_CA7_CORE3_IDLE_CFG",		0x164, 4, regdump_cond_true},
+	{"PMUA_CA7_PWR_MISC",		0x170, 4, regdump_cond_true},
+};
+
+static void __init pxa_init_pmua_regdump(void)
+{
+	pmua_regdump_ops.base = (unsigned long)(APMU_VIRT_BASE);
+	pmua_regdump_ops.phy_base = (unsigned long)(APMU_PHY_BASE);
+	pmua_regdump_ops.regions = pmua_dump_region;
+	pmua_regdump_ops.reg_nums = ARRAY_SIZE(pmua_dump_region);
+	register_regdump_ops(&pmua_regdump_ops);
+}
+
+static struct regdump_ops gic_regdump_ops = {
+	.dev_name = "PXA1088-gic",
+};
+
+static struct regdump_region gic_dump_region[] = {
+	{"GIC_GICD_CTLR",			0x000, 4, regdump_cond_true},
+	{"GIC_GICD_TYPER",			0x004, 4, regdump_cond_true},
+	{"GIC_GICD_IIDR",			0x008, 4, regdump_cond_true},
+	{"GIC_GICD_ISENABLER0",			0x100, 4, regdump_cond_true},
+	{"GIC_GICD_ISENABLER1",			0x104, 4, regdump_cond_true},
+	{"GIC_GICD_ISENABLER2",			0x108, 4, regdump_cond_true},
+	{"GIC_GICD_ISENABLER3",			0x10c, 4, regdump_cond_true},
+	{"GIC_GICD_ISENABLER4",			0x110, 4, regdump_cond_true},
+	{"GIC_GICD_ISENABLER5",			0x114, 4, regdump_cond_true},
+	{"GIC_GICD_ISENABLER6",			0x118, 4, regdump_cond_true},
+	{"GIC_GICD_ISENABLER7",			0x11c, 4, regdump_cond_true},
+	{"GIC_GICD_ISENABLER8",			0x120, 4, regdump_cond_true},
+	{"GIC_GICD_ISENABLER9",			0x124, 4, regdump_cond_true},
+	{"GIC_GICD_ISENABLER10",		0x128, 4, regdump_cond_true},
+	{"GIC_GICD_ISENABLER11",		0x12c, 4, regdump_cond_true},
+	{"GIC_GICD_ISENABLER12",		0x130, 4, regdump_cond_true},
+	{"GIC_GICD_ISENABLER13",		0x134, 4, regdump_cond_true},
+	{"GIC_GICD_ISENABLER14",		0x138, 4, regdump_cond_true},
+	{"GIC_GICD_ISENABLER15",		0x13c, 4, regdump_cond_true},
+	{"GIC_GICD_ISPENDR0",			0x200, 4, regdump_cond_true},
+	{"GIC_GICD_ISPENDR1",			0x204, 4, regdump_cond_true},
+	{"GIC_GICD_ISPENDR2",			0x208, 4, regdump_cond_true},
+	{"GIC_GICD_ISPENDR3",			0x20c, 4, regdump_cond_true},
+	{"GIC_GICD_ISPENDR4",			0x210, 4, regdump_cond_true},
+	{"GIC_GICD_ISPENDR5",			0x214, 4, regdump_cond_true},
+	{"GIC_GICD_ISPENDR6",			0x218, 4, regdump_cond_true},
+	{"GIC_GICD_ISPENDR7",			0x21c, 4, regdump_cond_true},
+	{"GIC_GICD_ISPENDR8",			0x220, 4, regdump_cond_true},
+	{"GIC_GICD_ISPENDR9",			0x224, 4, regdump_cond_true},
+	{"GIC_GICD_ISPENDR10",			0x228, 4, regdump_cond_true},
+	{"GIC_GICD_ISPENDR11",			0x22c, 4, regdump_cond_true},
+	{"GIC_GICD_ISPENDR12",			0x230, 4, regdump_cond_true},
+	{"GIC_GICD_ISPENDR13",			0x234, 4, regdump_cond_true},
+	{"GIC_GICD_ISPENDR14",			0x238, 4, regdump_cond_true},
+	{"GIC_GICD_ISPENDR15",			0x23c, 4, regdump_cond_true},
+	{"GIC_GICD_ISACTIVER0",			0x300, 4, regdump_cond_true},
+	{"GIC_GICD_ISACTIVER1",			0x304, 4, regdump_cond_true},
+	{"GIC_GICD_ISACTIVER2",			0x308, 4, regdump_cond_true},
+	{"GIC_GICD_ISACTIVER3",			0x30c, 4, regdump_cond_true},
+	{"GIC_GICD_ISACTIVER4",			0x310, 4, regdump_cond_true},
+	{"GIC_GICD_ISACTIVER5",			0x314, 4, regdump_cond_true},
+	{"GIC_GICD_ISACTIVER6",			0x318, 4, regdump_cond_true},
+	{"GIC_GICD_ISACTIVER7",			0x31c, 4, regdump_cond_true},
+	{"GIC_GICD_ISACTIVER8",			0x320, 4, regdump_cond_true},
+	{"GIC_GICD_ISACTIVER9",			0x324, 4, regdump_cond_true},
+	{"GIC_GICD_ISACTIVER10",		0x328, 4, regdump_cond_true},
+	{"GIC_GICD_ISACTIVER11",		0x32c, 4, regdump_cond_true},
+	{"GIC_GICD_ISACTIVER12",		0x330, 4, regdump_cond_true},
+	{"GIC_GICD_ISACTIVER13",		0x334, 4, regdump_cond_true},
+	{"GIC_GICD_ISACTIVER14",		0x338, 4, regdump_cond_true},
+	{"GIC_GICD_ISACTIVER15",		0x33c, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR0",			0xc00, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR1",			0xc04, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR2",			0xc08, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR3",			0xc0c, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR4",			0xc10, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR5",			0xc14, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR6",			0xc18, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR7",			0xc1c, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR8",			0xc20, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR9",			0xc24, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR10",			0xc28, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR11",			0xc2c, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR12",			0xc30, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR13",			0xc34, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR14",			0xc38, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR15",			0xc3c, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR16",			0xc40, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR17",			0xc44, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR18",			0xc48, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR19",			0xc4c, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR20",			0xc50, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR21",			0xc54, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR22",			0xc58, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR23",			0xc5c, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR24",			0xc60, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR25",			0xc64, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR26",			0xc68, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR27",			0xc6c, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR28",			0xc70, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR29",			0xc74, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR30",			0xc78, 4, regdump_cond_true},
+	{"GIC_GICD_ICFGR31",			0xc7c, 4, regdump_cond_true},
+};
+
+static void __init pxa_init_gic_regdump(void)
+{
+	gic_regdump_ops.base = (void __iomem *)GIC_DIST_VIRT_BASE;
+	gic_regdump_ops.phy_base = GIC_DIST_PHYS_BASE;
+	gic_regdump_ops.regions = gic_dump_region;
+	gic_regdump_ops.reg_nums = ARRAY_SIZE(gic_dump_region);
+	register_regdump_ops(&gic_regdump_ops);
+}
+
+#else
+static inline void  __init pxa_init_pmua_regdump(void) {}
+static inline void __init pxa_init_gic_regdump(void) {}
+#endif
 
 /*
  * gc, vpu, isp will access the same regsiter to pwr on/off,
@@ -123,6 +346,11 @@ static DEFINE_SPINLOCK(gc_vpu_isp_pwr_lock);
 
 /* used to protect GC power sequence */
 static DEFINE_SPINLOCK(gc_pwr_lock);
+
+/* used to protect ripc status */
+DEFINE_SPINLOCK(ripc_lock);
+EXPORT_SYMBOL(ripc_lock);
+static int ripc_status;
 
 /* GC power control */
 #define GC_USE_HW_PWRCTRL	1
@@ -160,10 +388,23 @@ static DEFINE_SPINLOCK(gc_pwr_lock);
 	__raw_writel(val, APMU_GC);	\
 }
 
+#define GC_2D_REG_WRITE(val)	{	\
+	_raw_writel(val, APMU_GC_2D);	\
+}
+
 void gc_pwr(int power_on)
 {
 	unsigned int val = __raw_readl(APMU_GC);
 	int timeout = 5000;
+#ifdef	CONFIG_CPU_PXA1088
+	unsigned int __attribute__ ((unused)) val_2d = __raw_readl(APMU_GC_2D);
+#endif
+
+	static struct clk *gc_clk = NULL;
+	if(!gc_clk)
+		gc_clk = clk_get(NULL, "GCCLK");
+	if(power_on)
+		clk_enable(gc_clk);
 
 	spin_lock(&gc_pwr_lock);
 
@@ -189,6 +430,7 @@ void gc_pwr(int power_on)
 			timeout -= 200;
 			if (timeout < 0) {
 				pr_err("%s: power on timeout\n", __func__);
+				clk_disable(gc_clk);
 				return;
 			}
 		}
@@ -197,6 +439,10 @@ void gc_pwr(int power_on)
 		val |= GC_CLK_EN;
 		GC_REG_WRITE(val);
 
+#ifdef	CONFIG_CPU_PXA1088
+		val_2d |= GC_CLK_EN;
+		GC_2D_REG_WRITE(val_2d);
+#endif
 		/* enable power_on1, wait at least 200us */
 		val |= GC_PWRON1;
 		GC_REG_WRITE(val);
@@ -209,12 +455,19 @@ void gc_pwr(int power_on)
 		/* fRst release */
 		val |= GC_FCLK_RST;
 		GC_REG_WRITE(val);
+#ifdef	CONFIG_CPU_PXA1088
+		val_2d |= GC_FCLK_RST;
+		GC_2D_REG_WRITE(val_2d);
+#endif
 		udelay(100);
 
 		/* aRst hRst release at least 48 cycles later than fRst */
 		val |= (GC_ACLK_RST | GC_HCLK_RST);
 		GC_REG_WRITE(val);
-
+#ifdef	CONFIG_CPU_PXA1088
+		val_2d |= (GC_ACLK_RST | GC_HCLK_RST);
+		GC_2D_REG_WRITE(val_2d);
+#endif
 		/* disable isolation */
 		val |= GC_ISOB;
 		GC_REG_WRITE(val);
@@ -253,11 +506,17 @@ void gc_pwr(int power_on)
 		/* fRst aRst hRst */
 		val &= ~(GC_CLK_RST | GC_CLK_EN);
 		GC_REG_WRITE(val);
+#ifdef	CONFIG_CPU_PXA1088
+		val_2d &= ~(GC_CLK_RST | GC_CLK_EN);
+		GC_2D_REG_WRITE(val_2d);
+#endif
 		udelay(100);
 
 #endif
 	}
 	spin_unlock(&gc_pwr_lock);
+	if(power_on)
+		clk_disable(gc_clk);
 }
 EXPORT_SYMBOL(gc_pwr);
 
@@ -334,12 +593,12 @@ static void pxa988_ram_console_init(void)
 	static struct persistent_ram_descriptor desc;
 	static char name[20] = "ram_console";
 
-	/* reserver 1M memory from DDR address 0x8100000 */
+	/* reserver 256K memory from DDR address 0x8100000 */
 	ram.start = 0x8100000;
-	ram.size = 0x100000;
+	ram.size = 0x40000;
 	ram.num_descs = 1;
 
-	desc.size = 0x100000;
+	desc.size = 0x40000;
 	desc.name = name;
 	ram.descs = &desc;
 
@@ -355,6 +614,8 @@ static struct ion_platform_data ion_data = {
 			.type	= ION_HEAP_TYPE_CARVEOUT,
 			.id	= ION_HEAP_TYPE_CARVEOUT,
 			.name	= "carveout_heap",
+			.size   = 0x01000000,
+			.base   = 0x09000000,
 		},
 		[1] = {
 			.type	= ION_HEAP_TYPE_SYSTEM,
@@ -372,35 +633,32 @@ struct platform_device device_ion = {
 	},
 };
 
-static void __init ion_mem_carveout(void)
+static int __init ion_mem_carveout(char *p)
 {
-	struct ion_platform_data *ip = &ion_data;
 	unsigned long size;
 	phys_addr_t start;
-	/* char *endp; */
-	int i;
+	char *endp;
 
-	/* size  = memparse(p, &endp);
+	size  = memparse(p, &endp);
+
+	if (size == 0) {
+		ion_data.heaps[0].size = 0;
+		ion_data.heaps[0].base = 0;
+		return 0;
+	}
+
 	if (*endp == '@')
 		start = memparse(endp + 1, NULL);
 	else
-		BUG_ON(1); */
+		BUG_ON(1);
 
-	size = SZ_128M;
-	start = 0x09000000;
-
-	pr_info("ION carveout memory: 0x%08lx@0x%08lx\n",
-		size, (unsigned long)start);
 	/* set the carveout heap range */
 	ion_data.heaps[0].size = size;
 	ion_data.heaps[0].base = start;
 
-	for (i = 0; i < ip->nr; i++)
-		BUG_ON(memblock_reserve(ip->heaps[i].base, ip->heaps[i].size));
-
-	return;
+	return 0;
 }
-/* early_param("ioncarv", ion_mem_carveout); */
+early_param("ioncarv", ion_mem_carveout);
 #endif
 
 /* CP memeory reservation, 32MB by default */
@@ -454,6 +712,16 @@ static void __init pxa988_reserve_pmmem(void)
 	BUG_ON(0 != memblock_remove(pm_area_addr, pm_area_size));
 }
 
+#ifdef CONFIG_ION
+static void __init pxa988_reserve_ion(void)
+{
+	BUG_ON(memblock_reserve(ion_data.heaps[0].base,
+		ion_data.heaps[0].size));
+
+	pr_info("ION carveout memory: 0x%08x@0x%08x\n",
+		(u32)ion_data.heaps[0].size, (u32)ion_data.heaps[0].base);
+}
+#endif
 void __init pxa988_reserve(void)
 {
 	/*
@@ -464,9 +732,7 @@ void __init pxa988_reserve(void)
 	pxa988_reserve_obmmem();
 
 	pxa988_reserve_cpmem();
-#ifdef CONFIG_ION
-	ion_mem_carveout();
-#endif
+
 #ifdef CONFIG_ANDROID_RAM_CONSOLE
 	pxa988_ram_console_init();
 #endif
@@ -474,6 +740,10 @@ void __init pxa988_reserve(void)
 	pxa_reserve_gpu_memblock();
 #endif
 	pxa988_reserve_pmmem();
+#ifdef CONFIG_ION
+	pxa988_reserve_ion();
+#endif
+
 	pxa988_reserve_fb_mem();
 }
 
@@ -486,25 +756,64 @@ void __init pxa988_init_irq(void)
 void pxa988_ripc_lock(void)
 {
 	int cnt = 0;
+	unsigned long flags;
+
+	spin_lock_irqsave(&ripc_lock, flags);
 
 	while (__raw_readl(RIPC3_STATUS)) {
+		/* give telephnoy chance to detect ripc status */
+
+		ripc_status = 0;
+		spin_unlock_irqrestore(&ripc_lock, flags);
+
 		cpu_relax();
 		udelay(50);
+
 		cnt++;
-		if (cnt >= 10000)
-			printk(KERN_WARNING "AP: ripc can not be locked!\n");
+		if (cnt >= 10000) {
+			pr_warn("AP: ripc cannot be locked!\n");
+			cnt = 0;
+		}
+
+		spin_lock_irqsave(&ripc_lock, flags);
 	}
+
+	/* we are sure to have held ripc */
+	ripc_status = 1;
+
+	spin_unlock_irqrestore(&ripc_lock, flags);
 }
 
 int pxa988_ripc_trylock(void)
 {
-	return !__raw_readl(RIPC3_STATUS);
+	int ret;
+	unsigned long flags;
+
+	spin_lock_irqsave(&ripc_lock, flags);
+	ret = !__raw_readl(RIPC3_STATUS);
+	ripc_status = ret;
+	spin_unlock_irqrestore(&ripc_lock, flags);
+
+	return ret;
 }
 
 void pxa988_ripc_unlock(void)
 {
+	unsigned long flags;
+	spin_lock_irqsave(&ripc_lock, flags);
+
 	__raw_writel(1, RIPC3_STATUS);
+	ripc_status = 0;
+
+	spin_unlock_irqrestore(&ripc_lock, flags);
 }
+
+/* the caller _MUST_ hold ripc_lock before calling it */
+int pxa988_ripc_status(void)
+{
+	return ripc_status;
+}
+EXPORT_SYMBOL(pxa988_ripc_status);
 
 #ifdef CONFIG_CACHE_L2X0
 
@@ -560,17 +869,59 @@ static void __init pxa988_twd_init(void)
 #define pxa988_twd_init(void)	do {} while (0)
 #endif
 
+#ifdef CONFIG_ARM_ARCH_TIMER
+static struct arch_timer pxa1088_arch_timer = {
+	.rate = 26000000,
+	.ppi = {
+		IRQ_GIC_PHYS_SECURE_PPI,
+		IRQ_GIC_PHYS_NONSECURE_PPI,
+		IRQ_GIC_VIRT_PPI,
+		IRQ_GIC_HYP_PPI
+	},
+	.use_virtual = false,
+	.base = GENERIC_COUNTER_VIRT_BASE
+};
+#endif /* #ifdef CONFIG_ARM_ARCH_TIMER */
+
 static void __init pxa988_timer_init(void)
 {
-	uint32_t clk_rst;
+#ifdef CONFIG_ARM_ARCH_TIMER
+	uint32_t tmp;
+#endif /* #ifdef CONFIG_ARM_ARCH_TIMER */
 
+#ifdef CONFIG_APB_LOCALTIMER
+	apb_timer_init();
+#else /* CONFIG_APB_LOCALTIMER */
 	/* Select the configurable timer clock source to be 3.25MHz */
 	__raw_writel(APBC_APBCLK | APBC_RST, APBC_PXA988_TIMERS);
-	clk_rst = APBC_APBCLK | APBC_FNCLK | APBC_FNCLKSEL(3);
-	__raw_writel(clk_rst, APBC_PXA988_TIMERS);
+	__raw_writel(APBC_APBCLK | APBC_FNCLK | APBC_FNCLKSEL(3),
+		     APBC_PXA988_TIMERS);
 
 	timer_init(IRQ_PXA988_AP_TIMER1);
 	pxa988_twd_init();
+#endif /* CONFIG_APB_LOCALTIMER */
+
+
+#ifdef CONFIG_ARM_ARCH_TIMER
+	tmp = readl(APBC_COUNTER_CLK_SEL);
+	/* Default is 26M/32768 = 0x319 */
+	if ((tmp >> 16) != 0x319) {
+		pr_warn("pxa988_timer_init: Generic Counter"
+			" step of Low Frequency is not right\n");
+		return;
+	}
+	/* bit0 = 1: Generic Counter Frequency control by hardware VCTCXO_EN
+	   VCTCXO_EN = 1, Generic Counter Frequency is 26Mhz;
+	   VCTCXO_EN = 0, Generic Counter Frequency is 32KHz */
+	writel(tmp | FREQ_HW_CTRL, APBC_COUNTER_CLK_SEL);
+
+	/* NOTE: can not read CNTCR before write, otherwise write will fail
+	   Halt on debug;
+	   start the counter */
+	writel(CNTCR_HDBG | CNTCR_EN, GENERIC_COUNTER_VIRT_BASE + CNTCR);
+
+	arch_timer_init(&pxa1088_arch_timer);
+#endif /* #ifdef CONFIG_ARM_ARCH_TIMER */
 }
 
 struct sys_timer pxa988_timer = {
@@ -643,26 +994,50 @@ static int usb_phy_init_internal(void __iomem *base)
 	/* enable usb device PHY */
 	writew(PLLVDD18(0x1) | REFDIV(0xd) | FBDIV(0xf0),
 		&phy->utmi_pll_reg0);
+#ifdef CONFIG_MACH_WILCOX_CMCC
+     if (get_board_id() <BOARD_ID_CMCC_REV05) 
+	writew(PU_PLL | PLL_LOCK_BYPASS | DLL_RESET_BLK |
+		ICP(0x1) | KVCO(0x3) | PLLCAL12(0x3),
+		&phy->utmi_pll_reg1);
+	else
 	writew(PU_PLL | PLL_LOCK_BYPASS | ICP(0x1) | KVCO(0x3) | PLLCAL12(0x3),
 		&phy->utmi_pll_reg1);
+#else
+    writew(PU_PLL | PLL_LOCK_BYPASS | ICP(0x1) | KVCO(0x3) | PLLCAL12(0x3),
+		&phy->utmi_pll_reg1);
+#endif
 	writew(IMPCAL_VTH(0x1) | EXT_HS_RCAL(0x8) | EXT_FS_RCAL(0x8),
 		&phy->utmi_tx_reg0);
 	writew(TXVDD15(0x1) | TXVDD12(0x3) | LOWVDD_EN |
-		AMP(0x4) | CK60_PHSEL(0x4),
+		AMP(0x5) | CK60_PHSEL(0x4),
 		&phy->utmi_tx_reg1);
 	writew(DRV_SLEWRATE(0x2) | IMP_CAL_DLY(0x2) |
 		FSDRV_EN(0xf) | HSDEV_EN(0xf),
 		&phy->utmi_tx_reg2);
-	/* SQ_THRESH(0xa), SQ_THRESH(0x8)  for SSG */
+#if defined(CONFIG_MACH_CS02) || defined(CONFIG_MACH_WILCOX) || defined(CONFIG_MACH_GOYA)
+	writew(PHASE_FREEZE_DLY | ACQ_LENGTH(0x2) | SQ_LENGTH(0x2) |
+		DISCON_THRESH(0x2) | SQ_THRESH(0xc) | INTPI(0x1),
+		&phy->utmi_rx_reg0);
+#elif defined(CONFIG_MACH_LT02)
 	writew(PHASE_FREEZE_DLY | ACQ_LENGTH(0x2) | SQ_LENGTH(0x2) |
 		DISCON_THRESH(0x2) | SQ_THRESH(0x8) | INTPI(0x1),
 		&phy->utmi_rx_reg0);
+#else
+	writew(PHASE_FREEZE_DLY | ACQ_LENGTH(0x2) | SQ_LENGTH(0x2) |
+		DISCON_THRESH(0x2) | SQ_THRESH(0xa) | INTPI(0x1),
+		&phy->utmi_rx_reg0);
+#endif
 	writew(EARLY_VOS_ON_EN | RXDATA_BLOCK_EN | EDGE_DET_EN |
 		RXDATA_BLOCK_LENGTH(0x2) | EDGE_DET_SEL(0x1) |
 		S2TO3_DLY_SEL(0x2),
 		&phy->utmi_rx_reg1);
+#ifdef CONFIG_MACH_LT02
 	writew(USQ_FILTER | SQ_BUFFER_EN | RXVDD18(0x1) | RXVDD12(0x1),
 		&phy->utmi_rx_reg2);
+#else
+	writew(USQ_FILTER | RXVDD18(0x1) | RXVDD12(0x1),
+		&phy->utmi_rx_reg2);
+#endif
 	writew(BG_VSEL(0x1) | TOPVDD18(0x1),
 		&phy->utmi_ana_reg0);
 	writew(PU_ANA | SEL_LPFR | V2I(0x6) | R_ROTATE_SEL,
@@ -792,13 +1167,15 @@ static void pxa988_set_xtc(void)
 		cpu_is_pxa986_z1() || \
 		cpu_is_pxa986_z2()) {
 		/* CORE L1 */
-		writel_relaxed(0xAAAAAAAA, CIU_CA9_CPU_CONF_SRAM_0);
+		writel_relaxed(0xAAAAAAAA, CIU_CPU_CONF_SRAM_0);
 		/* CORE L2 */
-		writel_relaxed(0x0000A666, CIU_CA9_CPU_CONF_SRAM_1);
+		writel_relaxed(0x0000A666, CIU_CPU_CONF_SRAM_1);
 		/* GC */
 		writel_relaxed(0x00045555, CIU_GPU_XTC_REG);
 		/* VPU */
 		writel_relaxed(0x00B06655, CIU_VPU_XTC_REG);
+	} else if (cpu_is_pxa1088()) {
+		writel_relaxed(0x00055555, CIU_GPU_XTC_REG);
 	} else {
 		/* On Z3, core L1/L2 wtc/rtc change on the fly */
 		/* GC */
@@ -813,7 +1190,14 @@ static int __init pxa988_init(void)
 
 	mfp_init_base(MFPR_VIRT_BASE);
 	mfp_init_addr(pxa988_addr_map);
+
+#ifdef CONFIG_TZ_HYPERVISOR
+/* if enable TrustZone, reserve ch30/ch31 for GEU. */
+	pxa_init_dma(IRQ_PXA988_DMA_INT0, 30);
+#else
 	pxa_init_dma(IRQ_PXA988_DMA_INT0, 32);
+#endif
+
 #ifdef CONFIG_ION
 	platform_device_register(&device_ion);
 #endif
@@ -827,6 +1211,11 @@ static int __init pxa988_init(void)
 	mmp_gpio_edge_init(GPIOE_VIRT_BASE, MFP_PIN_MAX, 128);
 
 	pxa988_set_xtc();
+
+	if (cpu_is_pxa1088()) {
+		pxa_init_pmua_regdump();
+		pxa_init_gic_regdump();
+	}
 	return 0;
 }
 
@@ -837,9 +1226,9 @@ PXA988_DEVICE(uart0, "pxa2xx-uart", 0, UART0, 0xd4036000, 0x30, 4, 5);
 PXA988_DEVICE(uart1, "pxa2xx-uart", 1, UART1, 0xd4017000, 0x30, 21, 22);
 PXA988_DEVICE(uart2, "pxa2xx-uart", 2, UART2, 0xd4018000, 0x30, 23, 24);
 PXA988_DEVICE(keypad, "pxa27x-keypad", -1, KEYPAD, 0xd4012000, 0x4c);
-PXA988_DEVICE(twsi0, "pxa910-i2c", 0, I2C0, 0xd4011000, 0x40);
-PXA988_DEVICE(twsi1, "pxa910-i2c", 1, I2C1, 0xd4010800, 0x40);
-PXA988_DEVICE(twsi2, "pxa910-i2c", 2, I2C2, 0xd4037000, 0x40);
+PXA988_DEVICE(twsi0, "pxa910-i2c", 0, I2C0, 0xd4011000, 0x60);
+PXA988_DEVICE(twsi1, "pxa910-i2c", 1, I2C1, 0xd4010800, 0x60);
+PXA988_DEVICE(twsi2, "pxa910-i2c", 2, I2C2, 0xd4037000, 0x60);
 PXA988_DEVICE(pwm1, "pxa910-pwm", 0, NONE, 0xd401a000, 0x10);
 PXA988_DEVICE(pwm2, "pxa910-pwm", 1, NONE, 0xd401a400, 0x10);
 PXA988_DEVICE(pwm3, "pxa910-pwm", 2, NONE, 0xd401a800, 0x10);
@@ -857,7 +1246,7 @@ PXA988_DEVICE(fb, "pxa168-fb", 0, LCD, 0xd420b000, 0x1fc);
 PXA988_DEVICE(fb_ovly, "pxa168fb_ovly", 0, LCD, 0xd420b000, 0x1fc);
 PXA988_DEVICE(fb_tv, "pxa168-fb", 1, LCD, 0xd420b000, 0x1fc);
 PXA988_DEVICE(fb_tv_ovly, "pxa168fb_ovly", 1, LCD, 0xd420b000, 0x1fc);
-PXA988_DEVICE(camera, "mmp-camera", 0, CI, 0xd420a000, 0xfff);
+PXA988_DEVICE(camera, "mmp-camera", 0, CI, 0xd420a000, 0x1000);
 PXA988_DEVICE(thermal, "thermal", -1, DRO_SENSOR, 0xd4013200, 0x34);
 
 static struct resource pxa988_resource_rtc[] = {
@@ -932,24 +1321,10 @@ static u64 pxa988_dxo_dma_mask = DMA_BIT_MASK(32);
 
 static struct resource pxa988_dxoisp_resources[] = {
 	[0] = {
-		.start = 0xD420F000,
-		.end   = 0xD420FFFF,
-		.flags = IORESOURCE_MEM,
-	},
-	[1] = {
-		.start = IRQ_PXA988_ISP_DMA,
-		.end   = IRQ_PXA988_ISP_DMA,
-		.flags = IORESOURCE_IRQ,
-	},
-	[2] = {
-		.start = IRQ_PXA988_DXO,
-		.end   = IRQ_PXA988_DXO,
-		.flags = IORESOURCE_IRQ,
-	},
-	[3] = {
-		.start = IRQ_PXA988_CI,
-		.end   = IRQ_PXA988_CI,
-		.flags = IORESOURCE_IRQ,
+		.name	= "isp-ipc",
+		.start	= IRQ_PXA988_DXO,
+		.end	= IRQ_PXA988_DXO,
+		.flags	= IORESOURCE_IRQ,
 	},
 };
 
@@ -964,12 +1339,87 @@ struct platform_device pxa988_device_dxoisp = {
 	.num_resources  = ARRAY_SIZE(pxa988_dxoisp_resources),
 };
 
+static struct resource pxa988_dxodma_resources[] = {
+	{
+		.start	= 0xD420F000,
+		.end	= 0xD4210000 - 1,
+		.flags	= IORESOURCE_MEM,
+	},
+	{
+		.start	= IRQ_PXA988_ISP_DMA,
+		.end	= IRQ_PXA988_ISP_DMA,
+		.flags	= IORESOURCE_IRQ,
+	},
+	{
+		.name	= "ISP-CLK",
+		.flags	= MAP_RES_CLK,
+	},
+};
+
+struct platform_device pxa988_device_dxodma = {
+	.name		= "dxo-dma",
+	.id             = 0,
+	.dev            = {
+		.dma_mask = &pxa988_dxo_dma_mask,
+		.coherent_dma_mask = DMA_BIT_MASK(32),
+	},
+	.resource       = pxa988_dxodma_resources,
+	.num_resources  = ARRAY_SIZE(pxa988_dxodma_resources),
+};
+
+static struct resource pxa988_ccic_resources[] = {
+#if 0
+	/* This is a W/R to avoid iomem conflict with smart sensor driver */
+	/* FIXME: after merge MC/SOC camera driver, should enable this mem_res*/
+	{
+		.start	= 0xD420A000,
+		.end	= 0xD420A100 - 1,
+		.flags	= IORESOURCE_MEM,
+	},
+#endif
+	{
+		.start	= IRQ_PXA988_CI,
+		.end	= IRQ_PXA988_CI,
+		.flags	= IORESOURCE_IRQ,
+	},
+	{
+		.name	= "CCICFUNCLK",
+		.flags	= MAP_RES_CLK,
+	},
+	{
+		.name	= "CCICPHYCLK",
+		.flags	= MAP_RES_CLK,
+	},
+};
+
+struct platform_device pxa988_device_ccic = {
+	.name           = "ccic",
+	.id             = 0,
+	.dev            = {
+		.dma_mask = &pxa988_dxo_dma_mask,
+		.coherent_dma_mask = DMA_BIT_MASK(32),
+	},
+	.resource       = pxa988_ccic_resources,
+	.num_resources  = ARRAY_SIZE(pxa988_ccic_resources),
+};
+
 void pxa988_register_dxoisp(struct mvisp_platform_data *data)
 {
 	int ret;
 
-	pxa988_device_dxoisp.dev.platform_data = data;
+	pxa988_device_dxodma.dev.platform_data = data;
+	ret = platform_device_register(&pxa988_device_dxodma);
+	if (ret)
+		dev_err(&(pxa988_device_dxodma.dev),
+				"unable to register dxodma device: %d\n", ret);
 
+	pxa988_device_ccic.dev.platform_data = data;
+	ret = platform_device_register(&pxa988_device_ccic);
+	if (ret)
+		dev_err(&(pxa988_device_ccic.dev),
+				"unable to register ccic device: %d\n", ret);
+
+	pxa988_device_dxoisp.dev.platform_data = data;
 	ret = platform_device_register(&pxa988_device_dxoisp);
 	if (ret)
 		dev_err(&(pxa988_device_dxoisp.dev),

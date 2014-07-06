@@ -621,14 +621,27 @@ audio_unbind(struct usb_configuration *c, struct usb_function *f)
 {
 	struct audio_dev *audio = func_to_audio(f);
 	struct usb_request *req;
+	struct snd_pcm_substream *substream = audio->substream;
+	struct snd_pcm_runtime *runtime;
 
 	while ((req = audio_req_get(audio)))
 		audio_request_free(req, audio->in_ep);
 
+	/*
+	 * need to wake up snd_pcm_lib_write1 func, otherwise
+	 * the func may still wait for data complete interrupt,
+	 * while no usb transmission any more.
+	 */
+	if (substream && substream->runtime){
+		runtime = substream->runtime;
+		trace_printk("wake up blocking write, substream 0x%x runtime 0x%x\n", substream, runtime);
+		wake_up(&runtime->tsleep);
+		wake_up(&runtime->sleep);
+	} else
+			trace_printk("can not wake up\n");
+
 	snd_card_free_when_closed(audio->card);
 	audio->card = NULL;
-	audio->pcm = NULL;
-	audio->substream = NULL;
 	audio->in_ep = NULL;
 }
 
@@ -670,6 +683,7 @@ static int audio_pcm_close(struct snd_pcm_substream *substream)
 	unsigned long flags;
 
 	spin_lock_irqsave(&audio->lock, flags);
+	audio->pcm = NULL;
 	audio->substream = NULL;
 	spin_unlock_irqrestore(&audio->lock, flags);
 

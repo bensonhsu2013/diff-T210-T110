@@ -371,7 +371,7 @@ __acquires(&port->port_lock)
 	int			status = 0;
 	bool			do_tty_wake = false;
 
-	if (NULL == port)
+	if ((NULL == port) || (NULL == port->port_usb))
 		return 0;
 
 	pool = &port->write_pool;
@@ -446,7 +446,7 @@ __acquires(&port->port_lock)
 	struct list_head	*pool;
 	struct usb_ep		*out;
 
-	if (NULL == port)
+	if ((NULL == port) || (NULL == port->port_usb))
 		return 0;
 
 	pool = &port->read_pool;
@@ -747,7 +747,7 @@ static int pxa910_gs_start_io(struct pxa910_gs_port *port)
  */
 static int pxa910_gs_open(struct tty_struct *tty, struct file *file)
 {
-	int port_num;
+	int port_num = 0;
 	struct pxa910_gs_port *port;
 	int status;
 	char *ttydiag = "ttydiag";

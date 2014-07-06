@@ -558,7 +558,13 @@ EXPORT_SYMBOL_GPL(regmap_write);
 int regmap_raw_write(struct regmap *map, unsigned int reg,
 		     const void *val, size_t val_len)
 {
-	int ret;
+	int ret, regnum;
+
+#if !defined(CONFIG_GOYA_WIFI)
+	for (regnum = 0xea; regnum <= 0xed; regnum++) {
+		WARN(reg == regnum, "---------0x%x be changed----------\n", regnum);
+	}
+#endif
 
 	mutex_lock(&map->lock);
 

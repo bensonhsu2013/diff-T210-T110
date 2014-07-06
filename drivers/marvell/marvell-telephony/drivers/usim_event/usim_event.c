@@ -59,6 +59,7 @@ struct usim_event_device {
 	struct device *dev;
 
 	int enable;
+	int state;
 
 	int mfp;
 	int gpio;
@@ -100,7 +101,10 @@ static void usim_event_work(struct work_struct *work)
 	    container_of(to_delayed_work(work), struct usim_event_device, work);
 	int state = !!gpio_get_value(uedev->gpio);
 
+	if (state != uedev->state) {
+		uedev->state = state;
 	report_usim_event(uedev, state);
+	}
 }
 
 static void usim_event_wakeup(int mfp, void *data)
@@ -175,8 +179,7 @@ static ssize_t usim_show_state(struct device *dev,
 	    (struct usim_event_device *)dev_get_drvdata(dev);
 
 	int len;
-	int state = !!gpio_get_value(uedev->gpio);
-	len = sprintf(buf, "%d\n", state);
+	len = sprintf(buf, "%d\n", uedev->state);
 	return len;
 }
 
@@ -249,19 +252,18 @@ static int init_device(struct usim_event_device *uedev, int idx)
 	snprintf(uedev->name, sizeof(uedev->name) - 1, "usim%d", idx);
 	spin_lock_init(&uedev->lock);
 
+	uedev->state = !!gpio_get_value(uedev->gpio);
 	uedev->desc.mfp = uedev->mfp;
 	uedev->desc.gpio = mfp_to_gpio(uedev->gpio);
 	uedev->desc.type = MFP_LPM_EDGE_BOTH;
 	uedev->desc.data = uedev;
 	uedev->desc.handler = usim_event_wakeup;
-	if(uedev->enable) {
 		ret = mmp_gpio_edge_add(&uedev->desc);
 		if (ret < 0) {
 			usim_event_debug(GE_DEBUG_ERROR, "%s: gpio edge add failed!\n",
 				__func__);
 			goto out;
 		}
-	}
 
 	ret = gpio_request(uedev->gpio, uedev->name);
 	if (ret < 0) {
@@ -274,20 +276,6 @@ static int init_device(struct usim_event_device *uedev, int idx)
 	gpio_direction_input(uedev->gpio);
 
 	uedev->irq = gpio_to_irq(uedev->gpio);
-
-	ret =
-	    request_irq(uedev->irq, usim_event_handler,
-			IRQF_DISABLED | IRQF_TRIGGER_RISING |
-			IRQF_NO_SUSPEND, uedev->name,
-			uedev);
-	if (ret < 0) {
-		usim_event_debug(GE_DEBUG_ERROR, "%s: request irq failed!\n",
-				 __func__);
-		goto free_gpio;
-	}
-
-	if(!uedev->enable)
-		disable_irq(uedev->irq);
 
 	INIT_DELAYED_WORK(&uedev->work, usim_event_work);
 	uedev->wq = create_workqueue(uedev->name);
@@ -315,6 +303,18 @@ static int init_device(struct usim_event_device *uedev, int idx)
 		goto destroy_device;
 	}
 
+	ret =
+	    request_irq(uedev->irq, usim_event_handler,
+			IRQF_TRIGGER_RISING |
+			IRQF_NO_SUSPEND, uedev->name,
+			uedev);
+	if (ret < 0) {
+		usim_event_debug(GE_DEBUG_ERROR, "%s: request irq failed!\n",
+				 __func__);
+		goto destroy_device;
+	}
+
+	uedev->enable = 1;
 	ret = 0;
 	goto out;
 
@@ -324,7 +324,6 @@ destroy_wq:
 	destroy_workqueue(uedev->wq);
 free_irq:
 	free_irq(uedev->irq, uedev);
-free_gpio:
 	gpio_free(uedev->gpio);
 del_gpio_edge:
 	if(uedev->enable)
@@ -348,24 +347,19 @@ static void deinit_device(struct usim_event_device *uedev, int idx)
 static int __init usim_event_init(void)
 {
 	int ret;
-	int i = 0;
 
 	usim_event_class = class_create(THIS_MODULE, "usim_event");
 	if (IS_ERR(usim_event_class))
 		return PTR_ERR(usim_event_class);
 
-	for (i = 0; i < ARRAY_SIZE(usim_event_devices); ++i) {
-		ret = init_device(&usim_event_devices[i], i);
+	ret = init_device(&usim_event_devices[0], 0);
 		if (ret < 0)
 			goto deinit;
-	}
 
 	return 0;
 
 deinit:
-	for (--i; i >= 0; --i) {
-		deinit_device(&usim_event_devices[i], i);
-	}
+	deinit_device(&usim_event_devices[0], 0);
 	class_destroy(usim_event_class);
 
 	return -1;
@@ -373,11 +367,7 @@ deinit:
 
 static void __exit usim_event_exit(void)
 {
-	int i;
-
-	for (i = 0; i < ARRAY_SIZE(usim_event_devices); ++i) {
-		deinit_device(&usim_event_devices[i], i);
-	}
+	deinit_device(&usim_event_devices[0], 0);
 	class_destroy(usim_event_class);
 }
 

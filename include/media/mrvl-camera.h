@@ -16,7 +16,27 @@ enum {
 	SENSOR_RES_LOW		= 0,
 };
 
+struct sensor_board_data {
+	/* Sensor connector install orientation */
+	int mount_pos;
 
+	/* Data bus H/W interface */
+	enum v4l2_mbus_type bus_type;
+	int bus_flag;		/* Mediabus defined flags */
+
+	/* Pointer to platform data structure */
+	void *plat;
+
+	/* Per sensor MIPI config */
+	int dphy[3];		/* DPHY: CSI2_DPHY3, CSI2_DPHY5, CSI2_DPHY6 */
+	int dphy3_algo;		/* Exist 2 algos for calculate CSI2_DPHY3 */
+	int mipi_enabled;	/* MIPI enabled flag */
+
+	/* Board specific function pointers, I.E. LED/flash/tuner/lens */
+	/* The handle to control "coupled" flash chip */
+	int (*v4l2_flash_if)(void *ctrl, bool op);
+	/* TODO: add more function handler to control "coupled" actuators */
+};
 
 /* MIPI related */
 /* Sensor MIPI behavior descriptor, sensor driver should pass it to controller
@@ -31,6 +51,20 @@ struct csi_dphy_desc {
 	u32 hs_zero;	/* in the unit of clock lane period(DDR period) */
 	u32 nr_lane;	/* When set to 0, S/W will try to figure out a value */
 };
+
+static inline int csi2phy_desc_to_mbus_cfg(struct csi_dphy_desc *dsc,
+					struct v4l2_mbus_config *cfg)
+{
+	if (dsc == NULL)
+		return -EINVAL;
+
+	if ((dsc->nr_lane < 1) || (dsc->nr_lane > 4))
+		return -ERANGE;
+
+	cfg->type = V4L2_MBUS_CSI2;
+	cfg->flags = (V4L2_MBUS_CSI2_2_LANE << (dsc->nr_lane - 1));
+	return 0;
+}
 
 struct csi_dphy_calc {
 	char name[16];
@@ -54,19 +88,27 @@ struct csi_dphy_reg {
 };
 
 /*
- *Add macro definiton for sensor power.
- *Plese note the POWER_OFF and POWER_ON
- *value is fixed since in soc_camera.c
- *the value is directly used.
+ * Add macro definiton for sensor power.
+ * Plese note the POWER_OFF and POWER_ON
+ * value is fixed since in soc_camera.c
+ * the value is directly used.
  */
-#define POWER_OFF		0
-#define POWER_ON		1
-#define POWER_SAVING		2
-#define POWER_RESTORE		3
+#define POWER_OFF	0
+#define POWER_ON	1
+#define POWER_SAVING	2
+#define POWER_RESTORE	3
+
+/*
+ * Add macro definiton for CCIC controller.
+ */
+#define MIPI_DISABLE	(0 << 1)
+#define MIPI_ENABLE	(1 << 1)
 
 /* V4L2 related */
-#define V4L2_CID_PRIVATE_FIRMWARE_DOWNLOAD	(V4L2_CID_PRIVATE_BASE + 0)
-#define V4L2_CID_PRIVATE_GET_MIPI_PHY		(V4L2_CID_PRIVATE_BASE + 1)
+#define V4L2_CID_PRIVATE_FIRMWARE_DOWNLOAD \
+					(V4L2_CID_CAMERA_CLASS_BASE + 0x1000)
+#define V4L2_CID_PRIVATE_GET_MIPI_PHY \
+					(V4L2_CID_CAMERA_CLASS_BASE + 0x1001)
 
 /* sleep function for sensor power sequence, only provide 1ms precision */
 /* According to Documentation/timers/timers-howto.txt, we should choose *sleep

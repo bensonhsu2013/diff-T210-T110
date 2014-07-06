@@ -21,6 +21,66 @@
 static LIST_HEAD(dvfs_rail_list);
 static DEFINE_MUTEX(dvfs_lock);
 
+static ATOMIC_NOTIFIER_HEAD(dvfs_freq_notifier_list);
+
+int dvfs_notifier_frequency(struct dvfs_freqs *freqs, unsigned int state)
+{
+	int ret;
+
+	switch (state) {
+	case DVFS_FREQ_PRECHANGE:
+		ret = atomic_notifier_call_chain(&dvfs_freq_notifier_list,
+						 DVFS_FREQ_PRECHANGE, freqs);
+		if (ret != NOTIFY_DONE)
+			pr_debug("Failure in device driver before "
+				 "switching frequency\n");
+		break;
+	case DVFS_FREQ_POSTCHANGE:
+		ret = atomic_notifier_call_chain(&dvfs_freq_notifier_list,
+						 DVFS_FREQ_POSTCHANGE, freqs);
+		if (ret != NOTIFY_DONE)
+			pr_debug("Failure in device driver after "
+				 "switching frequency\n");
+		break;
+	default:
+		ret = -EINVAL;
+	}
+	return ret;
+}
+EXPORT_SYMBOL(dvfs_notifier_frequency);
+
+int dvfs_register_notifier(struct notifier_block *nb, unsigned int list)
+{
+	int ret;
+
+	switch (list) {
+	case DVFS_FREQUENCY_NOTIFIER:
+		ret = atomic_notifier_chain_register
+		    (&dvfs_freq_notifier_list, nb);
+		break;
+	default:
+		ret = -EINVAL;
+	}
+	return ret;
+}
+EXPORT_SYMBOL(dvfs_register_notifier);
+
+int dvfs_unregister_notifier(struct notifier_block *nb, unsigned int list)
+{
+	int ret;
+
+	switch (list) {
+	case DVFS_FREQUENCY_NOTIFIER:
+		ret = atomic_notifier_chain_unregister
+		    (&dvfs_freq_notifier_list, nb);
+		break;
+	default:
+		ret = -EINVAL;
+	}
+	return ret;
+}
+EXPORT_SYMBOL(dvfs_unregister_notifier);
+
 void dvfs_add_relationships(struct dvfs_relationship *rels, int n)
 {
 	int i;

@@ -132,14 +132,17 @@ enum data_path_result psd_data_rx (unsigned char *data,
 		struct pduhdr			*hdr = (void *)p;
 		u32						iplen, offset_len;
 		u32						tailpad;
+		int						sim_id;
 
 
 		iplen = be16_to_cpu(hdr->length);
 		offset_len = hdr->offset;
 		tailpad = padding_size(sizeof *hdr + iplen + offset_len);
+		sim_id = (hdr->cid >> 31) & 1;
+		hdr->cid &= ~(1 << 31);
 
-		DP_PRINT("%s: remains, %d, iplen %ld, offset %ld, cid %d, tailpad %d\n",
-			__func__, remains, iplen, offset_len, hdr->cid, tailpad);
+		DP_PRINT("%s: SIM%d remains=%d iplen=%ld offset=%ld cid=%d tailpad=%d\n",
+			__func__, sim_id+1, remains, iplen, offset_len, hdr->cid, tailpad);
 
 		if (unlikely(remains < (iplen + offset_len + sizeof *hdr))) {
 			DP_ERROR("%s: packet length error\n", __func__);

@@ -351,6 +351,13 @@ config REGULATOR_WM831X
 	  Support the voltage and current regulators of the WM831x series
 	  of PMIC devices.
 
+config REGULATOR_D2199
+	tristate "Dialog Semiconductor D2199 PMIC regulators"
+	depends on MFD_D2199
+	help
+	  Support the voltage and current regulators of the Dialog D2199
+	  multifunction device.
+
 config REGULATOR_WM8350
 	tristate "Wolfson Microelectronics WM8350 AudioPlus PMIC"
 	depends on MFD_WM8350
@@ -381,6 +388,25 @@ config REGULATOR_FAN53555
 	  regulator that delivers a digitally programmable output from an
 	  input voltage supply of 2.5V to 5.5V. The output voltage is
 	  programmed through an I2C interface.
+
+config REGULATOR_88PG870
+	tristate "Marvell 88PG870 DC to DC Regulator"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  This driver controls a 88PG870 voltage output regulator via I2C bus.
+
+config REGULATOR_88PM822
+	bool "Marvell 88PM822 Power regulators"
+	depends on MFD_88PM822
+	help
+	  This driver supports 88PM822 voltage regulator chips.
+
+config REGULATOR_RT5033
+	depends on MFD_RT5033
+	tristate "RT5033 LDO and Buck"
+	help
+	  Say y here to support the regulators found on the Richtek RT5033 I/F PMIC.
 
 endif
 

@@ -176,7 +176,7 @@ int data_rx_ppp(char* packet, int len, unsigned char cid)
 	struct cidatatty_serial *cidatatty;
 	int remain = len;
 	int ret;
-
+	
 	int c = -1;
 
 	F_ENTER();
@@ -190,13 +190,13 @@ int data_rx_ppp(char* packet, int len, unsigned char cid)
 	{
 		tty = cidatatty_table[PSDTTYINDEX]->tty;
 	}
-
+	
 	if (!tty)
 	{
 		printk(KERN_ERR "data_rx_ppp: not found PSD tty.\n " );
 		return 0;
 	}
-
+	
 	cidatatty = tty->driver_data;
 	/* drop packets if nobody uses cidatatty */
 	if (cidatatty == NULL)
@@ -225,7 +225,7 @@ int data_rx_ppp(char* packet, int len, unsigned char cid)
 			c = len;
 		//PDEBUG( "data_rx_ppp: receive_buf=0x%x\n ",tty->ldisc.receive_buf )
 		tty->ldisc->ops->receive_buf(tty, packet, NULL, c);
-//for N_TTY type
+//for N_TTY type 
 //		if (tty->ldisc.ops->flush_buffer)
 //			tty->ldisc.ops->flush_buffer(tty);
 		wake_up_interruptible(&tty->read_wait);
@@ -241,7 +241,7 @@ int data_rx_ppp(char* packet, int len, unsigned char cid)
 
 	if(remain > 0 && c == 0)
 		printk(KERN_ERR "data_rx_ppp: give up because receive_room left\n");
-
+	
 	return ret;
 
 }
@@ -264,7 +264,7 @@ int data_rx_csd(char* packet, int len, unsigned char cid)
 	{
 		tty = cidatatty_table[CSDTTYINDEX]->tty;
 	}
-
+	
 	if (!tty)
 	{
 		printk(KERN_ERR "data_rx_csd: tty device is null. cid = %d\n", cid);
@@ -453,7 +453,7 @@ static int cidatatty_write(struct tty_struct * tty,     const unsigned char *buf
 	writeokflag = cidatatty_table[tty->index]->writeokflag;
 	tty_index = tty->index;
 	cid = cidatatty_table[tty->index]->cid;
-
+	
 	spin_unlock(&cidatatty->port_lock);
 
 #ifdef DEBUG_BUF_CONTENT
@@ -467,9 +467,9 @@ static int cidatatty_write(struct tty_struct * tty,     const unsigned char *buf
 
 	if (writeokflag == 1)
 	{
-		if (tty_index == PSDTTYINDEX)
+		if (tty_index == PSDTTYINDEX) {
 			sendData(cid, (char *)buffer, count);
-		else if (tty_index == CSDTTYINDEX) {
+		} else if (tty_index == CSDTTYINDEX) {
 			int sent = 0;
 			while (sent < count) {
 				int len = count - sent;
@@ -797,12 +797,12 @@ int enable_datapath(struct tty_struct *tty)
 	{
 		return 0;
 	}
-
+	
 	if (tty->index == PSDTTYINDEX)
 		registerRxCallBack(PDP_PPP, (DataRxCallbackFunc)data_rx_ppp);
 	else if(tty->index == CSDTTYINDEX)
 		registerRxCallBack(CSD_RAW, (DataRxCallbackFunc)data_rx_csd);
-
+	
 	return 0;
 }
 
@@ -853,7 +853,7 @@ static int cidatatty_ioctl(struct tty_struct *tty, struct file *file,
 		break;
 	}
 
-	F_LEAVE();
+	//F_LEAVE();
 
 }
 
@@ -1085,13 +1085,13 @@ int cctdatadev_ioctl(struct inode *inode, struct file *filp,
 	case TIOPPPOFF:
 	//	if (cidatatty_table[index])
 	//		cidatatty_table[index]->cid =  0xff;
-
+		
 		printk("cctdatadev_ioctl: TIOPPPOFF: index=%d\n", index);
 		if(index == CSDTTYINDEX)
 			currcid_cs = 0xff;
 		else if(index == PSDTTYINDEX)
 			currcid_ps = 0xff;
-
+		
 		break;
 	default:
 		printk(KERN_DEBUG "cctdatadev_ioctl cmd: %d.\n", cmd);

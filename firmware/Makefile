@@ -144,8 +144,17 @@ fw-shipped-$(CONFIG_TOUCHSCREEN_MMS136_TS) += melfas/arubaTD/BOOT.fw
 fw-shipped-$(CONFIG_TOUCHSCREEN_MMS136_TS) += melfas/arubaTD/CORE.fw
 fw-shipped-$(CONFIG_TOUCHSCREEN_MMS136_TS) += melfas/arubaTD/CONF.fw
 fw-shipped-$(CONFIG_TOUCHSCREEN_MMS136_TS) += melfas/arubaTD/ARUBA_G1M_CORE53_R20_V09.fw
-fw-shipped-$(CONFIG_TOUCHSCREEN_MMS136_TS) += melfas/arubaTD/ARUBA_G1F_CORE53_R34_V14.fw
+fw-shipped-$(CONFIG_TOUCHSCREEN_MMS136_TS) += melfas/arubaTD/ARUBA_G1F_CORE53_R35_V15.fw
 fw-shipped-$(CONFIG_TOUCHSCREEN_MMS136_TS) += melfas/arubaTD/ARUBA_G1F_CORE53_R30_V07.fw
+fw-shipped-$(CONFIG_TOUCHSCREEN_MMS136_TS) += melfas/delosTD/DELOS_G1F_R35_V25.fw
+fw-shipped-$(CONFIG_TOUCHSCREEN_MMS136_TS) += melfas/delosTD/CONF.fw
+fw-shipped-$(CONFIG_TOUCHSCREEN_MXT336S) += tsp_atmel/mxt336s_wilcox.fw
+fw-shipped-$(CONFIG_TOUCHSCREEN_MELFAS_MMS144) += tsp_melfas/baffinq/melfas.fw
+fw-shipped-$(CONFIG_TOUCHSCREEN_MELFAS_MMS144) += tsp_melfas/baffinq/BOOT.fw
+fw-shipped-$(CONFIG_TOUCHSCREEN_MELFAS_MMS144) += tsp_melfas/baffinq/CORE.fw
+fw-shipped-$(CONFIG_TOUCHSCREEN_MELFAS_MMS144) += tsp_melfas/baffinq/CONF.fw
+fw-shipped-$(CONFIG_KEYBOARD_TC360) += coreriver/tc360.fw
+fw-shipped-$(CONFIG_TOUCHSCREEN_MXT224S) += atmel/mxt224s.fw
 fw-shipped-all := $(fw-shipped-y) $(fw-shipped-m) $(fw-shipped-)
 
 # Directories which we _might_ need to create, so we have a rule for them.

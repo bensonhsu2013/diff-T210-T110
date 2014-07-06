@@ -62,6 +62,75 @@
 #define SD_FIFO_PARAM	0x104
 #define PAD_CLK_GATE_MASK	(0x3<<11)
 
+#define SD_RX_CFG_REG	0x114
+#define RX_SDCLK_DELAY_MASK	0x1FF
+#define RX_SDCLK_DELAY_SHIFT	8
+#define RX_SDCLK_SEL1_MASK		0x3
+#define RX_SDCLK_SEL1_SHIFT	2
+#define RX_SDCLK_SEL0_MASK		0x3
+#define RX_SDCLK_SEL0_SHIFT	0
+#define RX_SDCLK_SEL1_PAD	0
+#define RX_SDCLK_SEL1_DLL	1
+#define RX_SDCLK_SEL1_INTERNAL	2
+
+#define TX_CONFIG_REG	0x118
+#define TX_MUX_SEL	(0x1<<31)
+#define TX_SEL_BUS_CLK	(0x1<<30)
+#define TX_DELAY1_SHIFT	16
+#define TX_DELAY_MASK	0x1FF
+
+static void pxav3_set_tx_cfg(struct sdhci_host *host,
+		struct sdhci_pxa_platdata *pdata)
+{
+	u32 tmp_reg;
+	struct mmc_ios *ios = &host->mmc->ios;
+	struct sdhci_pxa_dtr_data *dtr_data;
+
+	tmp_reg = sdhci_readl(host, TX_CONFIG_REG);
+
+	if (pdata && pdata->flags & PXA_FLAG_TX_SEL_BUS_CLK) {
+		if ((ios->timing > MMC_TIMING_UHS_SDR25))
+			tmp_reg &= ~TX_SEL_BUS_CLK;
+		else
+			tmp_reg |= TX_SEL_BUS_CLK;
+	}
+
+	if (pdata && pdata->dtr_data) {
+		dtr_data = pdata->dtr_data;
+
+		/* set Tx delay */
+		while (MMC_TIMING_MAX != dtr_data->timing) {
+			if (dtr_data->timing == ios->timing) {
+				if (dtr_data->tx_delay) {
+					tmp_reg &= ~TX_DELAY_MASK;
+					tmp_reg |= TX_MUX_SEL;
+					if (MMC_TIMING_UHS_SDR104 ==
+							ios->timing)
+						tmp_reg |= (dtr_data->tx_delay &
+							TX_DELAY_MASK) <<
+							TX_DELAY1_SHIFT;
+					else
+						tmp_reg |= (dtr_data->tx_delay &
+								TX_DELAY_MASK);
+					break;
+				} else
+					tmp_reg &= ~TX_MUX_SEL;
+			}
+			dtr_data++;
+		};
+	}
+
+	sdhci_writel(host, tmp_reg, TX_CONFIG_REG);
+}
+
+static void pxav3_set_clock(struct sdhci_host *host, unsigned int clock)
+{
+	struct platform_device *pdev = to_platform_device(mmc_dev(host->mmc));
+	struct sdhci_pxa_platdata *pdata = pdev->dev.platform_data;
+
+	pxav3_set_tx_cfg(host, pdata);
+}
+
 static unsigned long pxav3_clk_prepare(struct sdhci_host *host,
 		unsigned long rate)
 {
@@ -112,15 +181,32 @@ static void pxav3_set_private_registers(struct sdhci_host *host, u8 mask)
 {
 	struct platform_device *pdev = to_platform_device(mmc_dev(host->mmc));
 	struct sdhci_pxa_platdata *pdata = pdev->dev.platform_data;
+	u16 tmp;
 
-	if (mask == SDHCI_RESET_ALL) {
-		/*
-		 * tune timing of read data/command when crc error happen
-		 * no performance impact
-		 */
-		if (pdata && 0 != pdata->clk_delay_cycles) {
-			u16 tmp;
+	if (mask != SDHCI_RESET_ALL) {
+		/* Return if not Reset All */
+		return;
+	}
 
+	/*
+	 * tune timing of read data/command when crc error happen
+	 * no performance impact
+	 */
+	if (pdata && pdata->clk_delay_cycles) {
+		if (pdata->flags & PXA_FLAG_NEW_RX_CFG_REG) {
+			/* From Pxa988, the RX_CFG Reg is changed to 0x114 */
+			tmp = readw(host->ioaddr + SD_RX_CFG_REG);
+
+			tmp &= ~(RX_SDCLK_DELAY_MASK<<RX_SDCLK_DELAY_SHIFT);
+			tmp |= (pdata->clk_delay_cycles & RX_SDCLK_DELAY_MASK)
+				<< RX_SDCLK_DELAY_SHIFT;
+
+			tmp &= ~(RX_SDCLK_SEL1_MASK<<RX_SDCLK_SEL1_SHIFT);
+			/* clock by SDCLK_SEL0, so it is default setting */
+			tmp |= RX_SDCLK_SEL1_PAD << RX_SDCLK_SEL1_SHIFT;
+
+			writew(tmp, host->ioaddr + SD_RX_CFG_REG);
+		} else {
 			tmp = readw(host->ioaddr + SD_CLOCK_BURST_SIZE_SETUP);
 			tmp |= (pdata->clk_delay_cycles & SDCLK_DELAY_MASK)
 				<< SDCLK_DELAY_SHIFT;
@@ -128,15 +214,16 @@ static void pxav3_set_private_registers(struct sdhci_host *host, u8 mask)
 			writew(tmp, host->ioaddr + SD_CLOCK_BURST_SIZE_SETUP);
 		}
 	}
+	pxav3_set_tx_cfg(host, pdata);
 }
 
-#define MAX_WAIT_COUNT 5
+#define MAX_WAIT_COUNT 74
 static void pxav3_gen_init_74_clocks(struct sdhci_host *host, u8 power_mode)
 {
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct sdhci_pxa *pxa = pltfm_host->priv;
 	u16 tmp;
-	int count;
+	int count = 0;
 
 	if (pxa->power_mode == MMC_POWER_UP
 			&& power_mode == MMC_POWER_ON) {
@@ -148,9 +235,11 @@ static void pxav3_gen_init_74_clocks(struct sdhci_host *host, u8 power_mode)
 				pxa->power_mode,
 				power_mode);
 
-		/* set we want notice of when 74 clocks are sent */
+		/* clear the interrupt bit if posted and
+		 * set we want notice of when 74 clocks are sent
+		 */
 		tmp = readw(host->ioaddr + SD_CE_ATA_2);
-		tmp |= SDCE_MISC_INT_EN;
+		tmp |= SDCE_MISC_INT | SDCE_MISC_INT_EN;
 		writew(tmp, host->ioaddr + SD_CE_ATA_2);
 
 		/* start sending the 74 clocks */
@@ -159,23 +248,16 @@ static void pxav3_gen_init_74_clocks(struct sdhci_host *host, u8 power_mode)
 		writew(tmp, host->ioaddr + SD_CFG_FIFO_PARAM);
 
 		/* slowest speed is about 100KHz or 10usec per clock */
-		udelay(740);
-		count = 0;
-
 		while (count++ < MAX_WAIT_COUNT) {
-			if ((readw(host->ioaddr + SD_CE_ATA_2)
-						& SDCE_MISC_INT) == 0)
+			if (readw(host->ioaddr + SD_CE_ATA_2)
+						& SDCE_MISC_INT) {
 				break;
+			}
 			udelay(10);
 		}
 
-		if (count == MAX_WAIT_COUNT)
+		if (count >= MAX_WAIT_COUNT)
 			dev_warn(mmc_dev(host->mmc), "74 clock interrupt not cleared\n");
-
-		/* clear the interrupt bit if posted */
-		tmp = readw(host->ioaddr + SD_CE_ATA_2);
-		tmp |= SDCE_MISC_INT;
-		writew(tmp, host->ioaddr + SD_CE_ATA_2);
 	}
 	pxa->power_mode = power_mode;
 }
@@ -259,24 +341,44 @@ static void pxav3_access_constrain(struct sdhci_host *host, unsigned int ac)
 
 static void pxav3_clk_gate_auto(struct sdhci_host *host, unsigned int ctrl)
 {
+	struct platform_device *pdev = to_platform_device(mmc_dev(host->mmc));
+	struct sdhci_pxa_platdata *pdata = pdev->dev.platform_data;
 	u16 tmp;
-
-	tmp = sdhci_readw(host, SD_FIFO_PARAM);
-	tmp &= ~PAD_CLK_GATE_MASK;
-	sdhci_writew(host, tmp, SD_FIFO_PARAM);
-
 	/*
-	 * FIXME: according to spec, bit SDHCI_CTRL_ASYNC_INT
-	 * should be used to deliver async interrupt requested by sdio device
-	 * rather than auto clock gate. But current host controller use this
-	 * bit to enable/disable auto clock gate.
+	 * FIXME: according to MMC Spec, bit SDHCI_CTRL_ASYNC_INT
+	 * should be used to deliver async interrupt requested by
+	 * sdio device rather than auto clock gate. But in some
+	 * platforms, such as PXA920/PXA988/PXA986/MMP2/MMP3, the
+	 * mmc host controller use this bit to enable/disable auto
+	 * clock gate, except PXA1088 platform. So in PXA1088 platform
+	 * use the FORCE_CLK_ON bit to always enable the bus clock.
+	 * In order to diff the PXA1088 and other platforms, use
+	 * SDHCI_QUIRK2_BUS_CLK_GATE_ENABLED for PXA1088.
 	 */
-	tmp = sdhci_readw(host, SDHCI_HOST_CONTROL2);
-	if (ctrl)
-		tmp |= SDHCI_CTRL_ASYNC_INT;
-	else
-		tmp &= ~SDHCI_CTRL_ASYNC_INT;
-	sdhci_writew(host, tmp, SDHCI_HOST_CONTROL2);
+	if (pdata) {
+		if (pdata->quirks2 & SDHCI_QUIRK2_BUS_CLK_GATE_ENABLED) {
+			tmp = sdhci_readw(host, SD_FIFO_PARAM);
+			if (ctrl)
+				tmp &= ~PAD_CLK_GATE_MASK;
+			else
+				tmp |= PAD_CLK_GATE_MASK;
+
+			sdhci_writew(host, tmp, SD_FIFO_PARAM);
+		} else {
+			tmp = sdhci_readw(host, SD_FIFO_PARAM);
+			tmp &= ~PAD_CLK_GATE_MASK;
+			sdhci_writew(host, tmp, SD_FIFO_PARAM);
+
+			tmp = sdhci_readw(host, SDHCI_HOST_CONTROL2);
+
+			if (ctrl)
+				tmp |= SDHCI_CTRL_ASYNC_INT;
+			else
+				tmp &= ~SDHCI_CTRL_ASYNC_INT;
+
+			sdhci_writew(host, tmp, SDHCI_HOST_CONTROL2);
+		}
+	}
 }
 
 static void pxav3_clr_wakeup_event(struct sdhci_host *host)
@@ -301,6 +403,7 @@ static struct sdhci_ops pxav3_sdhci_ops = {
 	.clk_gate_auto	= pxav3_clk_gate_auto,
 	.clk_prepare = pxav3_clk_prepare,
 	.clr_wakeup_event = pxav3_clr_wakeup_event,
+	.set_clock = pxav3_set_clock,
 };
 
 #ifdef CONFIG_OF
@@ -387,6 +490,7 @@ static int __devinit sdhci_pxav3_probe(struct platform_device *pdev)
 		| SDHCI_QUIRK_NO_ENDATTR_IN_NOPDESC
 		| SDHCI_QUIRK_32BIT_ADMA_SIZE
 		| SDHCI_QUIRK_CAP_CLOCK_BASE_BROKEN;
+
 	host->quirks2 = SDHCI_QUIRK2_NO_CURRENT_LIMIT
 		| SDHCI_QUIRK2_PRESET_VALUE_BROKEN
 		| SDHCI_QUIRK2_TIMEOUT_DIVIDE_4;
@@ -435,8 +539,9 @@ static int __devinit sdhci_pxav3_probe(struct platform_device *pdev)
 		} else if (pdata->cd_type == PXA_SDHCI_CD_PERMANENT) {
 			/* on-chip device */
 			host->mmc->caps |= MMC_CAP_NONREMOVABLE;
-		} else if (pdata->cd_type == PXA_SDHCI_CD_NONE)
+		} else if (pdata->cd_type == PXA_SDHCI_CD_NONE) {
 			host->mmc->caps |= MMC_CAP_NEEDS_POLL;
+		}
 	}
 	host->ops = &pxav3_sdhci_ops;
 
@@ -448,10 +553,6 @@ static int __devinit sdhci_pxav3_probe(struct platform_device *pdev)
 		pm_runtime_use_autosuspend(&pdev->dev);
 		pm_suspend_ignore_children(&pdev->dev, 1);
 	}
-
-#ifdef _MMC_SAFE_ACCESS_
-	mmc_is_available = 1;
-#endif
 
 	ret = sdhci_add_host(host);
 	if (ret) {
@@ -516,7 +617,7 @@ static int __devexit sdhci_pxav3_remove(struct platform_device *pdev)
 	clk_put(pltfm_host->clk);
 
 	if (pdata && pdata->cd_type == PXA_SDHCI_CD_GPIO &&
-			gpio_is_valid(pdata->ext_cd_gpio))
+		gpio_is_valid(pdata->ext_cd_gpio))
 		mmc_gpio_free_cd(host->mmc);
 
 	sdhci_pltfm_free(pdev);

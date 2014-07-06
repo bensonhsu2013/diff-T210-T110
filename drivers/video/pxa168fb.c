@@ -42,6 +42,15 @@
 #include "pxa168fb_common.h"
 #include <mach/regs-apmu.h>
 #include <linux/memblock.h>
+#if defined(CONFIG_BACKLIGHT_KTD253) || defined(CONFIG_BACKLIGHT_KTD3102)
+#include <linux/ktd_bl.h>
+extern int wakeup_brightness;
+#endif
+#if defined(CONFIG_MACH_CS05)
+#include <mach/Quicklogic_Vxbridge_interface.h>
+#elif defined(CONFIG_MACH_GOLDEN)
+#include "../../../../arch/arm/mach-mmp/onboard/lcd_s6e63m0_param.h"
+#endif
 #include <linux/workqueue.h>
 #include <linux/irq.h>
 #include <linux/gpio.h>
@@ -101,11 +110,12 @@ static struct timer_list vsync_timer;
 extern void sec_getlog_supply_fbinfo(struct fb_info *fb);
 #endif
 
-#if 0
+#ifdef CONFIG_MACH_GOYA
+static struct clk *vcxo_clk;
+#endif
 #if defined(CONFIG_MACH_WILCOX)
 #define LCD_ESD_RECOVERY
 #define LCD_ESD_INTERRUPT
-#endif
 #endif
 
 #if defined(LCD_ESD_RECOVERY)
@@ -1638,7 +1648,9 @@ static int __init get_boot_startaddr(char *str)
 
 	fb_address = memparse(str, &endp);
 	disp_start_addr = fb_address;
+#ifndef CONFIG_MACH_LT02
 	skip_power_on = 1;
+#endif
 	printk("get_boot_startaddr: fb_address = 0x%8x\n", fb_address);
 	return 1;
 }
@@ -1681,9 +1693,26 @@ static int pxa168fb_disable(struct pxa168fb_info *fbi)
 	if (mi->exter_brige_pwr)
 		mi->exter_brige_pwr(fbi,0);
 
+#if defined (CONFIG_MACH_CS02)
+	/* disable external panel power */
+	if (pxa168fb_power(fbi, mi, 0))
+		pr_err("%s %d pxa168fb_power control failed!\n",
+				__func__, __LINE__);
+#endif
+
 	if (mi->phy_type & (DSI | DSI2DPI))
 	{
+#if defined(CONFIG_MACH_WILCOX)	
+		dsi_set_panel_intf(fbi,0);
+
+
+		dsi_cclk_set(fbi, 0);
+		dsi_reset_dsi_module(fbi);
+	
+		dsi_dphy_force_ulps_mode(fbi);
+#else
 		dsi_reset(fbi, 1);
+#endif		
 	}
 
 	/* stop dma transaction */
@@ -1800,9 +1829,17 @@ static int pxa168fb_enable(struct pxa168fb_info *fbi)
 
 int pxa168fb_reinit(struct pxa168fb_info *fbi)
 {
+#if defined(CONFIG_BACKLIGHT_KTD253) || defined(CONFIG_BACKLIGHT_KTD3102)
+	backlight_set_brightness(0);
+#endif
 	pxa168fb_disable(fbi);
 	pxa168fb_enable(fbi);
 	set_dma_active(fbi);
+#if defined(CONFIG_BACKLIGHT_KTD253) || defined(CONFIG_BACKLIGHT_KTD3102)
+	backlight_set_brightness(wakeup_brightness);
+#elif defined(CONFIG_MACH_GOLDEN)
+	s6e63m0_gamma_set();
+#endif
 
 	return 0;
 }
@@ -1828,7 +1865,13 @@ static int _pxa168fb_suspend(struct pxa168fb_info *fbi)
 #endif
 #endif
 	fbi->output_on = false;
+#if defined(CONFIG_BACKLIGHT_KTD253) || defined(CONFIG_BACKLIGHT_KTD3102)
+	ktd_backlight_disable();
+	backlight_set_brightness(0);
+#endif
+#if !defined(CONFIG_MACH_GOLDEN)
 	pxa168fb_clear_framebuffer(info);
+#endif	
 	/* notify others */
 	fb_set_suspend(info, 1);
 
@@ -1846,6 +1889,10 @@ static int _pxa168fb_suspend(struct pxa168fb_info *fbi)
 				PM_QOS_CPUIDLE_BLOCK_DEFAULT_VALUE);
 	}
 
+#ifdef CONFIG_MACH_GOYA
+       clk_disable(vcxo_clk);
+#endif
+
 	mutex_unlock(&fbi->output_lock);
 	pr_info("pxa168fb.%d suspend -\n", fbi->id);
 	return 0;
@@ -1858,7 +1905,9 @@ static int _pxa168fb_resume(struct pxa168fb_info *fbi)
 	u32 x;
 
 	mutex_lock(&fbi->output_lock);
-
+#ifdef CONFIG_MACH_GOYA
+       clk_enable(vcxo_clk);
+#endif
 	pr_info("pxa168fb.%d resume +\n", fbi->id);
 	pxa168fb_enable(fbi);
 
@@ -1866,6 +1915,16 @@ static int _pxa168fb_resume(struct pxa168fb_info *fbi)
 	fb_set_suspend(info, 0);
 	msleep(80);
 
+#if defined(CONFIG_BACKLIGHT_KTD253) || defined(CONFIG_BACKLIGHT_KTD3102)
+	backlight_set_brightness(wakeup_brightness);
+	ktd_backlight_enable();
+#endif
+#if defined(CONFIG_MACH_CS05)
+	hx8369_backlight_updata();
+#elif defined(CONFIG_MACH_GOLDEN)
+//    if(!fbi->skip_pw_on)
+//    	s6e63m0_gamma_set();
+#endif
 	fbi->output_on = true;
 #ifdef LCD_ESD_RECOVERY
 	if (!fbi->skip_pw_on && esd_irq) {
@@ -2071,6 +2130,10 @@ static ssize_t itc_store(struct device *dev, struct device_attribute *attr,
 }
 static DEVICE_ATTR(itc, S_IRUGO | S_IWUSR, itc_show, itc_store);
 
+#if defined(CONFIG_MACH_GOLDEN)
+#define INIT_CHANGE
+#endif
+
 #if defined(LCD_ESD_RECOVERY)
 static void esd_dwork_func(struct work_struct *work)
 {
@@ -2212,12 +2275,28 @@ static int __devinit pxa168fb_probe(struct platform_device *pdev)
 			}
 		}
 	} else {
+#if defined(CONFIG_MACH_WILCOX) || defined(CONFIG_MACH_LT02)
+		clk = clk_get(NULL, "mmp_disp");
+		if (IS_ERR(clk)) {
+			dev_err(&pdev->dev, "unable to get mmp_disp");
+			return PTR_ERR(clk);
+		}
+#else
 		clk = clk_get(NULL, "LCDCLK");
 		if (IS_ERR(clk)) {
 			dev_err(&pdev->dev, "unable to get LCDCLK");
 			return PTR_ERR(clk);
 		}
+#endif
 	}
+
+#ifdef CONFIG_MACH_GOYA
+       vcxo_clk = clk_get(NULL, "VCXO_OUT");
+       if (IS_ERR(vcxo_clk)) {
+               dev_err(&pdev->dev, "unable to get VCXO_OUT\n");
+               return PTR_ERR(vcxo_clk);
+       }
+#endif
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (res == NULL) {
@@ -2351,8 +2430,13 @@ static int __devinit pxa168fb_probe(struct platform_device *pdev)
 				fbi->fb_start_dma = disp_start_addr;
 			}
 		} else {
+#if !defined(CONFIG_MACH_LT02)
+		fbi->fb_start = dma_alloc_writecombine(fbi->dev, max_fb_size,
+				&fbi->fb_start_dma, GFP_KERNEL);
+#else
 		fbi->fb_start = pxa168fb_alloc_framebuffer(fbi->fb_size,
 				&fbi->fb_start_dma);
+#endif
 		if (fbi->fb_start == NULL) {
 			dev_err(&pdev->dev, "no enough memory!\n");
 			ret = -ENOMEM;
@@ -2462,7 +2546,7 @@ static int __devinit pxa168fb_probe(struct platform_device *pdev)
 	/* disable GFX interrupt enable err interrupt */
 	irq_mask = path_imasks(fbi->id) | err_imask(fbi->id);
 	irq_enable_value = err_imask(fbi->id);
-	if (!cpu_is_pxa988() && !cpu_is_pxa986())
+	if (!cpu_is_pxa988() && !cpu_is_pxa986() && !cpu_is_pxa1088())
 		irq_enable_value |= display_done_imask(fbi->id);
 	irq_mask_set(fbi->id, irq_mask, irq_enable_value);
 	fbi->wait_vsync = 1;
@@ -2610,7 +2694,9 @@ failed_put_clk:
 		clk_put(path_clk);
 	if (phy_clk)
 		clk_put(phy_clk);
-
+#ifdef CONFIG_MACH_GOYA
+       clk_put(vcxo_clk);
+#endif
 	dev_err(&pdev->dev, "frame buffer device init failed with %d\n", ret);
 	return ret;
 }
@@ -2671,6 +2757,10 @@ static int __devexit pxa168fb_remove(struct platform_device *pdev)
 		clk_put(fbi->path_clk);
 	if (fbi->phy_clk)
 		clk_put(fbi->phy_clk);
+
+#ifdef CONFIG_MACH_GOYA
+       clk_put(vcxo_clk);
+#endif
 
 	framebuffer_release(info);
 

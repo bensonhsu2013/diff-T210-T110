@@ -215,7 +215,7 @@ ifneq ($(filter goldenve3gxx goldenve3gub, $(TARGET_PRODUCT)),)
 	EXTRA_CFLAGS += -DREDUCE_INIT_SCAN_TIME
 endif
 
-ifneq ($(filter goya3gxx goyawifixx goyawifiue goya3gub, $(TARGET_PRODUCT)),)
+ifneq ($(filter goya3gxx goyawifixx goyawifixxx goyawifiue goya3gub, $(TARGET_PRODUCT)),)
 	EXTRA_CFLAGS += -DREDUCE_INIT_SCAN_TIME
 endif
 

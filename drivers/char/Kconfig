@@ -618,6 +618,17 @@ config VIBRATOR_88PM80X
         help
           Say Y here if you want to enable 88pm860x or 88pm80x vibrator driver
 
+config VIBRATOR_88PM822
+        tristate "88pm822 based vibrator"
+        depends on MFD_88PM822
+        depends on ANDROID_TIMED_OUTPUT
+        default y
+        help
+          Say Y here if you want to enable 88pm860x or 88pm822 vibrator driver
+	   it depends on ANDROID_TIMED_OUTPUT,
+	   so if you want to use vibrator driver
+	   you have to enbale ANDROID_TIMED_OUTPUT config.
+
 config VIBRATOR_ANDROID
         tristate "vibrator"
 	depends on ANDROID_TIMED_OUTPUT
@@ -635,11 +646,11 @@ config MSM_SMD_PKT
 
 config PXA9XX_ACIPC
 	tristate "PXA9xx AC-IPC Driver"
-	depends on CPU_PXA910 || CPU_PXA988 || PXA93x || PXA95x
+	depends on CPU_PXA910 || CPU_PXA988 || CPU_PXA1088 || PXA93x || PXA95x
 	help
 	  Please say Y here if want to support Application to
 	  Communication Intel-Processor Communication on PXA910,
-	  PXA93x,PXA95x, PXA978, PXA988 chip
+	  PXA93x,PXA95x, PXA978, PXA988 and PXA1088 chip
 
 config USB_88PM80X
 	tristate "Marvell USB 88PM80x PMIC support"
@@ -650,6 +661,16 @@ config USB_88PM80X
 
 	  To compile this driver as a module, choose M here: the module will
 	  be called 88pm80x_usb.
+
+config USB_88PM822
+	tristate "Marvell USB 88PM822 PMIC support"
+	depends on MFD_88PM822
+	help
+	  Say Y here if you have a 88PM822 PMIC to detect USB Vbus/IDpin event.
+	  If unsure, say N.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called 88pm822_usb.
 
 config TILE_SROM
 	bool "Character-device access via hypervisor to the Tilera SPI ROM"

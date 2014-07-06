@@ -19,6 +19,14 @@
 #ifndef __SEC_CHARGER_H
 #define __SEC_CHARGER_H __FILE__
 
+#if defined(CONFIG_CHARGER_MFD)
+#define charger_variable charger
+#define charger_variable_t struct sec_charger_info
+#else
+#define charger_variable (charger->client)
+#define charger_variable_t struct i2c_client
+#endif
+
 #include <linux/battery/sec_charging_common.h>
 
 #if defined(CONFIG_CHARGER_DUMMY) || \
@@ -26,6 +34,8 @@
 #include <linux/battery/charger/dummy_charger.h>
 #elif defined(CONFIG_CHARGER_MAX8903)
 #include <linux/battery/charger/max8903_charger.h>
+#elif defined(CONFIG_CHARGER_SMB327)
+#include <linux/battery/charger/smb327_charger.h>
 #elif defined(CONFIG_CHARGER_SMB328)
 #include <linux/battery/charger/smb328_charger.h>
 #elif defined(CONFIG_CHARGER_SMB347)
@@ -43,6 +53,12 @@
 #include <linux/battery/charger/max77803_charger.h>
 #elif defined(CONFIG_CHARGER_NCP1851)
 #include <linux/battery/charger/ncp1851_charger.h>
+#elif defined(CONFIG_CHARGER_RT5033)
+#include <linux/battery/charger/rt5033_charger.h>
+#elif defined(CONFIG_STBC_SAMSUNG)
+#include <linux/battery/charger/stbcfg01_charger.h>
+#elif defined(CONFIG_CHARGER_RT9455)
+#include <linux/battery/charger/rt9455_charger.h>
 #endif
 
 struct sec_charger_info {
@@ -51,30 +67,54 @@ struct sec_charger_info {
 	struct power_supply		psy_chg;
 	struct delayed_work isr_work;
 
+	struct workqueue_struct *wq;
+	struct delayed_work delayed_work;
+
 	int cable_type;
 	int status;
 	bool is_charging;
 
+	/* HW-dedicated charger info structure
+	 * used in individual charger file only
+	 * (ex. dummy_charger.c)
+	 */
+#if defined(CONFIG_BATTERY_SAMSUNG) && defined(CONFIG_CHARGER_BQ24157)
+		struct sec_chg_info info;
+#endif
+
 	/* charging current : + charging, - OTG */
 	int charging_current;
-	int input_current;
+	unsigned charging_current_max;
 
 	/* register programming */
 	int reg_addr;
 	int reg_data;
 	int irq_base;
-};
 
+};
+#if defined(CONFIG_STBC_SAMSUNG)
+bool sec_hal_chg_init(charger_variable_t *);
+bool sec_hal_chg_suspend(charger_variable_t *);
+bool sec_hal_chg_resume(charger_variable_t *);
+bool sec_hal_chg_shutdown(charger_variable_t *);
+bool sec_hal_chg_get_property(charger_variable_t *,
+				enum power_supply_property,
+				union power_supply_propval *);
+bool sec_hal_chg_set_property(charger_variable_t *,
+				enum power_supply_property,
+				const union power_supply_propval *);
+#else
 bool sec_hal_chg_init(struct i2c_client *);
 bool sec_hal_chg_suspend(struct i2c_client *);
 bool sec_hal_chg_resume(struct i2c_client *);
+bool sec_hal_chg_shutdown(struct i2c_client *);
 bool sec_hal_chg_get_property(struct i2c_client *,
 				enum power_supply_property,
 				union power_supply_propval *);
 bool sec_hal_chg_set_property(struct i2c_client *,
 				enum power_supply_property,
 				const union power_supply_propval *);
-
+#endif
 ssize_t sec_hal_chg_show_attrs(struct device *dev,
 				const ptrdiff_t offset, char *buf);
 

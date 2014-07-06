@@ -18,7 +18,7 @@
 #include <linux/slab.h>
 
 #include "internal.h"
-#if defined(CONFIG_MFD_88PM800) || defined(CONFIG_MFD_88PM805)
+#ifdef CONFIG_MFD_88PM805
 #include <linux/delay.h>
 #endif
 
@@ -71,7 +71,8 @@ static void regmap_irq_sync_unlock(struct irq_data *data)
 			dev_err(d->map->dev, "Failed to sync masks in %x\n",
 				d->chip->mask_base + i);
 	/* need to wait between 32K register for 88PM805 */
-#if defined(CONFIG_MFD_88PM800) || defined(CONFIG_MFD_88PM805)
+#ifdef CONFIG_MFD_88PM805
+		if (!strcmp("88pm805", d->chip->name))
 		msleep(1);
 #endif
 	}
@@ -251,8 +252,9 @@ int regmap_add_irq_chip(struct regmap *map, int irq, int irq_flags,
 			goto err_alloc;
 		}
 /* need to wait between 32K register for 88PM805 */
-#if defined(CONFIG_MFD_88PM800) || defined(CONFIG_MFD_88PM805)
-		msleep(1);
+#ifdef CONFIG_MFD_88PM805
+		if (!strcmp("88pm805", chip->name))
+			msleep(1);
 #endif
 	}
 

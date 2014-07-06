@@ -2290,16 +2290,6 @@ static long __video_do_ioctl(struct file *file,
 		dbgarg(cmd, "index=%d", b->index);
 		break;
 	}
-	case VIDIOC_MODE_TRANSFER://Vincent Wan add it.
-	{
-		struct v4l2_mode_transfer *b = arg;
-
-		if (!ops->vidioc_mode_transfer)
-			break;
-		printk("------------v4l2_ioctl-----------vidioc_mode_transfer--- b.type = %d-----\n", b->type);
-		ret = ops->vidioc_mode_transfer(file, fh, b);
-		break;
-	}
 	default:
 		if (!ops->vidioc_default)
 			break;

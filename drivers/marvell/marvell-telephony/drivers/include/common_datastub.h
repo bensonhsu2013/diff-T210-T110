@@ -81,7 +81,8 @@ typedef enum
 	PDP_PPP = 0,
 	PDP_DIRECTIP = 1,
 	PDP_PPP_MODEM = 2,
-	CSD_RAW = 3
+	CSD_RAW = 3,
+	CSD_MODEM = 4
 }SVCTYPE;
 
 typedef enum ATCI_CONNECTION_TYPE {

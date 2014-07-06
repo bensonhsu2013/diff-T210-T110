@@ -2,18 +2,13 @@
 #define OV5640_H_
 
 #include <linux/types.h>
-#include <media/v4l2-chip-ident.h>
 #include <media/v4l2-common.h>
 #include <media/soc_camera.h>
 #include <mach/camera.h>
-
 #include "ecs-subdev.h"
 
 #define OV5640_RESET_ADDR		0x3008
 #define OV5640_RESET_VAL		0x80
-#define OV5640_END_ADDR		0xFFFF
-#define OV5640_END_VAL			0xFF
-#define END_SYMBOL		{OV5640_END_ADDR, OV5640_END_VAL}
 
 enum {
 	ISP_INPUT_X_SZ_H	= 0x3804,
@@ -42,36 +37,16 @@ enum {
 	AEC_AVG_BOTTOM_L,
 };
 
-enum _ov5640_profile {
-	GENERIC = 0,
-	PXA97X_DKB,
-	PXA92X_DKB,
-	PXA98X_DKB,
-	PROFILE_END,
-};
-
-struct regval_list {
-	u16 reg_num;
-	unsigned char value;
-};
-
 typedef struct {
 	u16 reg_base;
 	unsigned char value[256];
 	int len;
 } OV5640_FIRMWARE_ARRAY;
 
-
-struct ov5640 {
-	struct x_subdev xsd;
-	char name[32];
-	enum _ov5640_profile profile;
-	int frame_rate;
-};
-
-int ov5640_read(struct i2c_client *c, u16 reg, unsigned char *value);
-int ov5640_write(struct i2c_client *c, u16 reg, unsigned char value);
+char *ov5640_get_profile(const struct i2c_client *client);
 int ov5640_firmware_download(void *hw_ctx, const void *table, int size);
+static int ov5640_g_frame_interval(struct v4l2_subdev *sd, \
+				struct v4l2_subdev_frame_interval *inter);
 
 /********************************Register lists********************************/
 
@@ -1584,10 +1559,8 @@ static struct mipi_phy ov5640_mipi_2l_info_table[] = {
 		.lane = 2,
 	},
 };
-#endif
-
-#if 0
-static struct csi_dphy_desc ov5640_mipi_2l_info_table[] = {
+#else
+static struct csi_dphy_desc ov5640_mipi_24m_info_table[] = {
 	[OV5640_MIPI_2L_LD] = { /* Controller config for low defination YUV */
 		.clk_mul	= 32,
 		.clk_div	= 4,
@@ -1610,6 +1583,13 @@ static struct csi_dphy_desc ov5640_mipi_2l_info_table[] = {
 		.nr_lane	= 2,
 	},
 	[OV5640_MIPI_2L_1080P] = { /* For 1080p */
+		.clk_mul	= 32,
+		.clk_div	= 4,
+		.hs_prepare	= 27,	/* time count in clock period */
+		.hs_zero	= 53,	/* time count in clock period */
+		.nr_lane	= 2,
+	},
+	[OV5640_MIPI_2L_5M] = { /* For 5M */
 		.clk_mul	= 32,
 		.clk_div	= 4,
 		.hs_prepare	= 27,	/* time count in clock period */
@@ -1692,7 +1672,7 @@ static struct ecs_setting ov5640_mipi_2l_stn_table[OV5640_MIPI_2L_END] = {
 #else
 
 #define OV5640_DECLARE_MIPI_24M_SETTING(VAL, val) \
-	__DECLARE_SETTING(OV5640, ov5640, MIPI_2L, mipi_24m, VAL, val)
+	__DECLARE_SETTING_VS_INFO(OV5640, ov5640, MIPI_2L, mipi_24m, VAL, val)
 static struct ecs_setting ov5640_mipi_2l_stn_table[OV5640_MIPI_2L_END] = {
 	OV5640_DECLARE_MIPI_24M_SETTING(LD, ld),
 	OV5640_DECLARE_MIPI_24M_SETTING(JPG, jpg),
@@ -1917,7 +1897,7 @@ static struct x_i2c ov5640_xic = {
 
 /* This struct is acually the code to instantize ECS to ov5640 driver */
 static struct ecs_sensor generic_ov5640 = {
-	.name		= "generic-ov5640",
+	.name		= "ov5640",
 	.speculate	= 1,
 	.prop_tab	= ov5640_property_table,
 	.prop_num	= OV5640_PROP_END,
@@ -1926,6 +1906,87 @@ static struct ecs_sensor generic_ov5640 = {
 	.state_now	= UNSET,
 	.hw_ctx		= &ov5640_xic,
 };
+
+/* x_subdev related */
+/* The supported format*resolutions mapping table */
+static struct v4l2_mbus_framefmt ov5640_fmt_map[OV5640_ST_END];
+static int ov5640_enum_map[OV5640_FMT_END * 2];
+
+struct v4l2_ctrl_config ov5640_fw_cfg = {
+	.id	= V4L2_CID_PRIVATE_FIRMWARE_DOWNLOAD,
+	.name	= "sensor firmware download",
+	.min	= 0,
+	.max	= OV5640_FW_END,
+	.step	= 1,
+	.def	= OV5640_FW_SUNNY,
+	.type	= V4L2_CTRL_TYPE_INTEGER,
+};
+struct v4l2_ctrl_config ov5640_phy_cfg = {
+	.id	= V4L2_CID_PRIVATE_GET_MIPI_PHY,
+	.name	= "get CSI2PHY setting",
+	.min	= 0,
+	.max	= OV5640_IF_END,
+	.step	= 1,
+	.type	= V4L2_CTRL_TYPE_INTEGER,
+	.is_private	= 1,	/* only keep it inside driver*/
+};
+static struct xsd_cid ov5640_cid_list[] = {
+	{
+		.cfg	= &ov5640_fw_cfg,
+		.prop	= {
+			.prop_id	= OV5640_PROP_FW,
+			.prop_val	= OV5640_FW_SUNNY,
+		},
+	},
+	{
+		.cfg	= &ov5640_phy_cfg,
+		.prop = {
+			.prop_id	= OV5640_PROP_IF,
+		},
+	},
+	/* TODO: add item according to the CID type
+	{	// for standard CID, just assign
+		.cid	= V4L2_CID_XXXX_XXXX,
+		.prop	= {
+			.prop_id	= OV5640_PROP_XXXX,
+			.prop_val	= OV5640_CID_DEFAULT_VALUE,
+		},
+	}, {	// for private CID, struct v4l2_ctrl_config must be set:
+		.cfg	= &ov5640_xxx_cfg,
+		.prop	= {
+			.prop_id	= OV5640_PROP_XXXX,
+		},
+	}*/
+};
+
+struct v4l2_subdev_video_ops ov564x_video_ops = {
+	.g_frame_interval	= ov5640_g_frame_interval,
+};
+
+struct v4l2_subdev_ops ov564x_ops = {
+	.video	= &ov564x_video_ops,
+};
+
+static struct x_subdev ov5640_xsd = {
+	.ecs		= &generic_ov5640,
+	.ops		= &ov564x_ops,	/* Contain specialized functions only */
+	.cid_list	= ov5640_cid_list,
+	.cid_cnt	= ARRAY_SIZE(ov5640_cid_list),
+	.state_map	= ov5640_fmt_map,
+	.enum_map	= ov5640_enum_map,
+	.init_id	= OV5640_PROP_INIT,
+	.fmt_id		= OV5640_PROP_FMT,
+	.res_id		= OV5640_PROP_RES,
+	.str_id		= OV5640_PROP_STM,
+	.ifc_id		= OV5640_PROP_IF,
+	.get_profile	= &ov5640_get_profile,
+	.get_fmt_code	= &xsd_default_get_fmt_code,
+	.get_res_desc	= &xsd_default_get_res_desc,
+	.get_mbus_cfg	= (int (*)(void *, struct v4l2_mbus_config *))\
+				&csi2phy_desc_to_mbus_cfg,
+};
+
+/********************** platform specific configuration **********************/
 
 static struct ecs_property nevo_spec_prop[] = {
 	{
@@ -1958,41 +2019,6 @@ static struct ecs_sensor pxa98x_spec = {
 	.prop_tab	= pxa98x_spec_prop,
 	.prop_num	= ARRAY_SIZE(pxa98x_spec_prop),
 };
-
-/* x_subdev related */
-/* The supported format*resolutions mapping table */
-static struct v4l2_mbus_framefmt ov5640_fmt_map[OV5640_ST_END];
-static int ov5640_enum_map[OV5640_FMT_END * 2];
-static struct xsd_cid ov5640_cid_list[] = {
-	{
-		.cid = V4L2_CID_PRIVATE_FIRMWARE_DOWNLOAD,
-		.prop = {
-			.prop_id	= OV5640_PROP_FW,
-			.prop_val	= OV5640_FW_SUNNY,
-		},
-	},
-	{
-		.cid = V4L2_CID_PRIVATE_GET_MIPI_PHY,
-		.prop = {
-			.prop_id	= OV5640_PROP_IF,
-		},
-	},
-};
-static struct x_subdev ov5640_xsd = {
-	.ecs		= &generic_ov5640,
-	.cid_list	= ov5640_cid_list,
-	.cid_cnt	= ARRAY_SIZE(ov5640_cid_list),
-	.state_map	= ov5640_fmt_map,
-	.enum_map	= ov5640_enum_map,
-	.init_id	= OV5640_PROP_INIT,
-	.fmt_id		= OV5640_PROP_FMT,
-	.res_id		= OV5640_PROP_RES,
-	.str_id		= OV5640_PROP_STM,
-	.get_fmt_code	= &ecs_subdev_default_get_fmt_code,
-	.get_res_desc	= &ecs_subdev_default_get_res_desc,
-};
-
-
 
 static __attribute__((unused)) int nevo_state_list[] = {
 	OV5640_ST_UYVY_QCIF,
@@ -2030,6 +2056,33 @@ static __attribute__((unused)) int pxa98x_state_list[] = {
 	OV5640_ST_UYVY_1080P,
 	OV5640_ST_UYVY_5M,
 	OV5640_ST_JPEG_5M,
+};
+
+struct xsd_spec_item ov5640_spec_list[] = {
+	{
+		.name		= "tavor-mipi",
+		.state_list	= nevo_state_list,
+		.state_cnt	= ARRAY_SIZE(nevo_state_list),
+		.ecs		= &nevo_spec,
+	},
+	{
+		.name		= "pxa98x-mipi",
+		.state_list	= pxa98x_state_list,
+		.state_cnt	= ARRAY_SIZE(pxa98x_state_list),
+		.ecs		= &pxa98x_spec,
+	},
+};
+
+/************************* Finally the big data boss *************************/
+static const struct xsd_driver_id ov564x_drv_table[] = {
+	{
+		.name		= "ov5640",
+		.prototype	= &ov5640_xsd,
+		.spec_list	= ov5640_spec_list,
+		.spec_cnt	= ARRAY_SIZE(ov5640_spec_list),
+	},
+	/* TODO: add more driver structure above this end mark */
+	{},
 };
 
 #endif

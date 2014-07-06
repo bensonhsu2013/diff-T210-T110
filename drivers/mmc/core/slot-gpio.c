@@ -18,7 +18,7 @@
 #include <linux/slab.h>
 
 #ifdef _MMC_SAFE_ACCESS_
-mmc_is_available = 0;
+int mmc_is_available = 1;
 EXPORT_SYMBOL(mmc_is_available);
 #endif
 
@@ -31,22 +31,22 @@ struct mmc_gpio {
 
 static irqreturn_t mmc_gpio_cd_irqt(int irq, void *dev_id)
 {
-	/* Schedule a card detection after a debounce timeout */
 	struct mmc_host *host = dev_id;
-	int cd_gpio = host->slot.cd_gpio;
+	struct mmc_gpio *gpio  = host->slot.handler_priv;
 
-	if (!gpio_get_value(cd_gpio)) {
+	if(!gpio_get_value(gpio->cd_gpio)) {
 #ifdef _MMC_SAFE_ACCESS_
-		mmc_is_available = 1;
+		mmc_is_available  = 1;
 #endif
-		printk(KERN_ERR"[MMC]card inserted\n");
+		printk(KERN_ERR"[MMC] card inserted \n");
+		/* Schedule a card detection after a debounce timeout */
 		mmc_detect_change(dev_id, msecs_to_jiffies(100));
 	} else {
+		printk(KERN_ERR"[MMC] card removed  \n");
 #ifdef _MMC_SAFE_ACCESS_
 		mmc_is_available = 0;
 #endif
-		printk(KERN_ERR"[MMC]card removed\n");
-		mmc_detect_change(dev_id, msecs_to_jiffies(50));
+		mmc_detect_change(dev_id, msecs_to_jiffies(5));
 	}
 	return IRQ_HANDLED;
 }
@@ -151,8 +151,6 @@ int mmc_gpio_request_cd(struct mmc_host *host, unsigned int gpio)
 		 */
 		return ret;
 
-	host->slot.cd_gpio = gpio;
-	
 	/*
 	 * Even if gpio_to_irq() returns a valid IRQ number, the platform might
 	 * still prefer to poll, e.g., because that IRQ number is already used

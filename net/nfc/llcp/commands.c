@@ -333,6 +333,7 @@ int nfc_llcp_send_connect(struct nfc_llcp_sock *sock)
 
 	skb_queue_tail(&local->tx_queue, skb);
 
+	kfree(service_name_tlv);
 	return 0;
 
 error_tlv:
@@ -482,7 +483,10 @@ int nfc_llcp_send_i_frame(struct nfc_llcp_sock *sock,
 		pdu = llcp_allocate_pdu(sock, LLCP_PDU_I,
 					frag_len + LLCP_SEQUENCE_SIZE);
 		if (pdu == NULL)
+		{
+			kfree(msg_data);
 			return -ENOMEM;
+		}
 
 		skb_put(pdu, LLCP_SEQUENCE_SIZE);
 

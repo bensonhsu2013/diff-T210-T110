@@ -25,6 +25,7 @@
 #include <linux/workqueue.h>
 #include <mach/regs-apbc.h>
 #include <mach/cputype.h>
+#include <mach/features.h>
 
 /* debug: Use for sysfs set temp */
 /* #define DEBUG_TEMPERATURE */
@@ -91,25 +92,6 @@ static struct cool_dev_priv cool_dev_active_priv[TRIP_POINTS_ACTIVE_NUM] = {
 };
 static struct work_struct trip_ck_work;
 
-static int is_pxa98x_Zx(void)
-{
-	/*
-	 * TODO: workaround
-	 * A0 hw auto test has possible report >= 107 degree
-	 * when resume, using polling mode for workaround
-	 */
-	return 1;
-#ifdef DEBUG_TEMPERATURE
-	/*
-	 * in debug mode, return Zx chip, then framework will
-	 * start 2s polling
-	 */
-	return 1;
-#endif
-	return cpu_is_pxa988_z1() || cpu_is_pxa988_z2() ||
-		cpu_is_pxa988_z3() || cpu_is_pxa986_z1() ||
-		cpu_is_pxa986_z2() || cpu_is_pxa986_z3();
-}
 
 static int cool_dev_get_max_state(struct thermal_cooling_device *cdev,
 		unsigned long *state)
@@ -232,7 +214,7 @@ static void thermal_module_reset(int interval_temp)
 	int i;
 	unsigned long ts_ctrl;
 
-	if (is_pxa98x_Zx()) {
+	if (has_feat_thermal_only_support_polling()) {
 		ts_ctrl = __raw_readl(THERMAL_TS_CTRL);
 		ts_ctrl &= ~TS_CTRL_TSEN_TEMP_ON;
 		__raw_writel(ts_ctrl, THERMAL_TS_CTRL);
@@ -251,7 +233,7 @@ static void thermal_module_reset(int interval_temp)
 	ts_ctrl |= TS_CTRL_RST_N_TSEN;
 	__raw_writel(ts_ctrl, THERMAL_TS_CTRL);
 
-	if (is_pxa98x_Zx()) {
+	if (has_feat_thermal_only_support_polling()) {
 		ts_ctrl = __raw_readl(THERMAL_TS_CTRL);
 		ts_ctrl |= TS_CTRL_TSEN_TEMP_ON;
 		__raw_writel(ts_ctrl, THERMAL_TS_CTRL);
@@ -288,7 +270,7 @@ static int cpu_sys_get_temp(struct thermal_zone_device *thermal,
 #ifdef DEBUG_TEMPERATURE
 	*temp = g_test_temp;
 #else
-	if (is_pxa98x_Zx()) {
+	if (has_feat_thermal_only_support_polling()) {
 		ts_read = __raw_readl(THERMAL_TS_READ);
 		if (likely(ts_read & TS_READ_TS_ON)) {
 			gray_code = ts_read & TS_READ_OUT_DATA;
@@ -349,7 +331,7 @@ static int cpu_sys_get_temp(struct thermal_zone_device *thermal,
 #endif
 	pxa988_thermal_dev.temp_cpu = *temp;
 	for (i = (TRIP_POINTS_NUM-1); i >= 0; i--) {
-		if (pxa988_thermal_dev.temp_cpu >= cpu_thermal_trips_temp[i]) {
+		if (pxa988_thermal_dev.temp_cpu > cpu_thermal_trips_temp[i]) {
 			pxa988_thermal_dev.hit_trip_cnt[i]++;
 			break;
 		}
@@ -487,13 +469,6 @@ static int pxa988_thermal_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "no IRQ resource defined\n");
 		return -ENXIO;
 	}
-	ret = request_irq(irq, pxa988_thermal_irq, IRQF_DISABLED,
-			pdev->name, NULL);
-	if (ret < 0) {
-		dev_err(&pdev->dev, "failed to request IRQ\n");
-		return -ENXIO;
-	}
-	pxa988_thermal_dev.irq = irq;
 
 	/* The last trip point is critical */
 	for (i = 0; i < TRIP_POINTS_ACTIVE_NUM; i++) {
@@ -503,8 +478,7 @@ static int pxa988_thermal_probe(struct platform_device *pdev)
 					&cool_dev_active_ops);
 		if (IS_ERR(pxa988_thermal_dev.cool_dev_active[i])) {
 			pr_err("Failed to register cooling device\n");
-			ret = -EINVAL;
-			goto failed_free_irq;
+			return -EINVAL;
 		}
 	}
 
@@ -518,7 +492,7 @@ static int pxa988_thermal_probe(struct platform_device *pdev)
 
 	pxa988_thermal_dev.last_temp_cpu = 0;
 #ifndef DEBUG_TEMPERATURE
-	if (is_pxa98x_Zx()) {
+	if (has_feat_thermal_only_support_polling()) {
 		ts_ctrl = __raw_readl(THERMAL_TS_CTRL);
 		ts_ctrl |= TS_CTRL_TSEN_CHOP_EN;
 		/* we only care greater than 80 */
@@ -573,7 +547,15 @@ static int pxa988_thermal_probe(struct platform_device *pdev)
 		__raw_writel(ts_ctrl, THERMAL_TS_CTRL);
 	}
 #endif
-	if (is_pxa98x_Zx()) {
+	ret = request_irq(irq, pxa988_thermal_irq, IRQF_DISABLED,
+			pdev->name, NULL);
+	if (ret < 0) {
+		dev_err(&pdev->dev, "failed to request IRQ\n");
+		return -ENXIO;
+	}
+	pxa988_thermal_dev.irq = irq;
+
+	if (has_feat_thermal_only_support_polling()) {
 		pxa988_thermal_dev.therm_cpu = thermal_zone_device_register(
 			"pxa988-thermal", TRIP_POINTS_NUM,
 			NULL, &cpu_thermal_ops, 1, 1, 2000, 2000);
@@ -584,7 +566,8 @@ static int pxa988_thermal_probe(struct platform_device *pdev)
 	}
 	if (IS_ERR(pxa988_thermal_dev.therm_cpu)) {
 		pr_err("Failed to register thermal zone device\n");
-		return -EINVAL;
+		ret = -EINVAL;
+		goto failed_free_irq;
 	}
 
 	ret = sysfs_create_group(&((pxa988_thermal_dev.therm_cpu->device).kobj),
@@ -597,12 +580,12 @@ static int pxa988_thermal_probe(struct platform_device *pdev)
 		pr_err("Failed to register private thermal interface\n");
 
 	return 0;
+failed_free_irq:
+	free_irq(pxa988_thermal_dev.irq, NULL);
 failed_unregister_cooldev:
 	for (i = 0; i < TRIP_POINTS_ACTIVE_NUM; i++)
 		thermal_cooling_device_unregister(
 				pxa988_thermal_dev.cool_dev_active[i]);
-failed_free_irq:
-	free_irq(pxa988_thermal_dev.irq, NULL);
 	return ret;
 }
 

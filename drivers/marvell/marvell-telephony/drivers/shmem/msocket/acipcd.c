@@ -21,15 +21,12 @@
 #include <linux/kernel.h>
 #include <linux/wakelock.h>
 #include <plat/devfreq.h>
-#include <mach/cputype.h>
 #include <linux/pm_qos.h>
 
 #include "acipcd.h"
 #include "shm.h"
 #include "portqueue.h"
 #include "msocket.h"
-
-#define cpu_is_pxa986_z1z2() (cpu_is_pxa986_z1() || cpu_is_pxa986_z2())
 
 struct wake_lock acipc_wakeup; //used to ensure Workqueue scheduled.
 /* forward static function prototype, these all are interrupt call-backs */
@@ -43,9 +40,18 @@ static u32 acipc_cb(u32 status);
 static u32 acipc_cb_modem_ddrfreq_update(u32 status);
 static u32 acipc_cb_diag_cb(u32 status);
 
-static struct pm_qos_request modem_ddr_cons;
+extern int g_simcard;
+static u32 acipc_cb_event_notify(u32 status);
+#define RESET_CP_REQUEST 0x544F4F42
+#define RESET_CP_REQUEST_DONE 0x454E4F44
+DECLARE_COMPLETION(reset_cp_confirm);
+
+static struct pm_qos_request modem_ddr_cons = {
+	.name = "cp",
+};
 struct workqueue_struct *acipc_wq;
 struct work_struct acipc_modem_ddr_freq_update;
+static int default_ddr_freq = 0;
 
 #define MODEM_DDRFREQ_HI	400
 #define MODEM_DDRFREQ_LOW	156
@@ -66,7 +72,7 @@ static void acipc_modem_ddr_freq_update_handler(struct work_struct *work)
 		if (cur_ddrfreq == MODEM_DDRFREQ_LOW)
 			return;
 		printk ("DDRFreq set to Low\n");
-		pm_qos_update_request(&modem_ddr_cons, PM_QOS_DEFAULT_VALUE);
+		pm_qos_update_request(&modem_ddr_cons, default_ddr_freq);
 		cur_ddrfreq = MODEM_DDRFREQ_LOW;
 	}
 	return;
@@ -95,13 +101,21 @@ int acipc_init(void)
 	ACIPCEventBind(ACIPC_SHM_DIAG_PACKET_NOTIFY, acipc_cb_diag_cb,
 		       ACIPC_CB_NORMAL, NULL);
 
-	if (cpu_is_pxa986() && !(cpu_is_pxa986_z1z2())) {
-		ACIPCEventBind(ACIPC_MODEM_DDR_UPDATE_REQ, acipc_cb_modem_ddrfreq_update,
-		       ACIPC_CB_NORMAL, NULL);
-		pm_qos_add_request(&modem_ddr_cons, PM_QOS_DDR_DEVFREQ_MIN, PM_QOS_DEFAULT_VALUE);
-	        INIT_WORK(&acipc_modem_ddr_freq_update, acipc_modem_ddr_freq_update_handler);
-		acipc_wq = alloc_workqueue("ACIPC_WQ", WQ_HIGHPRI, 0);
-	}
+	/* if we have two SIM cards inserted
+	 * DDR freq should not be less than 312MHz
+	 */
+	if(g_simcard == 3)
+		default_ddr_freq = DDR_CONSTRAINT_LVL1;
+	else
+		default_ddr_freq = PM_QOS_DEFAULT_VALUE;
+
+	ACIPCEventBind(ACIPC_MODEM_DDR_UPDATE_REQ, acipc_cb_event_notify,
+		ACIPC_CB_NORMAL, NULL);
+	pm_qos_add_request(&modem_ddr_cons, PM_QOS_DDR_DEVFREQ_MIN, PM_QOS_DEFAULT_VALUE);
+	INIT_WORK(&acipc_modem_ddr_freq_update, acipc_modem_ddr_freq_update_handler);
+	acipc_wq = alloc_workqueue("ACIPC_WQ", WQ_HIGHPRI, 0);
+
+	pm_qos_update_request(&modem_ddr_cons, default_ddr_freq);
 
 	return 0;
 }
@@ -119,9 +133,7 @@ void acipc_exit(void)
 
 	wake_lock_destroy(&acipc_wakeup);
 
-	if (cpu_is_pxa986() && !cpu_is_pxa986_z1z2()) {
-		destroy_workqueue(acipc_wq);
-	}
+	destroy_workqueue(acipc_wq);
 }
 
 /* cp xmit stopped notify interrupt */
@@ -193,10 +205,39 @@ static u32 acipc_cb(u32 status)
 
 static u32 acipc_cb_modem_ddrfreq_update(u32 status)
 {
-	if (!(cpu_is_pxa986() && !cpu_is_pxa986_z1z2()))
-		return 0;
-
 	queue_work(acipc_wq, &acipc_modem_ddr_freq_update);
 
 	return 0;
 }
+
+static u32 acipc_cb_reset_cp_confirm(u32 status)
+{
+	if (shm_rbctl[shm_rb_main].skctl_va->reset_request
+		== RESET_CP_REQUEST_DONE) {
+		complete(&reset_cp_confirm);
+	}
+	return 0;
+}
+
+static u32 acipc_cb_event_notify(u32 status)
+{
+	acipc_cb_reset_cp_confirm(status);
+	acipc_cb_modem_ddrfreq_update(status);
+	return 0;
+}
+
+void acipc_reset_cp_request(void)
+{
+	shm_rbctl[shm_rb_main].skctl_va->reset_request = RESET_CP_REQUEST;
+	INIT_COMPLETION(reset_cp_confirm);
+	acipc_notify_reset_cp_request();
+	if (wait_for_completion_timeout(&reset_cp_confirm, 2 * HZ)) {
+		printk(KERN_INFO "reset cp request success!\n");
+	} else {
+		printk(KERN_ERR "reset cp request fail!\n");
+		shm_rbctl[shm_rb_main].skctl_va->reset_request
+			= RESET_CP_REQUEST_DONE;
+	}
+	return;
+}
+

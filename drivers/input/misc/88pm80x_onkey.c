@@ -40,9 +40,8 @@ static struct pm80x_onkey_info *pm8xxx_info;
 #define PM800_LONG_KEY_DELAY		(8)	/* 1 .. 16 seconds */
 #define PM800_LONKEY_PRESS_TIME		((PM800_LONG_KEY_DELAY-1) << 4)
 #define PM800_LONKEY_PRESS_TIME_MASK	(0xF0)
+#define PM800_LONKEY_RESET		(1 << 3)
 #define PM800_SW_PDOWN			(1 << 5)
-
-#define PM800_LONGKEY_RESET		(1 << 3)
 
 struct pm80x_onkey_info {
 	struct input_dev *idev;
@@ -61,20 +60,6 @@ void pm8xxx_longpress_report(struct work_struct *ignored)
 }
 #endif
 
-#if defined(CONFIG_KERNEL_DEBUG_SEC) && (defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7))
-#define MY_NAME "88pm80x_onkey"
-extern void gpio_keys_setstate(int keycode, bool bState);
-extern bool gpio_keys_getstate(int keycode);
-extern void gpio_keys_start_upload_modtimer(void);
-extern int jack_is_detected;
-
-#if defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
-#define key_dbg(fmt, arg...)
-#else
-#define key_dbg(fmt, arg...) printk(KERN_NOTICE "%s: " fmt, MY_NAME, ## arg)
-#endif
-#endif
-
 extern struct class *sec_class;
 static int is_power_key_pressed;
 /* 88PM80x gives us an interrupt when ONKEY is held */
@@ -84,6 +69,9 @@ static irqreturn_t pm80x_onkey_handler(int irq, void *data)
 	int ret = 0;
 	unsigned int val;
 
+	/* reset the LONGKEY reset time */
+	regmap_update_bits(info->map, PM800_WAKEUP1,
+			   PM800_LONKEY_RESET, PM800_LONKEY_RESET);
 	ret = regmap_read(info->map, PM800_STATUS_1, &val);
 	if (ret < 0) {
 		dev_err(info->idev->dev.parent, "failed to read status: %d\n",
@@ -91,13 +79,6 @@ static irqreturn_t pm80x_onkey_handler(int irq, void *data)
 		return IRQ_NONE;
 	}
 	val &= PM800_ONKEY_STS1;
-	/*
-	 * HW workaround: There is bug of LONG_ONKEY_EVENT will be detected wrongly,
-	 * then it will trigger  power down/power up cycle unexpectedly.
-	 * Sw will reset the LONG_ONKEY timer to avoid this kind of issue.
-	 */
-	regmap_update_bits(info->map, PM800_WAKEUP1,
-			PM800_LONGKEY_RESET, PM800_LONGKEY_RESET);
 #ifdef CONFIG_FAKE_SYSTEMOFF
 	if (fake_sysoff_block_onkey())
 		goto out;
@@ -121,15 +102,11 @@ static irqreturn_t pm80x_onkey_handler(int irq, void *data)
 		}
 	} else {
 #endif
-#if defined(CONFIG_KERNEL_DEBUG_SEC) && (defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7))
-		key_dbg("%s state = %d\n", __func__, val);
-		gpio_keys_setstate(KEY_POWER, val ? true : false);
-		if (val && gpio_keys_getstate(KEY_VOLUMEUP) && jack_is_detected)
-			gpio_keys_start_upload_modtimer();
+#if !defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
+	printk("power key val =%d\n",val);
 #endif
-		input_report_key(info->idev, KEY_POWER, val);
-		input_sync(info->idev);
-
+	input_report_key(info->idev, KEY_POWER, val);
+	input_sync(info->idev);
 #ifdef CONFIG_FAKE_SYSTEMOFF
 	}
 out:
@@ -217,6 +194,9 @@ static int __devinit pm80x_onkey_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, info);
 
 	/* Enable long onkey detection */
+	regmap_update_bits(info->map, PM800_RTC_MISC4, 0xC0,
+			   0xC0);
+	/* Enable long onkey detection */
 	regmap_update_bits(info->map, PM800_RTC_MISC4, PM800_LONG_ONKEY_EN,
 			   PM800_LONG_ONKEY_EN);
 	/* Set 8-second interval */
@@ -239,6 +219,7 @@ static int __devinit pm80x_onkey_probe(struct platform_device *pdev)
 		 printk("Failed to create device file(%s)!\n", dev_attr_sec_power_key_pressed.attr.name);
 	}
 #endif
+
 	return 0;
 
 out_irq:

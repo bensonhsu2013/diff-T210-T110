@@ -8,6 +8,7 @@ wm97xx-ts-y := wm97xx-core.o
 
 obj-$(CONFIG_TOUCHSCREEN_88PM860X)	+= 88pm860x-ts.o
 obj-$(CONFIG_TOUCHSCREEN_FT5306)	+= ft5306_touch.o
+obj-$(CONFIG_TOUCHSCREEN_GT9XX) 	+= gt9xx_touch.o gt9xx_update.o goodix_tool.o
 obj-$(CONFIG_TOUCHSCREEN_AD7877)	+= ad7877.o
 obj-$(CONFIG_TOUCHSCREEN_AD7879)	+= ad7879.o
 obj-$(CONFIG_TOUCHSCREEN_AD7879_I2C)	+= ad7879-i2c.o
@@ -53,6 +54,7 @@ obj-$(CONFIG_TOUCHSCREEN_STMPE)		+= stmpe-ts.o
 obj-$(CONFIG_TOUCHSCREEN_TI_TSCADC)	+= ti_tscadc.o
 obj-$(CONFIG_TOUCHSCREEN_TNETV107X)	+= tnetv107x-ts.o
 obj-$(CONFIG_TOUCHSCREEN_SYNAPTICS_I2C_RMI)	+= synaptics_i2c_rmi.o
+obj-$(CONFIG_TOUCHSCREEN_SYNAPTICS_DSX_I2C)	+= synaptics_dsx_i2c.o
 obj-$(CONFIG_TOUCHSCREEN_TOUCHIT213)	+= touchit213.o
 obj-$(CONFIG_TOUCHSCREEN_TOUCHRIGHT)	+= touchright.o
 obj-$(CONFIG_TOUCHSCREEN_TOUCHWIN)	+= touchwin.o
@@ -72,12 +74,10 @@ obj-$(CONFIG_TOUCHSCREEN_WM97XX_ZYLONITE)	+= zylonite-wm97xx.o
 obj-$(CONFIG_TOUCHSCREEN_W90X900)	+= w90p910_ts.o
 obj-$(CONFIG_TOUCHSCREEN_TPS6507X)	+= tps6507x-ts.o
 obj-$(CONFIG_TOUCHSCREEN_VNC)		+= vnc_touch.o
-ifeq ($(CONFIG_MACH_LT02),y)
-obj-$(CONFIG_TOUCHSCREEN_MMS136_TS) += mfs_gpio_i2c.o mms100_isp.o mms100_cfg_update.o mms136_ts_lt02.o
-else ifeq ($(CONFIG_MACH_COCOA7),y)
-obj-$(CONFIG_TOUCHSCREEN_MMS136_TS) += mfs_gpio_i2c.o mms100_isp.o mms100_cfg_update.o mms136_ts_lt02.o
-else
 obj-$(CONFIG_TOUCHSCREEN_MMS136_TS) += mfs_gpio_i2c.o mms100_isp.o mms100_cfg_update.o mms136_ts.o
-endif
-obj-$(CONFIG_TOUCHSCREEN_ZINITIX_BT432) += zinitix_bt432_ts.o
+obj-$(CONFIG_TOUCHSCREEN_BT531_TS) += bt531_ts.o
 obj-$(CONFIG_TOUCHSCREEN_BT532_TS) += bt532_ts.o
+obj-$(CONFIG_TOUCHSCREEN_BT432_TS) += bt432_ts.o
+obj-$(CONFIG_TOUCHSCREEN_MXT224S)	+= mxts.o
+obj-$(CONFIG_TOUCHSCREEN_CYPRESS_TMA46X)	+= cyttsp4_core.o	cyttsp4_i2c.o  cyttsp4_bus.o  cyttsp4_mtb.o  cyttsp4_mt_common.o cyttsp4_btn.o  cyttsp4_device_access.o cyttsp4_loader.o
+obj-$(CONFIG_TOUCHSCREEN_MELFAS_MMS144)		+= MMS144/

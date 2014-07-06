@@ -858,9 +858,6 @@ static void uart_task_action(unsigned long data)
 	}
 	spin_unlock_irqrestore(&up->port.lock, flags);
 
-	tmp = up->txdma_addr;
-	up->tx_stop = 0;
-
 	pr_debug("count =%d", count);
 	pxa_uart_transmit_dma_start(up, count);
 }
@@ -1094,13 +1091,11 @@ serial_pxa_set_termios(struct uart_port *port, struct ktermios *termios,
 	/*
 	 * CTS flow control flag and modem status interrupts
 	 */
-
-	if (up->dma_enable) {
-		if (termios->c_cflag & CRTSCTS)
-			up->mcr |= UART_MCR_AFE;
-		else
-			up->mcr &= UART_MCR_AFE;
-	} else {
+	if (!up->dma_enable) {
+		/* Don't enable modem status interrupt if DMA is enabled.
+		 * Inherited from the old code.
+		 * Please also refer to serial_pxa_enable_ms().
+		 */
 		up->ier &= ~UART_IER_MSI;
 		if (UART_ENABLE_MS(&up->port, termios->c_cflag))
 			up->ier |= UART_IER_MSI;
@@ -1336,6 +1331,10 @@ static int serial_pxa_suspend(struct device *dev)
 		unsigned long flags;
 
 		local_irq_save(flags);
+		/*
+		 * tx stop and suspend and when resume,
+		 * tx startup would be called and set it to 0
+		*/
 		sport->tx_stop = 1;
 		sport->rx_stop = 1;
 		sport->data_len = 0;

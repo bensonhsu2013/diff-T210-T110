@@ -125,6 +125,15 @@ config SND_SOC_88PM860X
 config SND_SOC_88PM805
 	tristate
 
+config SND_SOC_D2199
+	tristate "D2199 codec support"
+
+config SND_SOC_D2199_AAD
+	tristate "D2199 AAD support"	
+
+config D2199_AAD_WATERDROP
+	tristate "D2199 AAD Waterproof support"
+
 config SND_SOC_WM_HUBS
 	tristate
 	default y if SND_SOC_WM8993=y || SND_SOC_WM8994=y
@@ -441,3 +450,8 @@ config SND_SOC_MAX9877
 
 config SND_SOC_TPA6130A2
 	tristate
+
+config SEC_FACTORY_MODE
+	bool "Factory Mode"
+	default n
+

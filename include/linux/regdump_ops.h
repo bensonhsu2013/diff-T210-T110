@@ -30,9 +30,11 @@ struct regdump_ops {
 
 	struct regdump_region	*regions;
 	unsigned long		reg_nums;
+	unsigned long		phy_base;
 };
 
 extern int dump_reg_to_mem(void);
+extern int dump_reg_to_console(void);
 extern int register_regdump_ops(struct regdump_ops *ops);
 extern int unregister_regdump_ops(struct regdump_ops *ops);
 static int inline regdump_cond_true(struct regdump_ops *ops)
@@ -44,5 +46,6 @@ static int inline regdump_cond_true(struct regdump_ops *ops)
 #define unregister_regdump_ops()	do {} while(0)
 #define dump_reg_to_mem()		do {} while(0)
 #define regdump_cond_true()		do {} while(0)
+#define dump_reg_to_console()   do {} while (0)
 #endif
 #endif

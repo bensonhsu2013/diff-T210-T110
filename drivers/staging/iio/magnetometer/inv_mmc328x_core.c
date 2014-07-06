@@ -316,7 +316,7 @@ static int inv_mmc328x_probe(struct i2c_client *client,
 
 	if (result < 1) {
 		pr_err("----mmc328x chip chip failed return-----\n");
-		return -EIO;
+		goto out_free;
 	}
 	result = inv_mmc328x_configure_ring(indio_dev);
 	if (result)

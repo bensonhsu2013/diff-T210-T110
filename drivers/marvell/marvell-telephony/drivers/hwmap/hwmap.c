@@ -160,8 +160,10 @@ hwmap_init(void)
     cdev->ops = &hwmap_fops;
     cdev->owner = THIS_MODULE;
     err = cdev_add(cdev, dev, 1);
-    if(err < 0)
+    if(err < 0) {
 	printk(KERN_ERR "%s: Error %d adding hwmap\n", __FUNCTION__, err);
+	goto fail;
+    }
     device_create(hwmap_class, NULL, dev, NULL, "hwmap");
     return 0;
 fail:

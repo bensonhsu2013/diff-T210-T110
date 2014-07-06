@@ -39,6 +39,8 @@
 
 #include "internal.h"
 
+unsigned long migrate_page_copy_count;
+
 /*
  * migrate_prep() needs to be called before we start compiling a list of pages
  * to be migrated using isolate_lru_page(). If scheduling work on other CPUs is
@@ -145,7 +147,7 @@ static int remove_migration_pte(struct page *new, struct vm_area_struct *vma,
 	if (PageHuge(new))
 		pte = pte_mkhuge(pte);
 #endif
-	flush_cache_page(vma, addr, pte_pfn(pte));
+	flush_dcache_page(new);
 	set_pte_at(mm, addr, ptep, pte);
 
 	if (PageHuge(new)) {
@@ -445,6 +447,8 @@ void migrate_page_copy(struct page *newpage, struct page *page)
 	ClearPageSwapCache(page);
 	ClearPagePrivate(page);
 	set_page_private(page, 0);
+
+	atomic_inc((atomic_t *)&migrate_page_copy_count);
 
 	/*
 	 * If any waiters have accumulated on the new page then
@@ -753,7 +757,7 @@ static int __unmap_and_move(struct page *page, struct page *newpage,
 	 */
 	if (PageAnon(page)) {
 		/*
-		 * Only page_lock_anon_vma() understands the subtleties of
+		 * Only page_lock_anon_vma_read() understands the subtleties of
 		 * getting a hold on an anon_vma from outside one of its mms.
 		 */
 		anon_vma = page_get_anon_vma(page);

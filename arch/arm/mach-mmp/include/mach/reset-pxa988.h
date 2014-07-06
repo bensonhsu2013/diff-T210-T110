@@ -13,32 +13,34 @@
 #ifndef __RESET_PXA988_H__
 #define __RESET_PXA988_H__
 
-#define CPU0_CORE_RST	(1 << 16)
-#define CPU0_DBG_RST	(1 << 18)
-#define CPU0_WDOG_RST	(1 << 19)
+#ifdef CONFIG_CPU_PXA988
+#define CPU_CORE_RST(n)	(1 << ((n) * 4 + 16))
+#define CPU_DBG_RST(n)	(1 << ((n) * 4 + 18))
+#define CPU_WDOG_RST(n)	(1 << ((n) * 4 + 19))
+#elif defined(CONFIG_CPU_PXA1088)
+#define CPU_POR_RST(n)	(1 << ((n) * 3 + 16))
+#define CPU_CORE_RST(n)	(1 << ((n) * 3 + 17))
+#define CPU_DBG_RST(n)	(1 << ((n) * 3 + 18))
+#endif
 
-#define CPU1_CORE_RST	(1 << 20)
-#define CPU1_DBG_RST	(1 << 22)
-#define CPU1_WDOG_RST	(1 << 23)
-
-#ifdef CONFIG_SMP
 extern u32 pm_reserve_pa;
 extern u32 reset_handler_pa;
 extern u32 secondary_cpu_handler;
 extern void pxa988_secondary_startup(void);
 extern void pxa988_hotplug_handler(void);
+extern void pxa988_return_handler(void);
 extern void pxa988_set_reset_handler(u32 fn, u32 cpu);
 extern void pxa988_cpu_reset_entry(void);
 extern void pxa_cpu_reset(u32 cpu);
 extern void pxa988_gic_raise_softirq(const struct cpumask *mask,
 	unsigned int irq);
-extern void check_and_swrst_core1(void);
-#endif
 
 #ifdef CONFIG_PM
 extern u32 l2sram_shutdown;
+#ifdef CONFIG_CACHE_L2X0
 extern u32 l2x0_regs_phys;
 extern u32 l2x0_saved_regs_phys_addr;
+#endif
 extern void pxa988_cpu_resume_handler(void);
 #endif
 

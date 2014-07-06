@@ -46,7 +46,12 @@
 
 #define MAX_CID_NUM    8
 
+#define SIOCUSECCINET    SIOCDEVPRIVATE
+#define SIOCRELEASECCINET (SIOCDEVPRIVATE+1)
+
 struct ccinet_priv {
+	unsigned char is_used;
+	unsigned char sim_id;
 	unsigned char cid;
 	int status;                                             /* indicate status of the interrupt */
 	spinlock_t lock;                                        /* spinlock use to protect critical session	*/
@@ -130,10 +135,7 @@ static int ccinet_tx(struct sk_buff* skb, struct net_device* netdev)
 	struct ccinet_priv* devobj = netdev_priv(netdev);
 	netdev->trans_start = jiffies;
 
-	/* strip Ethernet header */
-	skb_pull(skb, ETH_HLEN);
-
-	sendPSDData(devobj->cid, skb);
+	sendPSDData(devobj->cid | devobj->sim_id << 31, skb);
 	 
 	/* update network statistics */
 	devobj->net_stats.tx_packets++;
@@ -167,26 +169,20 @@ static int ccinet_rx(struct net_device* netdev, char* packet, int pktlen)
 
 	struct sk_buff *skb;
 	struct ccinet_priv *priv = netdev_priv(netdev);
-	struct iphdr* ip_header = (struct iphdr*)packet;
-	struct ethhdr ether_header;
+	struct iphdr *ip_header = (struct iphdr *)packet;
+	__be16	protocol;
 
 	if (ip_header->version == 4) {
-		ether_header.h_proto = htons(ETH_P_IP);
+		protocol = htons(ETH_P_IP);
 	} else if (ip_header->version == 6) {
-		ether_header.h_proto = htons(ETH_P_IPV6);
+		protocol = htons(ETH_P_IPV6);
 	} else {
 		printk(KERN_ERR "ccinet_rx: invalid ip version: %d\n", ip_header->version);
 		priv->net_stats.rx_dropped++;
 		goto out;
 	}
-	memcpy(ether_header.h_dest, netdev->dev_addr, ETH_ALEN);
-	memset(ether_header.h_source, 0, ETH_ALEN);
 
-	//ENTER();
-	//DBGMSG("ccinet_rx:pktlen=%d\n", pktlen);
-	skb = dev_alloc_skb(pktlen + NET_IP_ALIGN + sizeof(ether_header));
-	ASSERT(skb);
-
+	skb = dev_alloc_skb(pktlen);
 	if (!skb)
 	{
 
@@ -199,18 +195,15 @@ static int ccinet_rx(struct net_device* netdev, char* packet, int pktlen)
 		goto out;
 
 	}
-	skb_reserve(skb, NET_IP_ALIGN);
-	memcpy(skb_put(skb, sizeof(ether_header)), &ether_header, sizeof(ether_header));
-
 	memcpy(skb_put(skb, pktlen), packet, pktlen);
 
 	/* Write metadata, and then pass to the receive level */
 
 	skb->dev = netdev;
-	skb->protocol = eth_type_trans(skb, netdev); //htons(ETH_P_IP);//eth_type_trans(skb, netdev);
-	skb->ip_summed = CHECKSUM_NONE; /* don't check it */
+	skb->protocol = protocol;
+	skb->ip_summed = CHECKSUM_UNNECESSARY;	/* don't check it */
 	priv->net_stats.rx_packets++;
-	priv->net_stats.rx_bytes += pktlen + sizeof(ether_header);
+	priv->net_stats.rx_bytes += pktlen;
 	netif_rx(skb);
 	//where to free skb?
 
@@ -220,10 +213,62 @@ static int ccinet_rx(struct net_device* netdev, char* packet, int pktlen)
 	return -1;
 }
 
-static int validate_addr(struct net_device* netdev)
+static int ccinet_ioctl(struct net_device *netdev, struct ifreq *rq, int cmd)
 {
-	ENTER();
-	return 0;
+	int rc = 0;
+	struct ccinet_priv *priv = netdev_priv(netdev);
+
+	switch (cmd) {
+	case SIOCUSECCINET:
+	{
+		int sim_id;
+		if (copy_from_user(&sim_id, rq->ifr_data, sizeof(sim_id))) {
+			rc = -EFAULT;
+			break;
+		}
+		spin_lock(&priv->lock);
+		if (priv->is_used) {
+			printk(KERN_ERR"%s: SIM%d has used cid%d, SIM%d request fail\n", __FUNCTION__, (int)priv->sim_id + 1, (int)priv->cid, sim_id+1);
+			rc = -EFAULT;
+		} else {
+			priv->sim_id = sim_id;
+			priv->is_used = 1;
+			printk("%s: SIM%d now use cid%d\n", __FUNCTION__, sim_id + 1, (int)priv->cid);
+		}
+		spin_unlock(&priv->lock);
+	}
+	break;
+
+	case SIOCRELEASECCINET:
+	{
+		int sim_id;
+		if (copy_from_user(&sim_id, rq->ifr_data, sizeof(sim_id))) {
+			rc = -EFAULT;
+			break;
+		}
+		spin_lock(&priv->lock);
+		if (priv->is_used) {
+			if (sim_id != priv->sim_id) {
+				spin_unlock(&priv->lock);
+				printk(KERN_ERR "%s: SIM%d want release cid%d, but it's used by SIM%d\n", __FUNCTION__, sim_id + 1, priv->cid, (int)priv->sim_id + 1);
+				rc = -EFAULT;
+			} else {
+				priv->sim_id = 0;
+				priv->is_used = 0;
+				spin_unlock(&priv->lock);
+				printk("%s: SIM%d now release cid%d\n", __FUNCTION__, sim_id + 1, (int)priv->cid);
+			}
+		} else {
+			spin_unlock(&priv->lock);
+			printk(KERN_ERR "%s: SIM%d want release cid%d, but not used before\n", __FUNCTION__, sim_id + 1, priv->cid, (int)priv->sim_id + 1);
+		}
+		break;
+	}
+
+	default:
+		rc = -EOPNOTSUPP;
+	}
+	return rc;
 }
 
 #ifdef DATA_IND_BUFFERLIST
@@ -347,23 +392,26 @@ static int data_rx(char* packet, int len, unsigned char cid)
 ///////////////////////////////////////////////////////////////////////////////////////
 
 static const struct net_device_ops cci_netdev_ops = {
-	.ndo_open		= ccinet_open,
-	.ndo_stop		= ccinet_stop,
-	.ndo_start_xmit 	= ccinet_tx,
-	.ndo_tx_timeout		= ccinet_tx_timeout,
-	.ndo_get_stats 	= ccinet_get_stats,
-	.ndo_validate_addr	= validate_addr
+	.ndo_open = ccinet_open,
+	.ndo_stop = ccinet_stop,
+	.ndo_start_xmit = ccinet_tx,
+	.ndo_tx_timeout = ccinet_tx_timeout,
+	.ndo_get_stats = ccinet_get_stats,
+	.ndo_do_ioctl = ccinet_ioctl
 };
 
 static void ccinet_setup(struct net_device* netdev)
 {
 	ENTER();
-	ether_setup(netdev);
-	netdev->netdev_ops = &cci_netdev_ops;
+	netdev->netdev_ops	= &cci_netdev_ops;
+	netdev->type		= ARPHRD_VOID;
+	netdev->mtu		= 1500;
+	netdev->addr_len	= 0;
+	netdev->tx_queue_len	= 1000;
+	netdev->flags		= IFF_NOARP;
+	netdev->hard_header_len	= 16;
+	netdev->priv_flags	&= ~IFF_XMIT_DST_RELEASE;
 
-	netdev->watchdog_timeo = 5;  //jiffies
-	netdev->flags |= IFF_NOARP;
-	random_ether_addr(netdev->dev_addr);
 	LEAVE();
 }
 

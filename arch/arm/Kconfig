@@ -4,6 +4,8 @@ config ARM
 	select HAVE_AOUT
 	select HAVE_DMA_API_DEBUG
 	select HAVE_IDE if PCI || ISA || PCMCIA
+	select HAVE_DMA_CONTIGUOUS if (CPU_V6 || CPU_V6K || CPU_V7)
+	select CMA if (CPU_V6 || CPU_V6K || CPU_V7)
 	select HAVE_MEMBLOCK
 	select RTC_LIB
 	select SYS_SUPPORTS_APM_EMULATION
@@ -629,7 +631,7 @@ config ARCH_ORION5X
 	  Orion-2 (5281), Orion-1-90 (6183).
 
 config ARCH_MMP
-	bool "Marvell PXA168/910/988/MMP2"
+	bool "Marvell PXA168/910/988/MMP2/EDEN"
 	depends on MMU
 	select ARCH_REQUIRE_GPIOLIB
 	select CLKDEV_LOOKUP
@@ -644,7 +646,7 @@ config ARCH_MMP
 	select NEED_MACH_IO_H
 	select NEED_MACH_MEMORY_H
 	help
-	  Support for Marvell's PXA168/PXA910/PXA988 and MMP2 processor line.
+	  Support for Marvell's PXA168/PXA910/PXA988/MMP2 and EDEN processor line.
 
 config ARCH_KS8695
 	bool "Micrel/Kendin KS8695"
@@ -1401,6 +1403,34 @@ config ARM_ERRATA_764369
 	  relevant cache maintenance functions and sets a specific bit
 	  in the diagnostic control register of the SCU.
 
+config ARM_ERRATA_794322
+	bool "ARM errata: An instruction fetch can be allocated into the L2 cache after the cache is disabled"
+	depends on CPU_CA7MP
+	help
+	  This option enables the workaround for erratum 794322
+	  affecting Cortex-A7 MPCore r0p2, r0p3 with an L2 cache. The
+	  SCTLR.C bit controls when data can be allocated to data and
+	  unified caches. On a Cortex-A7 processor, instruction fetches
+	  can cause lines to be allocated to the L2 cache when the C bit
+	  is set to 1. Because of this erratum, an instruction fetch
+	  might cause an allocation to the L2 cache when the C bit is
+	  set to 0.
+
+config ARM_ERRATA_802022
+       bool "ARM errata: last duplicate tag may become un-sync with L1 tag after exiting MP shutdown mode"
+       depends on CPU_CA7MP && !ARCH_NEEDS_CPU_IDLE_COUPLED
+       help
+	 This option enables the workaround for erratum 802022 affecting
+	 Cortex-A7 MPCore r0p0, r0p1, r0p2, r0p3, r0p4. A duplicate tag
+	 update for CPU A gets priority over the last duplicate tag
+	 invalidate for CPU B during CPU B's automatic invalidation process.
+	 Normally CPU B's tag invalidation will pause and then continue,
+	 but for the last tag entry it will pause and then forget it was
+	 invalidating entries because the index counter has reached the
+	 maximum value.
+	 This workaround is to make sure all CPUs exit shutdown mode when
+	 exit MP shutdown mode before dcache of any core is enabled.
+
 config PL310_ERRATA_769419
 	bool "PL310 errata: no automatic Store Buffer drain"
 	depends on CACHE_L2X0
@@ -1412,6 +1442,16 @@ config PL310_ERRATA_769419
 	  This option adds a write barrier to the cpu_idle loop so that,
 	  on systems with an outer cache, the store buffer is drained
 	  explicitly.
+
+config ARM_ERRATA_775420
+	bool "ARM errata: A data cache maintenance operation which aborts, might lead to deadlock"
+	depends on CPU_V7
+	help
+	  This option enables the workaround for the 775420 Cortex-A9 (r2p2,
+	  r2p6,r2p8,r2p10,r3p0) erratum. In case a date cache maintenance
+	  operation aborts with MMU exception, it might cause the processor
+	  to deadlock. This workaround puts DSB before executing ISB if
+	  an abort may occur on cache maintenance.
 
 config PJ4B_ERRATA_6315
        bool "PJ4B errata 6315"
@@ -1520,7 +1560,7 @@ config SMP
 	depends on HAVE_SMP
 	depends on MMU
 	select USE_GENERIC_SMP_HELPERS
-	select HAVE_ARM_SCU if !ARCH_MSM_SCORPIONMP
+	select HAVE_ARM_SCU if (!ARCH_MSM_SCORPIONMP && !CPU_CA7MP)
 	help
 	  This enables support for systems with more than one CPU. If you have
 	  a system with only one CPU, like most personal computers, say N. If
@@ -1581,6 +1621,12 @@ config HAVE_ARM_SCU
 	help
 	  This option enables support for the ARM system coherency unit
 
+config ARM_ARCH_TIMER
+	bool "Architected timer support"
+	depends on CPU_V7
+	help
+	  This option enables support for the ARM architected timer
+
 config HAVE_ARM_TWD
 	bool
 	depends on SMP
@@ -1637,7 +1683,7 @@ config LOCAL_TIMERS
 	bool "Use local timer interrupts"
 	depends on SMP
 	default y
-	select HAVE_ARM_TWD if (!ARCH_MSM_SCORPIONMP && !EXYNOS4_MCT)
+	select HAVE_ARM_TWD if (!ARCH_MSM_SCORPIONMP && !EXYNOS4_MCT && !CPU_CA7MP)
 	help
 	  Enable support for local timers on SMP platforms, rather then the
 	  legacy IPI broadcast method.  Local timers allows the system
@@ -1933,6 +1979,18 @@ config ARM_FLUSH_CONSOLE_ON_RESTART
 	  released if it failed to be acquired, which will cause all the
 	  pending messages to be flushed.
 
+config ARCH_ENABLE_MEMORY_HOTPLUG
+	def_bool y
+	depends on SPARSEMEM && MMU && ARCH_MMP
+
+config ARCH_ENABLE_MEMORY_HOTREMOVE
+	def_bool y
+	depends on ARCH_ENABLE_MEMORY_HOTPLUG
+
+config ARCH_MEMORY_PROBE
+	def_bool y
+	depends on ARCH_ENABLE_MEMORY_HOTPLUG
+
 endmenu
 
 menu "Boot options"
@@ -2074,20 +2132,6 @@ config CMDLINE_FORCE
 	  This is useful if you cannot or don't want to change the
 	  command-line options your boot loader passes to the kernel.
 endchoice
-
-config CMDLINE_INITRD_SIZE_OVERRIDE
-	bool "Override bootloader initrd size"
-	depends on BLK_DEV_INITRD && !CMDLINE_FORCE
-	default n
-	help
-	  Override boot loader initrd size argument.
-	  This is useful to enlarge initrd size limitation. For example,
-	  in Samsung's PXA988 LT02 Development Board limited in 1MB.
-
-config CMDLINE_INITRD_SIZE
-	string "Initrd size"
-	depends on CMDLINE_INITRD_SIZE_OVERRIDE
-	default "3m"
 
 config XIP_KERNEL
 	bool "Kernel Execute-In-Place from ROM"
@@ -2373,3 +2417,7 @@ source "security/Kconfig"
 source "crypto/Kconfig"
 
 source "lib/Kconfig"
+
+config SND_AUDIODOCK_SWITCH
+	tristate "Alalog audio dock switch support"
+	

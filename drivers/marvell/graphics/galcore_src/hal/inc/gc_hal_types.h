@@ -317,7 +317,7 @@ typedef enum _gceSTATUS
     gcvSTATUS_INTERRUPTED           =   -26,
     gcvSTATUS_DEVICE                =   -27,
     gcvSTATUS_NOT_MULTI_PIPE_ALIGNED =   -28,
-    gcvSTATUS_MIPMAP_TOO_LARGE       = -29,
+    gcvSTATUS_MIPMAP_TOO_LARGE       =   -29,
     gcvSTATUS_INTERRUPTED_TIMEOUT    =   -30,
 
     /* Linker errors. */
@@ -1004,6 +1004,23 @@ struct _gckLINKQUEUE
     gctUINT32                   count;
 };
 #endif
+#define gcdENTRY_QUEUE_SIZE 256
+typedef struct _gckENTRYDATA * gckENTRYDATA;
+struct _gckENTRYDATA
+{
+    gctUINT32                   physical;
+    gctUINT32                   bytes;
+};
+
+typedef struct _gckENTRYQUEUE * gckENTRYQUEUE;
+struct _gckENTRYQUEUE
+{
+    struct _gckENTRYDATA        data[gcdENTRY_QUEUE_SIZE];
+    gctUINT32                   rear;
+    gctUINT32                   front;
+    gctUINT32                   count;
+    gctBOOL                     init;
+};
 
 #ifdef __cplusplus
 }

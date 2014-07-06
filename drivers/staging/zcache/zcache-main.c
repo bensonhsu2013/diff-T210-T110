@@ -1941,8 +1941,7 @@ struct frontswap_ops zcache_frontswap_register_ops(void)
  * NOTHING HAPPENS!
  */
 
-/* zcache always enabled */
-static int zcache_enabled = 1;
+static int zcache_enabled;
 
 static int __init enable_zcache(char *s)
 {

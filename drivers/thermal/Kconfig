@@ -29,6 +29,6 @@ config SPEAR_THERMAL
 
 config PXA988_THERMAL
 	bool "PXA988 Thermal interface support"
-	depends on THERMAL && CPU_PXA988
+	depends on THERMAL && (CPU_PXA988 || CPU_PXA1088)
 	help
-	  Add thermal management for pxa988.
+	  Add thermal management for pxa988 and pxa1088.

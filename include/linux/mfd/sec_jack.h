@@ -15,6 +15,17 @@
 #ifndef __ASM_ARCH_SEC_HEADSET_H
 #define __ASM_ARCH_SEC_HEADSET_H
 
+#define SEC_SYSFS_FOR_FACTORY_TEST
+
+#if defined(CONFIG_MACH_GOLDEN)
+#define SEC_USE_ANLOGDOCK_DEVICE
+#define SAMSUNG_JACK_SW_WATERPROOF
+#endif
+
+#if defined(CONFIG_MACH_GOYA)
+#define COM_DET_CONTROL
+#endif
+
 enum {
 	SEC_JACK_NO_DEVICE		= 0x0,
 	SEC_HEADSET_4POLE		= 0x01 << 0,
@@ -39,13 +50,26 @@ struct sec_jack_platform_data {
 	int headset_flag;
 	void (*mic_set_power)(int on);
 
-	struct 	sec_jack_zone	*zones;
-	struct 	sec_jack_buttons_zone	*buttons_zones;
+#ifdef SEC_USE_ANLOGDOCK_DEVICE
+	void (*dock_audiopath_ctrl)(int on);
+	void (*chgpump_ctrl)(int enable);
+	int (*usb_switch_register_notify)(struct notifier_block *nb);
+	int (*usb_switch_unregister_notify)(struct notifier_block *nb);
+#endif /* SEC_USE_ANLOGDOCK_DEVICE */
+
+	struct	sec_jack_zone	*zones;
+	struct	sec_jack_buttons_zone	*buttons_zones;
 	int	num_zones;
 	int	num_buttons_zones;
 
-	int 	press_release_th;
-};
-
+	int	hook_press_th;
+	int	vol_up_press_th;
+	int	vol_down_press_th;
+	int	mic_det_th;
+	int	press_release_th;
+	
+#ifdef SAMSUNG_JACK_SW_WATERPROOF
+	int ear_reselector_zone;
 #endif
-
+};
+#endif //__ASM_ARCH_SEC_HEADSET_H

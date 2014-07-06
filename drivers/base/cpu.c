@@ -13,6 +13,7 @@
 #include <linux/gfp.h>
 #include <linux/slab.h>
 #include <linux/percpu.h>
+#include <linux/kthread.h>
 
 #include "base.h"
 
@@ -39,6 +40,8 @@ static ssize_t __ref store_online(struct device *dev,
 				  const char *buf, size_t count)
 {
 	struct cpu *cpu = container_of(dev, struct cpu, dev);
+	struct sched_param param_normal = { .sched_priority = 0 };
+	struct sched_param param_rt = { .sched_priority = 1 };
 	ssize_t ret;
 
 	cpu_hotplug_driver_lock();
@@ -49,7 +52,9 @@ static ssize_t __ref store_online(struct device *dev,
 			kobject_uevent(&dev->kobj, KOBJ_OFFLINE);
 		break;
 	case '1':
+		sched_setscheduler_nocheck(kthreadd_task, SCHED_FIFO, &param_rt);
 		ret = cpu_up(cpu->dev.id);
+		sched_setscheduler_nocheck(kthreadd_task, SCHED_NORMAL, &param_normal);
 		if (!ret)
 			kobject_uevent(&dev->kobj, KOBJ_ONLINE);
 		break;

@@ -24,7 +24,9 @@
  * pm800 and pm805. would remove it after HW chip fixes the issue.
  */
 static struct pm80x_chip *g_pm80x_chip;
-
+#ifdef CONFIG_MFD_88PM822
+extern struct i2c_client *pm822_client;
+#endif
 const struct regmap_config pm80x_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
@@ -78,7 +80,9 @@ int pm80x_init(struct i2c_client *client,
 		chip->companion = g_pm80x_chip->client;
 		g_pm80x_chip->companion = chip->client;
 	}
-
+#ifdef CONFIG_MFD_88PM822
+	chip->companion = pm822_client;
+#endif
 	return 0;
 }
 EXPORT_SYMBOL_GPL(pm80x_init);
@@ -204,15 +208,12 @@ int pm800_extern_setbits(int page, int reg,
 }
 EXPORT_SYMBOL(pm800_extern_setbits);
 
-
-#if defined(CONFIG_SPA) ||			\
-	defined(CONFIG_MACH_LT02)
 extern int pm80x_read_temperature(int *tbat)
-{
+{	
       unsigned char buf[2];
 	int sum = 0, ret = -1;
 	*tbat=0;
-	struct pm80x_chip *chip = get_pm800_chip();
+	struct pm80x_chip *chip = get_pm800_chip(); 	 
 	ret =regmap_bulk_read(chip->subchip->regmap_gpadc, PM800_GPADC1_MEAS1, buf,2);
 	if (ret >= 0)
 	{
@@ -224,13 +225,13 @@ extern int pm80x_read_temperature(int *tbat)
 }
 EXPORT_SYMBOL(pm80x_read_temperature);
 
-extern int pm80x_rf_read_temperature(int *tbat)
+extern int pm80x_read_gpadc(int *tbat, unsigned int channel)
 {
 	unsigned char buf[2];
 	int sum = 0, ret = -1;
 	*tbat=0;
 	struct pm80x_chip *chip = get_pm800_chip();
-	ret =regmap_bulk_read(chip->subchip->regmap_gpadc, PM800_GPADC0_MEAS1, buf,2);
+	ret =regmap_bulk_read(chip->subchip->regmap_gpadc, channel, buf,2);
 	if (ret >= 0)
 	{
 		sum = ((buf[0] & 0xFF) << 4) | (buf[1] & 0x0F);
@@ -239,29 +240,8 @@ extern int pm80x_rf_read_temperature(int *tbat)
 	}
 	return ret;
 }
-EXPORT_SYMBOL(pm80x_rf_read_temperature);
-extern int pm80x_read_vf(int *vfbat)
-{
-	unsigned char buf[2];
-	int sum = 0, ret = -1;
-	u8 reg;
 
-	*vfbat=0;
-	struct pm80x_chip *chip = get_pm800_chip();
-
-	ret =regmap_bulk_read(chip->subchip->regmap_gpadc, PM800_GPADC3_MEAS1, buf,2);
-	if (ret >= 0)
-	{
-		sum = ((buf[0] & 0xFF) << 4) | (buf[1] & 0x0F);
-		sum = ((sum & 0xFFF) * 1400) >> 12;
-		*vfbat = sum;
-	}
-
-	return ret;
-}
-EXPORT_SYMBOL(pm80x_read_vf);
-#endif
-
+EXPORT_SYMBOL(pm80x_read_gpadc);
 
 #ifdef CONFIG_PM_SLEEP
 static int pm80x_suspend(struct device *dev)

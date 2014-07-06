@@ -468,6 +468,14 @@ static int mmc_read_ext_csd(struct mmc_card *card, u8 *ext_csd)
 				(card->cid.manfid == 0x15))
 			card->ext_csd.feature_support |= MMC_DISCARD_FEATURE;
 
+		/*
+		 * enable discard feature if emmc is 4.41+ Toshiba eMMC 19nm
+		 * Normally, emmc 4.5 use EXT_CSD[501]
+		 */
+		if ((ext_csd[EXT_CSD_MAX_PACKED_READS] & 0x3F) &&
+				(card->cid.manfid == 0x11))
+			card->ext_csd.feature_support |= MMC_DISCARD_FEATURE;
+
 		/* check whether the eMMC card supports HPI */
 		if (ext_csd[EXT_CSD_HPI_FEATURES] & 0x1) {
 			card->ext_csd.hpi = 1;
@@ -609,15 +617,6 @@ MMC_DEV_ATTR(serial, "0x%08x\n", card->cid.serial);
 MMC_DEV_ATTR(enhanced_area_offset, "%llu\n",
 		card->ext_csd.enhanced_area_offset);
 MMC_DEV_ATTR(enhanced_area_size, "%u\n", card->ext_csd.enhanced_area_size);
-MMC_DEV_ATTR(caps, "0x%08x\n", (unsigned int)(card->host->caps));
-MMC_DEV_ATTR(caps2, "0x%08x\n", card->host->caps2);
-MMC_DEV_ATTR(erase_type, "MMC_CAP_ERASE %s, type %s, SECURE %s, Sanitize %s\n",
-		card->host->caps & MMC_CAP_ERASE ? "enabled" : "disabled",
-		mmc_can_discard(card) ? "DISCARD" :
-		(mmc_can_trim(card) ? "TRIM" : "NORMAL"),
-		(!mmc_can_sanitize(card) && mmc_can_secure_erase_trim(card)) ?
-		"supportable" : "disabled",
-		mmc_can_sanitize(card) ? "enabled" : "disabled");
 
 static struct attribute *mmc_std_attrs[] = {
 	&dev_attr_cid.attr,
@@ -633,9 +632,6 @@ static struct attribute *mmc_std_attrs[] = {
 	&dev_attr_serial.attr,
 	&dev_attr_enhanced_area_offset.attr,
 	&dev_attr_enhanced_area_size.attr,
-	&dev_attr_caps.attr,
-	&dev_attr_caps2.attr,
-	&dev_attr_erase_type.attr,
 	NULL,
 };
 
@@ -1392,7 +1388,7 @@ static int mmc_resume(struct mmc_host *host)
 	BUG_ON(!host->card);
 
 	mmc_claim_host(host);
-		err = mmc_init_card(host, host->ocr, host->card);
+	err = mmc_init_card(host, host->ocr, host->card);
 	mmc_release_host(host);
 
 	return err;

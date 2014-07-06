@@ -1676,11 +1676,7 @@ int regulatory_hint(struct wiphy *wiphy, const char *alpha2)
 
 	request->alpha2[0] = alpha2[0];
 	request->alpha2[1] = alpha2[1];
-#if 0 /* workaround #478237 for preventing intersect */
 	request->initiator = NL80211_REGDOM_SET_BY_DRIVER;
-#else
-	request->initiator = NL80211_REGDOM_SET_BY_USER;
-#endif
 
 	queue_regulatory_request(request);
 

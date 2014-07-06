@@ -98,7 +98,7 @@ typedef struct
 
 #if 1
 extern unsigned char TSP_PanelVersion, TSP_PhoneVersion;
-extern unsigned char TSP_CorePanelVersion, TSP_CorePhoneVersion,TSP_type;
+extern unsigned char TSP_CorePanelVersion, TSP_CorePhoneVersion,TSP_type, TSP_force_update;
 static DEFINE_MUTEX(melfas_mutex);
 extern unsigned int need_check;
 
@@ -140,8 +140,7 @@ static int mms100_i2c_read(struct i2c_client *client, u16 addr, u16 length, u8 *
 {
 	struct i2c_adapter *adapter = client->adapter;
 	struct i2c_msg msg;
-	int ret = -1;
-	unsigned char *idata = (u8 *) & addr;;
+	int ret;
 
 	msg.addr = client->addr;
 	msg.flags = 0x00;
@@ -161,7 +160,7 @@ static int mms100_i2c_read(struct i2c_client *client, u16 addr, u16 length, u8 *
 		msg.buf = (u8 *) value;
 
 		mutex_lock(&melfas_mutex);
-    	ret = i2c_transfer(adapter, &msg, 1);
+    		ret = i2c_transfer(adapter, &msg, 1);
 	  	//ret= mfs_gpio_i2c_read(client->addr, value, length);
 		mutex_unlock(&melfas_mutex);
 
@@ -778,9 +777,15 @@ static eISCRet_t mms100_open_mbinary(struct i2c_client *_client)
         request_firmware(&fw_mbin[i], fw_name, &_client->dev);
     }
 */
+#if defined(CONFIG_MACH_ARUBATD) || defined(CONFIG_MACH_CS02) || defined(CONFIG_MACH_DELOS3GVIA)
 	ret += request_firmware(&(fw_mbin[0]),"melfas/arubaTD/BOOT.fw", &_client->dev);
 	ret += request_firmware(&(fw_mbin[1]),"melfas/arubaTD/CORE.fw", &_client->dev);
 	ret += request_firmware(&(fw_mbin[2]),"melfas/arubaTD/CONF.fw", &_client->dev);
+#elif defined(CONFIG_MACH_HELANDELOS) || defined(CONFIG_MACH_CS05)
+	ret += request_firmware(&(fw_mbin[0]),"melfas/arubaTD/BOOT.fw", &_client->dev);
+	ret += request_firmware(&(fw_mbin[1]),"melfas/arubaTD/CORE.fw", &_client->dev);
+	ret += request_firmware(&(fw_mbin[2]),"melfas/delosTD/CONF.fw", &_client->dev);
+#endif
 
     pr_info("End mms100_open_mbinary(), %d\n", ret);
     
@@ -808,16 +813,21 @@ static eISCRet_t mms100_close_mbinary(void)
 *        Լ TSP device driver i2c_set_clientdata Ϸ Ŀ ȣǾ մϴ.
 */
 #include "mms100_isp.h"
-#ifdef CONFIG_MACH_ARUBA_TD
+#if defined(CONFIG_MACH_ARUBA_TD) || defined(CONFIG_MACH_WARUBA) || defined(CONFIG_MACH_HARRISON) \
+	|| defined(CONFIG_MACH_HELANDELOS) || defined(CONFIG_MACH_CS02) || defined(CONFIG_MACH_CS05)
 #include <linux/input/mms136_ts.h>
 #endif
 eISCRet_t mms100_ISC_download_mbinary(struct i2c_client *_client)
 {
     eISCRet_t ret_msg = ISC_NONE;
-#ifdef CONFIG_MACH_ARUBA_TD	
+#if defined(CONFIG_MACH_ARUBA_TD) 
     const char *fw_name = "melfas/arubaTD/ARUBA_G1M_CORE53_R20_V09.fw";
     const char *fw_name2 = "melfas/arubaTD/ARUBA_G1F_CORE53_R30_V07.fw";
-    const char *fw_name3 = "melfas/arubaTD/ARUBA_G1F_CORE53_R34_V14.fw";	
+    const char *fw_name3 = "melfas/arubaTD/ARUBA_G1F_CORE53_R35_V15.fw";
+#elif defined(CONFIG_MACH_WARUBA) || defined(CONFIG_MACH_HARRISON) || defined(CONFIG_MACH_CS02) || defined(CONFIG_MACH_DELOS3GVIA)
+    const char *fw_name = "melfas/arubaTD/ARUBA_G1F_CORE53_R35_V15.fw";
+#elif defined(CONFIG_MACH_HELANDELOS) || defined(CONFIG_MACH_CS05)
+    const char *fw_name = "melfas/delosTD/DELOS_G1F_R35_V25.fw";
 #endif
 
     pr_info("[TSP ISC] %s\n", __func__);
@@ -851,12 +861,18 @@ eISCRet_t mms100_ISC_download_mbinary(struct i2c_client *_client)
     TSP_CorePhoneVersion = mbin_info[1].version;
     TSP_CorePanelVersion = ts_info[1].version;	
     printk("[TSP] %s, version(%x)\n", __func__, TSP_PanelVersion);
+    if(TSP_force_update)
+    {
+		ret_msg = mms_fw_force_updated(_client);
+		TSP_force_update = 0;
+		goto ISC_TEMP;
+    }
     if(TSP_PanelVersion == 0xFF)
     {
     		printk("[TSP] %s, wrong version parameter!!(%x)\n", __func__, TSP_PanelVersion);
 		TSP_PanelVersion = 0x00;
     }
-#ifdef CONFIG_MACH_ARUBA_TD	
+#if defined(CONFIG_MACH_ARUBA_TD)
 //    printk("%d  %d  %d  \n",gpio_get_value(TSP_TYPE1), gpio_get_value(TSP_TYPE2), gpio_get_value(TSP_TYPE3));
     TSP_type = 1;
     if(((!gpio_get_value(TSP_TYPE1)) && (!gpio_get_value(TSP_TYPE2)) && gpio_get_value(TSP_TYPE3))
@@ -883,7 +899,7 @@ eISCRet_t mms100_ISC_download_mbinary(struct i2c_client *_client)
 		printk("[TSP]Don't need to G1F update.....\n");
    		goto ISC_TEMP;		
     }
-    else if(TSP_PanelVersion < 0x14)		// temp modification for 0x10 firmware update routine minkang 121012
+    else if(TSP_PanelVersion < 0x15)		// temp modification for 0x10 firmware update routine minkang 121012
     {
 			mms_flash_fw2(_client,fw_name3);
 			printk("[TSP]G1F ITO updated.....\n");
@@ -891,6 +907,46 @@ eISCRet_t mms100_ISC_download_mbinary(struct i2c_client *_client)
     }
     else
 		goto ISC_ERROR_HANDLE;	
+#elif defined(CONFIG_MACH_WARUBA) || defined(CONFIG_MACH_HARRISON) || defined(CONFIG_MACH_CS02)
+    TSP_type = 1;
+    if(TSP_PanelVersion < 0x15)		
+    {
+			mms_flash_fw2(_client,fw_name);
+			printk("[TSP]G1F ITO updated.....\n");
+   			goto ISC_TEMP;
+    }
+    else
+    {
+		ret_msg = ISC_NO_NEED_UPDATE_ERROR;
+		goto ISC_ERROR_HANDLE;	
+    }
+#elif defined(CONFIG_MACH_DELOS3GVIA)
+    TSP_type = 1;
+    if((TSP_PanelVersion == 0x25) ||(TSP_PanelVersion < 0x15))
+    {
+			mms_flash_fw2(_client,fw_name);
+			printk("[TSP]G1F ITO updated.....\n");
+   			goto ISC_TEMP;
+    }
+    else
+    {
+		ret_msg = ISC_NO_NEED_UPDATE_ERROR;
+		goto ISC_ERROR_HANDLE;	
+    }
+#elif defined(CONFIG_MACH_HELANDELOS) || defined(CONFIG_MACH_CS05)
+    TSP_type = 1;
+    if(TSP_PanelVersion < 0x25)		
+    {
+			mms_flash_fw2(_client,fw_name);
+			printk("[TSP]G1F ITO updated.....\n");
+   			goto ISC_TEMP;
+    }
+    else
+    {
+		ret_msg = ISC_NO_NEED_UPDATE_ERROR;
+		goto ISC_ERROR_HANDLE;	
+    }
+
 #endif	
     ret_msg = mms100_enter_ISC_mode(_client);				//   w 1
     if (ret_msg != ISC_SUCCESS){

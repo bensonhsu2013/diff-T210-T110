@@ -16,17 +16,13 @@
 #define __MMP_CAMERA_H
 
 /* All the Micro are for samsung debug, by Vincent Wan. */
-#if defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
-//define __DEBUG_DMA_DONE			/* Set frames finished interrupt indicating, defined for 'DMA done', undefined for 'EOF detect', prefer 'dma done'.*/
-#else
-#define __DEBUG_DMA_DONE			/* Set frames finished interrupt indicating, defined for 'DMA done', undefined for 'EOF detect', prefer 'dma done'.*/
-#endif
-#define __DEBUG_ENABLE_OVERFLOWIRQ	/* Enable overflow irq */
-#undef __DEBUG_DUMP_REGISTER		/* Dump All CCIC registers */
-#undef __DEBUG_ENABLE_RAWSTATUS		/* Read the raw status registers */
-#define SSG_SKIP_FRAMES 1		/* Skip the frames, 0: no skip, 1: skip one frame,2:skip two frames */
-#undef __ENABLE_DDR_MIN_312MHZ		/* Enable limit min ddr clock to 312MHZ */
-#undef __DEBUG_STREAM_ON_OFF_LOG	/* Enable stream on/off kernel log */
+//#define __DEBUG_DMA_DONE 						/* Set frames finished interrupt indicating, defined for 'DMA done', undefined for 'EOF detect', prefer 'dma done'.*/
+#define __DEBUG_ENABLE_OVERFLOWIRQ			/* Enable overflow irq */
+#undef __DEBUG_DUMP_REGISTER					/* Dump All CCIC registers */
+#undef __DEBUG_ENABLE_RAWSTATUS				/* Read the raw status registers */
+#define SSG_SKIP_FRAMES 0						/* Skip the frames, 0: no skip, 1: skip one frame,2:skip two frames */
+#undef __ENABLE_DDR_MIN_312MHZ					/* Enable limit min ddr clock to 312MHZ */
+#undef __DEBUG_STREAM_ON_OFF_LOG				/* Enable stream on/off kernel log */
 #undef __DEBUG_ENABLE_COUNTS_CHECK
 #undef __DEBUG_ENABLE_SKIP_EOF_CHECK
 /*
@@ -144,6 +140,8 @@
 #define   C1_PWRDWN	  0x10000000	/* Power down */
 #define   C1_DMAPOSTED	  0x40000000	/* DMA Posted Select */
 
+#define REG_CTRL2	0x44	/* Control 2 */
+#define ISIM_FIX	0x80000000	/* ISIM FIX */
 #define REG_CTRL3	0x1ec	/* CCIC parallel mode */
 
 #define REG_LNNUM	0x60	/* Lines num DMA filled */
@@ -153,13 +151,6 @@
 #define REG_FRAME_CNT 0x23c	/* Frame byte count */
 
 #define   CLK_DIV_MASK	  0x0000ffff	/* Upper bits RW "reserved" */
-
-/* State */
-#define SR200PC20M_STATE_PREVIEW			0x0000	/*  preview state */
-#define SR200PC20M_STATE_CAPTURE			0x0001	/*  capture state */
-#define SR200PC20M_STATE_CAMCORDER		0x0002	/*  camcorder state */
-#define SR200PC20M_STATE_HD_CAMCORDER	0x0003	/*  HD camcorder state */
-#define SR200PC20M_STATE_INVALID			0x0004	/*  invalid state */
 
 /*
  * Indicate flags for CCIC frame buffer state
@@ -233,7 +224,6 @@ struct mmp_camera_dev {
 	unsigned int nbufs;		/* How many bufs are used for ccic */
 	struct vb2_alloc_ctx *vb_alloc_ctx;
 	int frame_rate;
-	struct pm_qos_request qos_idle;
 	struct pm_qos_request qos_ddr;
 #ifdef CONFIG_VIDEO_MRVL_CAM_DEBUG
 	struct ccic_mcd		mcd_root;
@@ -245,6 +235,7 @@ struct mmp_camera_dev {
 	struct mcd_vdev		mcd_vdev;
 	struct mcd_sensor	mcd_sensor;
 #endif
+	struct pm_qos_request qos_idle;
 };
 
 #ifdef CONFIG_VIDEO_MRVL_CAM_DEBUG

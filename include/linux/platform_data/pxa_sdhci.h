@@ -30,10 +30,12 @@ enum cd_types {
  * @preset_rate: the clock could set by the SOC
  * @src_rate: send to the clock subsystem
  *            related to APMU on SOC
+ * @tx_delay: use DDLL to delay clock waveform
  */
 struct sdhci_pxa_dtr_data {
 	unsigned char timing;
 	unsigned long preset_rate;
+	unsigned int tx_delay;
 /*
  * PXA platform special preset/src clock rate
  * use to preset the MMC defined clock rate
@@ -64,6 +66,10 @@ struct sdhci_pxa_dtr_data {
 #define PXA_FLAG_DISABLE_PROBE_CDSCAN (1<<4)
 /* whether supports RPM in driver, it can used for source clock gating */
 #define PXA_FLAG_EN_PM_RUNTIME (1<<5)
+/* whether Tx configure support bus clock as internal clock */
+#define PXA_FLAG_TX_SEL_BUS_CLK (1<<6)
+/* whether Rx configure Reg is changed, like pxa988, 1088 */
+#define PXA_FLAG_NEW_RX_CFG_REG (1<<7)
 
 /*
  * struct pxa_sdhci_platdata() - Platform device data for PXA SDHCI
@@ -81,6 +87,7 @@ struct sdhci_pxa_dtr_data {
  * @max_speed: the maximum speed supported
  * @host_caps: Standard MMC host capabilities bit field.
  * @quirks: quirks of platfrom
+ * @quirks2: quirks of platfrom
  * @pm_caps: pm_caps of platfrom
  * @signal_vol_change: signaling voltage change
  */
@@ -101,7 +108,6 @@ struct sdhci_pxa_platdata {
 	unsigned int	pm_caps;
 	void	(*signal_vol_change)(unsigned int set);
 	void (*clear_wakeup_event)(void);
-	unsigned int (*pm_state)(int reg);
 #ifdef CONFIG_SD8XXX_RFKILL
 	/* for sd8xxx-rfkill device */
 	struct mmc_host **pmmc;

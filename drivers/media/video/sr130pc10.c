@@ -1,6 +1,6 @@
 /*
  * A V4L2 driver for siliconfile SR130PC10 cameras.
- * 
+ *
  * Copyright 2006 One Laptop Per Child Association, Inc.  Written
  * by Jonathan Corbet with substantial inspiration from Mark
  * McClelland's ovcamchip code.
@@ -9,7 +9,7 @@
  *jpeg
  * This file may be distributed under the terms of the GNU General
  * Public License, version 2.
- * 
+ *
  * Create SR130PC10 driver from SR030PC50 driver by
  * Vincent Wan <zswan@marvell.com> for Marvell emei harrison project.
  */
@@ -56,10 +56,10 @@ static const struct sr130pc10_datafmt sr130pc10_colour_fmts[] = {
 };
 
 
-#define CAM_DEBUG 
+#define CAM_DEBUG
 
-#ifdef CAM_DEBUG 
-#define Cam_Printk(msg...) printk(msg)	
+#ifdef CAM_DEBUG
+#define Cam_Printk(msg...) printk(msg)
 #else
 #define Cam_Printk
 #endif
@@ -84,7 +84,7 @@ static const struct sr130pc10_datafmt sr130pc10_colour_fmts[] = {
  */
 #define SR130PC10_FRAME_RATE 30
 
-//#define SR130PC10_I2C_ADDR (0x5A >> 1) 
+//#define SR130PC10_I2C_ADDR (0x5A >> 1)
 
 #define REG_MIDH	0x1c	/* Manuf. ID high */
 
@@ -111,7 +111,7 @@ static int sr130pc10_set_focus_mode(struct i2c_client *client, s32 value, int st
 static int sr130pc10_set_focus(struct i2c_client *client,s32 value);
 static int sr130pc10_set_focus_touch_position(struct i2c_client *client, s32 value);
 static int sr130pc10_get_focus_status(struct i2c_client *client, struct v4l2_control *ctrl, s32 value);
-void sr130pc10_set_REG_TC_DBG_AutoAlgEnBits(struct i2c_client *client,int bit, int set); 
+void sr130pc10_set_REG_TC_DBG_AutoAlgEnBits(struct i2c_client *client,int bit, int set);
 
 
 struct sr130pc10_sensor sr130pc10 = {
@@ -143,7 +143,6 @@ struct sr130pc10_sensor sr130pc10 = {
 	//.flash_capture	= SR130PC10_FLASH_CAPTURE_OFF,
 	//.flash_movie		= SR130PC10_FLASH_MOVIE_OFF,
 	.quality		= QUALITY_SUPERFINE,
-	.vtmode			= 0,
 	//.zoom			= SR130PC10_ZOOM_1P00X,
 	.thumb_offset		= 0,
 	.yuv_offset		= 0,
@@ -151,7 +150,7 @@ struct sr130pc10_sensor sr130pc10 = {
 	.jpeg_main_offset	= 0,
 	.jpeg_thumb_size	= 0,
 	.jpeg_thumb_offset	= 0,
-	.jpeg_postview_offset	= 0, 
+	.jpeg_postview_offset	= 0,
 	.jpeg_capture_w		= JPEG_CAPTURE_WIDTH,
 	.jpeg_capture_h		= JPEG_CAPTURE_HEIGHT,
 	.check_dataline		= 0,
@@ -176,49 +175,6 @@ struct sr130pc10_info {
 	struct soc_camera_device icd;
 
 };
-
-extern int camera_antibanding_get (void);
-
-static int sr130pc10_copy_files_for_60hz(void){
-
-#define COPY_FROM_60HZ_TABLE(TABLE_NAME, ANTI_BANDING_SETTING) \
-	memcpy (TABLE_NAME, TABLE_NAME##_##ANTI_BANDING_SETTING, \
-	sizeof(TABLE_NAME))
-
-	printk("%s: Enter \n",__func__);
-
-	COPY_FROM_60HZ_TABLE (sr130pc10_Init_Reg, 60hz);
-	COPY_FROM_60HZ_TABLE (sr130pc10_VT_Init_Reg, 60hz);
-	COPY_FROM_60HZ_TABLE (sr130pc10_Preview_Mode, 60hz);
-	COPY_FROM_60HZ_TABLE (sr130pc10_fps_7fix, 60hz);
-	COPY_FROM_60HZ_TABLE (sr130pc10_fps_10fix, 60hz);
-	COPY_FROM_60HZ_TABLE (sr130pc10_fps_15fix, 60hz);
-	COPY_FROM_60HZ_TABLE (sr130pc10_fps_15fix_352X288, 60hz);
-	COPY_FROM_60HZ_TABLE (sr130pc10_fps_15fix_176X144, 60hz);
-	COPY_FROM_60HZ_TABLE (sr130pc10_fps_8fix_352X288, 60hz);
-	COPY_FROM_60HZ_TABLE (sr130pc10_fps_8fix_176X144, 60hz);
-
-	printk("%s: copy done!\n", __func__);
-}
-
-static int sr130pc10_check_table_size_for_60hz(void){
-#define IS_SAME_NUM_OF_ROWS(TABLE_NAME) \
-	(sizeof(TABLE_NAME) == sizeof(TABLE_NAME##_60hz))
-
-	if ( !IS_SAME_NUM_OF_ROWS(sr130pc10_Init_Reg) ) return (-1);
-	if ( !IS_SAME_NUM_OF_ROWS(sr130pc10_VT_Init_Reg) ) return (-2);
-	if ( !IS_SAME_NUM_OF_ROWS(sr130pc10_Preview_Mode) ) return (-3);
-	if ( !IS_SAME_NUM_OF_ROWS(sr130pc10_fps_7fix) ) return (-4);
-	if ( !IS_SAME_NUM_OF_ROWS(sr130pc10_fps_10fix) ) return (-5);
-	if ( !IS_SAME_NUM_OF_ROWS(sr130pc10_fps_15fix) ) return (-6);
-	if ( !IS_SAME_NUM_OF_ROWS(sr130pc10_fps_15fix_352X288) ) return (-7);
-	if ( !IS_SAME_NUM_OF_ROWS(sr130pc10_fps_15fix_176X144) ) return (-8);
-	if ( !IS_SAME_NUM_OF_ROWS(sr130pc10_fps_8fix_352X288) ) return (-9);		
-	if ( !IS_SAME_NUM_OF_ROWS(sr130pc10_fps_8fix_176X144) ) return (-10);
-		
-	printk("%s: Success !\n", __func__);
-	return 0;
-}
 
 #if 0
 static int sr130pc10_read(struct i2c_client *c, u16 reg, u16 *value)
@@ -252,14 +208,14 @@ static int sr130pc10_write(struct i2c_client *c, u16 reg,  u16 val)
 	data[1] = reg;
 	data[2]=  val>>8;
 	data[3] = val;
-	
-	
+
+
 	if (reg == 0xffff)
 	{
 	msleep(val);  /* Wait for reset to run */
 	return 0;
 	}
-	
+
 	ret = i2c_master_send(c, data, 4);
 	return (ret < 0) ? ret: 0;
 }
@@ -269,21 +225,15 @@ static int sr130pc10_write_byte(struct i2c_client *c, unsigned char reg,
 		unsigned char value)
 {
 	int retry = 3, ret;
-	struct i2c_client c_tmp;
-	
+
 	if (reg == 0xfe)
 	{
-		mdelay(value);  /* Wait for reset to run */
+		msleep(value);  /* Wait for reset to run */
 		return 0;
 	}
-	
-	memcpy(&c_tmp, c, sizeof(struct i2c_client));
-	
+
 to_retry:
-	/* correct fake i2c addr (0x10 -> 0x20) */
-	c_tmp.addr = 0x40 >> 1;
-	ret = i2c_smbus_write_byte_data(&c_tmp, reg, value);
-	/*ret = i2c_smbus_write_byte_data(c, reg, value);*/
+	ret = i2c_smbus_write_byte_data(c, reg, value);
 	if (ret < 0) {
 			printk("<##############################>ret : %d , retry: %d \n", ret, retry);
 			if (retry > 0) {
@@ -321,9 +271,6 @@ static int sr130pc10_i2c_read( struct i2c_client *client, unsigned char subaddr,
 
 	int err = 0;
 	buf[0] = subaddr;
-
-	/* correct fake i2c addr (0x10 -> 0x20) */
-	msg.addr = 0x40 >> 1;
 
 	if (!client->adapter)
 		return -EIO;
@@ -428,11 +375,6 @@ static int32_t sr130pc10_i2c_write_16bit( struct i2c_client *client, u16 packet)
 		msleep(3);
 
 	} while (retry_count <= 5);
-
-	if(retry_count > 5){
-		printk("sr130pc10_i2c_write_16bit : Failed to write i2c. retry_count = %d\n", retry_count);
-		return -1;
-	}
 
 	return 0;
 }
@@ -557,25 +499,28 @@ static int sr130pc10_regs_table_write(struct i2c_client *c, char *name)
 			break;
 
 		/* Write Value to Address */
+		if (reg != NULL) {
+			memcpy(reg_buf, (reg + 0), 4);
+			memcpy(data_buf, (reg + 4), 2);
+			addr = (unsigned short)simple_strtoul(reg_buf, NULL, 16);
+			value = (unsigned short)simple_strtoul(data_buf, NULL, 16);
+			printk("addr 0x%02x, value 0x%02x\n", addr, value);
 
-		memcpy(reg_buf, (reg + 0), 4);
-		memcpy(data_buf, (reg + 4), 2);
-		addr = (unsigned short)simple_strtoul(reg_buf, NULL, 16);
-		value = (unsigned short)simple_strtoul(data_buf, NULL, 16);
-		printk("addr 0x%02x, value 0x%02x\n", addr, value);
-
-		if (addr == 0xff)
-		{
-			msleep(value);
-			printk("delay 0x%02x, value 0x%02x\n", addr, value);
-		}
-		else
-		{
-			if( sr130pc10_write_byte(c,addr, value) < 0 )
+			if (addr == 0xff)
 			{
-				printk("<=PCAM=> %s fail on sensor_write\n", __func__);
+				msleep(value);
+				printk("delay 0x%02x, value 0x%02x\n", addr, value);
+			}
+			else
+			{
+				if( sr130pc10_write_byte(c,addr, value) < 0 )
+				{
+					printk("<=PCAM=> %s fail on sensor_write\n", __func__);
+				}
 			}
 		}
+		else
+			printk(KERN_ERR " EXCEPTION! reg value : %c  addr : 0x%x,  value : 0x%x\n", *reg, addr, value);
 	}
 	printk(KERN_ERR "***** Writing [%s] Ended\n",name);
 
@@ -623,10 +568,11 @@ static int sr130pc10_i2c_wrt_list( struct i2c_client *client, const u16 *regs,
 
 	int i;
 	u8 m_delay = 0;
+
 	u16 temp_packet;
 
-	printk("sr130pc10_i2c_wrt_list : %s, size=%d\n", name, size);
 
+	CAM_DEBUG("%s, size=%d", name, size);
 	for (i = 0; i < size; i++) {
 		temp_packet = regs[i];
 
@@ -655,24 +601,23 @@ static int sr130pc10_detect(struct i2c_client *client)
 	int i;
 
 	printk("-----------sr130pc10_detect------client->addr:0x%x------\n", client->addr);
-	//sr130pc10_write_byte(client,0x03,0x00);//Vincent add here, for p0
-	//sr130pc10_i2c_read(client, 0x04, &ID);	
+
 	ID = sr130pc10_reg_read_and_check(client, 0x00, 0x04);
-	
-	if(ID == 0x94) 
+
+	if(ID == 0x94)
 	{
 		printk(SR130PC10_MOD_NAME"========================================\n");
-		printk(SR130PC10_MOD_NAME"   [VGA CAM] vendor_id ID : 0x%04X\n", ID);
+		printk(SR130PC10_MOD_NAME"   [1.3M CAM] vendor_id ID : 0x%04X\n", ID);
 		printk(SR130PC10_MOD_NAME"========================================\n");
-	} 
-	else 
+	}
+	else
 	{
 		printk(SR130PC10_MOD_NAME"-------------------------------------------------\n");
-		printk(SR130PC10_MOD_NAME"   [VGA CAM] sensor detect failure !!\n");
+		printk(SR130PC10_MOD_NAME"   [1.3M CAM] sensor detect failure !!\n");
 		printk(SR130PC10_MOD_NAME"   ID : 0x%04X[ID should be 0x94]\n", ID);
 		printk(SR130PC10_MOD_NAME"-------------------------------------------------\n");
 		return -EINVAL;
-	}	
+	}
 
 	return 0;
 }
@@ -687,11 +632,11 @@ static int sr130pc10_init(struct v4l2_subdev *sd, u32 val)
 	struct i2c_client *c = v4l2_get_subdevdata(sd);
 	struct sr130pc10_sensor *sensor = &sr130pc10;
 	int result =0;
-	
+
 #ifdef CONFIG_LOAD_FILE
 	result = sr130pc10_regs_table_init();
 	if (result > 0)
-	{		
+	{
 		Cam_Printk(KERN_ERR "***** sr130pc10_regs_table_init  FAILED. Check the Filie in MMC\n");
 		return result;
 	}
@@ -705,15 +650,8 @@ static int sr130pc10_init(struct v4l2_subdev *sd, u32 val)
 	msleep(10000);
 
 #else
-	if(camera_antibanding_get() == 3) { /* CAM_BANDFILTER_60HZ  = 3 */
-		result = sr130pc10_check_table_size_for_60hz();
-		if(result != 0) {
-			printk(KERN_ERR "%s: Fail - the table num is %d \n", __func__, result);
-		}
-		sr130pc10_copy_files_for_60hz();
-	}
-
 	sr130pc10_WRT_LIST(c,sr130pc10_Init_Reg);
+
 
 	sensor->state			= SR130PC10_STATE_PREVIEW;
 	sensor->mode		= SR130PC10_MODE_CAMERA;
@@ -734,6 +672,17 @@ static int sr130pc10_init(struct v4l2_subdev *sd, u32 val)
 	sensor->initial			= SR130PC10_STATE_INITIAL;
 
 	Cam_Printk(KERN_NOTICE "===sr130pc10_init===[%s  %d]====== \n", __FUNCTION__, __LINE__);
+
+	Cam_Printk(KERN_NOTICE "===sr130pc10_init===start read check!!!!====== \n");
+
+	sr130pc10_reg_read_and_check(c, 0x10, 0x60);
+	sr130pc10_reg_read_and_check(c, 0x10, 0x61);
+	sr130pc10_reg_read_and_check(c, 0x10, 0x62);
+	sr130pc10_reg_read_and_check(c, 0x10, 0x63);
+	sr130pc10_reg_read_and_check(c, 0x10, 0x64);
+	sr130pc10_reg_read_and_check(c, 0x10, 0x66);
+	sr130pc10_reg_read_and_check(c, 0x10, 0x67);
+
 #endif
 
 	return result;
@@ -795,16 +744,7 @@ static struct sr130pc10_win_size {
 		.width		= QQVGA_WIDTH,
 		.height		= QQVGA_HEIGHT,
 	},
-	/* CIF */
-	{
-		.width		= 352,
-		.height		= 288,
-	},
-	/* QCIF */
-	{
-		.width		= 176,
-		.height		= 144,
-	},
+
 };
 
 static struct sr130pc10_win_size  sr130pc10_win_sizes_jpeg[] = {
@@ -999,7 +939,7 @@ static int sr130pc10_s_fmt(struct v4l2_subdev *sd, struct v4l2_mbus_framefmt *mf
 	struct i2c_client *c = v4l2_get_subdevdata(sd);
 	const struct sr130pc10_datafmt *fmt;
 	struct sr130pc10_sensor *sensor = &sr130pc10;
-	
+
 //	struct regval_list *pregs = NULL;
 //	struct regval_list *pregs_default = NULL;
 
@@ -1020,72 +960,41 @@ static int sr130pc10_s_fmt(struct v4l2_subdev *sd, struct v4l2_mbus_framefmt *mf
 	case V4L2_MBUS_FMT_UYVY8_2X8:
 	case V4L2_MBUS_FMT_VYUY8_2X8:
 			sensor->pix.pixelformat = V4L2_PIX_FMT_YUV422P;
+			//sr130pc10_cam_state = SR130PC10_STATE_PREVIEW;
 			if(sr130pc10_cam_state == SR130PC10_STATE_PREVIEW)
 			{
-				Cam_Printk(KERN_NOTICE "Start to yuv format Preview \n");
-				if(mf->width == 640 && mf->height == 480){
-					sensor->jpeg_capture_w= 640;
-					sensor->jpeg_capture_h= 480;
-					Cam_Printk(KERN_ERR"choose preview size %dx%d\n", mf->width, mf->height);
-				}
-				else if(mf->width == 320 && mf->height == 240){
-					sensor->jpeg_capture_w= 320;
-					sensor->jpeg_capture_h= 240;
-					Cam_Printk(KERN_ERR"choose preview size %dx%d\n", mf->width, mf->height);
-				}
-				else if(mf->width == 352 && mf->height == 288){
-					sensor->jpeg_capture_w= 352;
-					sensor->jpeg_capture_h= 288;
-					Cam_Printk(KERN_ERR"choose preview size %dx%d\n", mf->width, mf->height);
-				}
-				else if(mf->width == 176 && mf->height == 144){
-					sensor->jpeg_capture_w= 176;
-					sensor->jpeg_capture_h= 144;
-					Cam_Printk(KERN_ERR"choose preview size %dx%d\n", mf->width, mf->height);
-				}
-				else{
-					Cam_Printk(KERN_ERR"Unsupported preview size %dx%d\n", mf->width, mf->height);
+				switch (mf->width)
+				{
+					/* for YUV preview */
+
+					case QVGA_WIDTH:
+						Cam_Printk(KERN_ERR"choose qvga Preview setting \n");
+						break;
+
+					case VGA_WIDTH:
+						Cam_Printk(KERN_ERR"choose vga Preview setting \n");
+						break;
+
+					default:
+						printk("\n unsupported size for preview! %s %d w=%d h=%d\n", __FUNCTION__, __LINE__, mf->width, mf->height);
+						goto out;
+#if 0
+						if(mf->width == 1280 && mf->height == 960)
+							sr130pc10_cam_state = SR130PC10_STATE_CAPTURE;
+#endif
+						break;
 				}
 			}
-			else if (sr130pc10_cam_state == SR130PC10_STATE_CAPTURE) {
+
+			Cam_Printk(KERN_NOTICE "!!!!Set  FPS to 30fps!!!!\n");
+			//sr130pc10_write_regs(c, regs_sr130pc10_30_FPS, ARRAY_SIZE(regs_sr130pc10_30_FPS),"regs_sr130pc10_30_FPS");
+
+
+			if (sr130pc10_cam_state == SR130PC10_STATE_CAPTURE) {
+				//sr130pc10_write_regs(c, regs_sr130pc10_Capture_Start, ARRAY_SIZE(regs_sr130pc10_Capture_Start),"regs_sr130pc10_Capture_Start");
 				Cam_Printk(KERN_NOTICE "Start to yuv format Capture \n");
-				if(mf->width == 1280 && mf->height == 960){
-					sensor->pix.width = 1280;
-					sensor->pix.height = 960;
-					Cam_Printk(KERN_ERR"choose capture size %dx%d\n", mf->width, mf->height);
-				}
-				else if(mf->width == 960 && mf->height == 720){
-					sensor->pix.width = 960;
-					sensor->pix.height = 720;
-					Cam_Printk(KERN_ERR"choose capture size %dx%d\n", mf->width, mf->height);
-				}
-				else if(mf->width == 640 && mf->height == 480){
-					sensor->pix.width = 640;
-					sensor->pix.height = 480;
-					Cam_Printk(KERN_ERR"choose capture size %dx%d\n", mf->width, mf->height);
-				}
-				else{
-					Cam_Printk(KERN_ERR"Unsupported capture size %dx%d\n", mf->width, mf->height);
-				}
 			}
-			else if (sr130pc10_cam_state == SR130PC10_STATE_CAMCORDER){
-				Cam_Printk(KERN_ERR"Record Camera State\n");
-				if(mf->width == 640 && mf->height == 480){
-					sensor->record_width = 640;
-					sensor->record_height = 480;
-					Cam_Printk(KERN_ERR"choose Camcorder %dx%d\n", mf->width, mf->height);
-				}
-				else if(mf->width == 352 && mf->height == 288){
-					sensor->record_width = 352;
-					sensor->record_height = 288;
-					Cam_Printk(KERN_ERR"choose Camcorder %dx%d\n", mf->width, mf->height);
-				}
-				else if(mf->width == 176 && mf->height == 144){
-					sensor->record_width = 176;
-					sensor->record_height = 144;
-					Cam_Printk(KERN_ERR"choose Camcorder %dx%d\n", mf->width, mf->height);
-				}
-			}
+
 
 			break;
 
@@ -1193,24 +1102,24 @@ static int sr130pc10_t_saturation(struct i2c_client *client, int value)
 	switch(value)
 	{
 		case SATURATION_MINUS_2:
-			//sr130pc10_write_regs(client, regs_sr130pc10_saturation_level_0, ARRAY_SIZE(regs_sr130pc10_saturation_level_0),"regs_sr130pc10_saturation_level_0");			
+			//sr130pc10_write_regs(client, regs_sr130pc10_saturation_level_0, ARRAY_SIZE(regs_sr130pc10_saturation_level_0),"regs_sr130pc10_saturation_level_0");
 			break;
 
 		case SATURATION_MINUS_1:
-			//sr130pc10_write_regs(client, regs_sr130pc10_saturation_level_1, ARRAY_SIZE(regs_sr130pc10_saturation_level_1),"regs_sr130pc10_saturation_level_1");			
-			break;		
+			//sr130pc10_write_regs(client, regs_sr130pc10_saturation_level_1, ARRAY_SIZE(regs_sr130pc10_saturation_level_1),"regs_sr130pc10_saturation_level_1");
+			break;
 
 		case SATURATION_DEFAULT:
-			//sr130pc10_write_regs(client, regs_sr130pc10_saturation_level_2, ARRAY_SIZE(regs_sr130pc10_saturation_level_2),"regs_sr130pc10_saturation_level_2");			
-			break;	
+			//sr130pc10_write_regs(client, regs_sr130pc10_saturation_level_2, ARRAY_SIZE(regs_sr130pc10_saturation_level_2),"regs_sr130pc10_saturation_level_2");
+			break;
 
 		case SATURATION_PLUS_1:
-			//sr130pc10_write_regs(client, regs_sr130pc10_saturation_level_3, ARRAY_SIZE(regs_sr130pc10_saturation_level_3),"regs_sr130pc10_saturation_level_3");			
-			break;		
+			//sr130pc10_write_regs(client, regs_sr130pc10_saturation_level_3, ARRAY_SIZE(regs_sr130pc10_saturation_level_3),"regs_sr130pc10_saturation_level_3");
+			break;
 
 		case SATURATION_PLUS_2:
-			//sr130pc10_write_regs(client, regs_sr130pc10_saturation_level_4, ARRAY_SIZE(regs_sr130pc10_saturation_level_4),"regs_sr130pc10_saturation_level_4");			
-			break;	
+			//sr130pc10_write_regs(client, regs_sr130pc10_saturation_level_4, ARRAY_SIZE(regs_sr130pc10_saturation_level_4),"regs_sr130pc10_saturation_level_4");
+			break;
 
 		default:
 			printk(SR130PC10_MOD_NAME "quality value is not supported!!!\n");
@@ -1226,7 +1135,7 @@ static int sr130pc10_q_saturation(struct i2c_client *client, __s32 *value)
 {
 	struct sr130pc10_sensor *sensor = &sr130pc10;
 
-	Cam_Printk(KERN_NOTICE "sr130pc10_q_saturation is called...\n"); 
+	Cam_Printk(KERN_NOTICE "sr130pc10_q_saturation is called...\n");
 	value = sensor->saturation;
 	return 0;
 }
@@ -1340,16 +1249,16 @@ static int sr130pc10_t_contrast(struct i2c_client *client, int value)
 			break;
 
 		case CONTRAST_MINUS_1:
-			break;		
+			break;
 
 		case CONTRAST_DEFAULT:
-			break;	
+			break;
 
 		case CONTRAST_PLUS_1:
-			break;		
+			break;
 
 		case CONTRAST_PLUS_2:
-			break;	
+			break;
 
 		default:
 			printk(SR130PC10_MOD_NAME "quality value is not supported!!!\n");
@@ -1365,7 +1274,7 @@ static int sr130pc10_q_contrast(struct i2c_client *client, __s32 *value)
 {
 	struct sr130pc10_sensor *sensor = &sr130pc10;
 
-	Cam_Printk(KERN_NOTICE "sr130pc10_q_quality is called...\n"); 
+	Cam_Printk(KERN_NOTICE "sr130pc10_q_quality is called...\n");
 	value = sensor->contrast;
 	return 0;
 }
@@ -1409,11 +1318,11 @@ static int sr130pc10_t_scene(struct i2c_client *client, int value)
 		case SCENE_OFF:
 			break;
 		case SCENE_PORTRAIT:
-			break;		
+			break;
 		case SCENE_LANDSCAPE:
-			break;	
+			break;
 		case SCENE_SPORTS:
-			break;			
+			break;
 		case SCENE_PARTY:
 			break;
 		case SCENE_BEACH:
@@ -1448,7 +1357,7 @@ static int sr130pc10_q_scene(struct i2c_client *client, __s32 *value)
 {
 	struct sr130pc10_sensor *sensor = &sr130pc10;
 
-	Cam_Printk(KERN_NOTICE "sr130pc10_get_scene is called...\n"); 
+	Cam_Printk(KERN_NOTICE "sr130pc10_get_scene is called...\n");
 	value = sensor->scene;
 	return 0;
 }
@@ -1501,7 +1410,7 @@ static int sr130pc10_q_whitebalance(struct i2c_client *client, __s32 *value)
 {
 	struct sr130pc10_sensor *sensor = &sr130pc10;
 
-	Cam_Printk(KERN_NOTICE "sr130pc10_get_whitebalance is called...\n"); 
+	Cam_Printk(KERN_NOTICE "sr130pc10_get_whitebalance is called...\n");
 	value = sensor->wb;
 	return 0;
 }
@@ -1555,7 +1464,7 @@ static int sr130pc10_q_effect(struct i2c_client *client, __s32 *value)
 {
 	struct sr130pc10_sensor *sensor = &sr130pc10;
 
-	Cam_Printk(KERN_NOTICE "sr130pc10_get_whitebalance is called...\n"); 
+	Cam_Printk(KERN_NOTICE "sr130pc10_get_whitebalance is called...\n");
 	value = sensor->effect;
 	return 0;
 }
@@ -1573,14 +1482,14 @@ static int sr130pc10_t_ISO(struct i2c_client *client, int value)
 			break;
 
 		case ISO_50:
-			break;		
+			break;
 
 		case ISO_100:
-			break;	
+			break;
 
 		case ISO_200:
-			break;	
-		
+			break;
+
 		case ISO_400:
 			break;
 
@@ -1598,7 +1507,7 @@ static int sr130pc10_q_ISO(struct i2c_client *client, __s32 *value)
 {
 	struct sr130pc10_sensor *sensor = &sr130pc10;
 
-	Cam_Printk(KERN_NOTICE "sr130pc10_q_ISO is called...\n"); 
+	Cam_Printk(KERN_NOTICE "sr130pc10_q_ISO is called...\n");
 	value = sensor->iso;
 	return 0;
 }
@@ -1616,10 +1525,10 @@ static int sr130pc10_t_photometry(struct i2c_client *client, int value)
 			break;
 
 		case METERING_SPOT:
-			break;		
+			break;
 
 		case METERING_CENTER:
-			break;	
+			break;
 
 		default:
 			printk(SR130PC10_MOD_NAME "ISO value is not supported!!!\n");
@@ -1635,7 +1544,7 @@ static int sr130pc10_q_photometry(struct i2c_client *client, __s32 *value)
 {
 	struct sr130pc10_sensor *sensor = &sr130pc10;
 
-	Cam_Printk(KERN_NOTICE "sr130pc10_q_photometry is called...\n"); 
+	Cam_Printk(KERN_NOTICE "sr130pc10_q_photometry is called...\n");
 	value = sensor->photometry;
 	return 0;
 }
@@ -1653,10 +1562,10 @@ static int sr130pc10_t_quality(struct i2c_client *client, int value)
 			break;
 
 		case QUALITY_FINE:
-			break;		
+			break;
 
 		case QUALITY_NORMAL:
-			break;	
+			break;
 
 		default:
 			printk(SR130PC10_MOD_NAME "quality value is not supported!!!\n");
@@ -1672,7 +1581,7 @@ static int sr130pc10_q_quality(struct i2c_client *client, __s32 *value)
 {
 	struct sr130pc10_sensor *sensor = &sr130pc10;
 
-	Cam_Printk(KERN_NOTICE "sr130pc10_q_quality is called...\n"); 
+	Cam_Printk(KERN_NOTICE "sr130pc10_q_quality is called...\n");
 	value = sensor->quality;
 	return 0;
 }
@@ -1684,23 +1593,23 @@ static int sr130pc10_t_sharpness(struct i2c_client *client, int value)
 	s32 old_value = (s32)sensor->sharpness;
 
 	Cam_Printk(KERN_NOTICE "%s is called... [old:%d][new:%d]\n",__func__, old_value, value);
-	
+
 	switch(value)
 	{
 		case SHARPNESS_MINUS_2:
 			break;
 
 		case SHARPNESS_MINUS_1:
-			break;		
+			break;
 
 		case SHARPNESS_DEFAULT:
-			break;	
+			break;
 
 		case SHARPNESS_PLUS_1:
-			break;		
+			break;
 
 		case SHARPNESS_PLUS_2:
-			break;	
+			break;
 
 		default:
 			printk(SR130PC10_MOD_NAME "quality value is not supported!!!\n");
@@ -1716,7 +1625,7 @@ static int sr130pc10_q_sharpness(struct i2c_client *client, __s32 *value)
 {
 	struct sr130pc10_sensor *sensor = &sr130pc10;
 
-	Cam_Printk(KERN_NOTICE "sr130pc10_q_sharpness is called...\n"); 
+	Cam_Printk(KERN_NOTICE "sr130pc10_q_sharpness is called...\n");
 	value = sensor->sharpness;
 	return 0;
 }
@@ -1740,7 +1649,7 @@ static int sr130pc10_t_fps(struct i2c_client *client, int value)
 
 		case FPS_auto:
 			break;
-			
+
 		case FPS_7:
 			break;
 
@@ -1751,16 +1660,16 @@ static int sr130pc10_t_fps(struct i2c_client *client, int value)
 			break;
 
 		case FPS_15:
-			break;		
+			break;
 
 		case FPS_20:
-			break;			
+			break;
 
 		case FPS_25:
-			break;	
-			
+			break;
+
 		case FPS_30:
-			break;	
+			break;
 
 		default:
 			printk(KERN_NOTICE "quality value is not supported!!!\n");
@@ -1776,7 +1685,7 @@ static int sr130pc10_q_fps(struct i2c_client *client, __s32 *value)
 {
 	struct sr130pc10_sensor *sensor = &sr130pc10;
 
-	Cam_Printk(KERN_NOTICE "sr130pc10_q_fps is called...\n"); 
+	Cam_Printk(KERN_NOTICE "sr130pc10_q_fps is called...\n");
 	value = sensor->fps;
 	return 0;
 }
@@ -1787,11 +1696,11 @@ static int sr130pc10_g_frame_time(struct i2c_client *client,__s32 *value)
 		u16 frame_time =0;
 		u16 temp1 = 0;
 		int err;
-	
-		Cam_Printk(KERN_NOTICE "[DHL:Test] sr130pc10_g_frame_time() \r\n");
-	
 
-	
+		Cam_Printk(KERN_NOTICE "[DHL:Test] sr130pc10_g_frame_time() \r\n");
+
+
+
 		return 0;
 }
 
@@ -1801,11 +1710,11 @@ static int sr130pc10_mode_switch_check(struct i2c_client *client,__s32 *value)
 		u16 frame_time =0;
 		u16 temp1 = 0;
 		int err;
-	
-		Cam_Printk(KERN_NOTICE "[DHL:Test] sr130pc10_mode_switch_check() \r\n");
-	
 
-	
+		Cam_Printk(KERN_NOTICE "[DHL:Test] sr130pc10_mode_switch_check() \r\n");
+
+
+
 		return 0;
 }
 
@@ -1841,7 +1750,7 @@ static int sr130pc10_ESD_check(struct i2c_client *client, __s32 *value)
 	u16 esd_value1 = 0;
 	u16 esd_value2 = 0;
 	int err;
-	
+
 	Cam_Printk(KERN_NOTICE "sr130pc10_ESD_check() \r\n");
 
 	*value = ESD_NONE;
@@ -1851,10 +1760,7 @@ static int sr130pc10_ESD_check(struct i2c_client *client, __s32 *value)
 }
 static int sr130pc10_t_dtp_on(struct i2c_client *client)
 {
-	Cam_Printk(KERN_NOTICE "sr130pc10_t_dtp_on is called...\n");
-
-	sr130pc10_WRT_LIST(client, sr130pc10_Preview_Mode);
-	sr130pc10_WRT_LIST(client, sr130pc10_dtp_on_pattern);
+	Cam_Printk(KERN_NOTICE "sr130pc10_t_dtp_stop is called...\n");
 
 	return 0;
 }
@@ -1863,8 +1769,6 @@ static int sr130pc10_t_dtp_stop(struct i2c_client *client)
 {
 	Cam_Printk(KERN_NOTICE "sr130pc10_t_dtp_stop is called...\n");
 
-	sr130pc10_WRT_LIST(client, sr130pc10_dtp_off_pattern);
-
 	return 0;
 }
 
@@ -1872,7 +1776,7 @@ static int sr130pc10_g_exif_info(struct i2c_client *client,struct v4l2_exif_info
 {
 	struct sr130pc10_sensor *sensor = &sr130pc10;
 
-	Cam_Printk(KERN_NOTICE "sr130pc10_g_exif_info is called...\n"); 
+	Cam_Printk(KERN_NOTICE "sr130pc10_g_exif_info is called...\n");
 	*exif_info = sensor->exif_info;
 	return 0;
 }
@@ -1880,7 +1784,7 @@ static int sr130pc10_g_exif_info(struct i2c_client *client,struct v4l2_exif_info
 static int sr130pc10_set_mode(struct i2c_client *client, int value)
 {
 	struct sr130pc10_sensor *sensor = &sr130pc10;
-	
+
 	sensor->mode = value;
 	Cam_Printk(KERN_NOTICE, "sr130pc10_set_mode is called... mode = %d\n", sensor->mode);
 	return 0;
@@ -1890,12 +1794,12 @@ static int sr130pc10_set_mode(struct i2c_client *client, int value)
 static int sr130pc10_preview_size(struct i2c_client *client, int value)
 	{
 		struct sr130pc10_sensor *sensor = &sr130pc10;
-	
+
 		if(sensor->mode != SR130PC10_MODE_CAMCORDER)
 		{
-			switch (value) 
+			switch (value)
 			{
-				Cam_Printk(KERN_NOTICE "CAMERA MODE..\n"); 
+				Cam_Printk(KERN_NOTICE "CAMERA MODE..\n");
 
 
 
@@ -1910,10 +1814,10 @@ static int sr130pc10_preview_size(struct i2c_client *client, int value)
 					printk(SR130PC10_MOD_NAME "Preview Resolution is not supported! : %d\n",value);
 					return 0;
 			}
-		} 
-		else 
+		}
+		else
 		{
-			Cam_Printk(KERN_NOTICE "CAMCORDER MODE..\n"); 
+			Cam_Printk(KERN_NOTICE "CAMCORDER MODE..\n");
 
 			switch (value) {
 
@@ -1941,30 +1845,11 @@ static int sr130pc10_set_still_status(void)
 	return 0;
 }
 
-static int sr130pc10_set_preview_status(int value)
+static int sr130pc10_set_preview_status(void)
 {
-	struct sr130pc10_sensor *sensor = &sr130pc10;
+	Cam_Printk(KERN_NOTICE "[DHL]sr130pc10_set_preview_status.. \n");
 
-	sensor->vtmode = 0; // Init VT mode
-
-	Cam_Printk(KERN_NOTICE "sr130pc10_set_preview_status value : 0x%x \n", value);
-
-	if(2 == ((value>>8) & 0x00ff)){
-		Cam_Printk(KERN_NOTICE "sr130pc10_set_preview_status : VT mode\n");
-		sr130pc10_cam_state = SR130PC10_STATE_CAMCORDER;
-		sensor->vtmode = (value >> 8);
-	}
-	else if(0 == (value & 0x00ff)){
-		Cam_Printk(KERN_NOTICE "sr130pc10_set_preview_status : SR130PC10_STATE_PREVIEW state\n");
 	sr130pc10_cam_state = SR130PC10_STATE_PREVIEW;
-	}
-	else if(1 == (value & 0x00ff)){
-		Cam_Printk(KERN_NOTICE "sr130pc10_set_preview_status : SR130PC10_STATE_CAMCORDER state\n");
-		sr130pc10_cam_state = SR130PC10_STATE_CAMCORDER;
-	}
-	else{
-		Cam_Printk(KERN_ERR "sr130pc10_set_preview_status : Unknown cam state\n");
-	}
 
 	return 0;
 }
@@ -1977,8 +1862,8 @@ static int sr130pc10_s_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
 
 	Cam_Printk(KERN_NOTICE "ioctl_s_ctrl is called...(%d)\n", ctrl->id);
 
-	switch (ctrl->id) 
-	{ 
+	switch (ctrl->id)
+	{
 		case V4L2_CID_ISO:
 			retval = sr130pc10_t_ISO(client,ctrl->value);
 			break;
@@ -1996,7 +1881,7 @@ static int sr130pc10_s_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
 			break;
 		case V4L2_CID_SHARPNESS:
 			retval = sr130pc10_t_sharpness(client,ctrl->value);
-			break;			
+			break;
 		case V4L2_CID_SCENE:
 			retval = sr130pc10_t_scene(client,ctrl->value);
 			break;
@@ -2011,15 +1896,15 @@ static int sr130pc10_s_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
 			break;
 		case V4L2_CID_CAMERA_CHECK_DATALINE:
 			retval = sr130pc10_t_dtp_on(client);
-			break;	
+			break;
 		case V4L2_CID_CAMERA_CHECK_DATALINE_STOP:
-			retval = sr130pc10_t_dtp_stop(client); 
-			break;			
+			retval = sr130pc10_t_dtp_stop(client);
+			break;
 		case V4L2_CID_SELECT_MODE:
 			retval = sr130pc10_set_mode(client,ctrl->value);
 			break;
 		case V4L2_CID_CAMERA_PREVIEW_SIZE:
-			retval = sr130pc10_preview_size(client,ctrl->value); 
+			retval = sr130pc10_preview_size(client,ctrl->value);
 			break;
 		case V4L2_CID_FOCUS_MODE_STEP1:
 			retval = sr130pc10_set_focus_mode(client,ctrl->value, SET_FOCUS_STEP1);
@@ -2039,7 +1924,7 @@ static int sr130pc10_s_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
 		case V4L2_CID_CAMERA_OBJECT_POSITION_X:
 			sensor->position.x = ctrl->value;
 			retval = 0;
-			break;			
+			break;
 		case V4L2_CID_CAMERA_OBJECT_POSITION_Y:
 			sensor->position.y = ctrl->value;
 			retval = 0;
@@ -2057,7 +1942,7 @@ static int sr130pc10_s_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
 			retval = sr130pc10_set_still_status();
 			break;
 		case V4L2_CID_SET_PREVIEW_STATUS:
-			retval = sr130pc10_set_preview_status(ctrl->value);
+			retval = sr130pc10_set_preview_status();
 			break;
 
 		default:
@@ -2090,100 +1975,31 @@ int sr130pc10_s_exif_info(struct i2c_client *client);
 
 int sr130pc10_streamon(struct i2c_client *client)
 {
+
 	struct sr130pc10_sensor *sensor = &sr130pc10;
 	struct v4l2_pix_format* pix = &sensor->pix;
-	//volatile int checkvalue, timeout = 5;
-	//camera_light_status_type illuminance=CAMERA_SENSOR_LIGHT_STATUS_NORMAL;
-
-	switch(sensor->vtmode) {
-		case 2: // VT call mode
-			Cam_Printk(KERN_NOTICE "sr130pc10_vt_init reg is called...\n");
-			printk("[%s][%d] vtmode = %d\n",
-					__func__, __LINE__, sensor->vtmode);
-			sr130pc10_WRT_LIST(client,sr130pc10_VT_Init_Reg);
-			break;
-		default:
-			break;
-	}
+	volatile int checkvalue, timeout = 5;
+	camera_light_status_type illuminance=CAMERA_SENSOR_LIGHT_STATUS_NORMAL;
 
 	Cam_Printk(KERN_NOTICE "sr130pc10_streamon is called...\n");
 
-	if(2 == sensor->vtmode){
-		if(sensor->record_width == 352 && sensor->record_height == 288){
-			sr130pc10_WRT_LIST(client, sr130pc10_fps_15fix_352X288);
-			Cam_Printk(KERN_NOTICE "352x288 VT mode: set stream-on setting\n");
-		}
-		else if(sensor->record_width == 176 && sensor->record_height == 144){
-			sr130pc10_WRT_LIST(client, sr130pc10_fps_15fix_176X144);
-			Cam_Printk(KERN_NOTICE "176x144 VT mode: set stream-on setting\n");
-		}
-	}
-	else if(sr130pc10_cam_state == SR130PC10_STATE_CAPTURE)
+	//if(pix->pixelformat == V4L2_PIX_FMT_JPEG)
+	if(sr130pc10_cam_state == SR130PC10_STATE_CAPTURE)
 	{
-		Cam_Printk(KERN_NOTICE "capture: set stream-on setting\n");
-		if(pix->width == 1280 && pix->height == 960){
-			sr130pc10_WRT_LIST(client, sr130pc10_Capture_Mode_1280X960);
-			Cam_Printk(KERN_NOTICE "Capture: set stream-on setting: 1280x960 capture\n");
-		}
-		else if(pix->width == 960 && pix->height == 720){
-			sr130pc10_WRT_LIST(client, sr130pc10_Capture_Mode_960X720);
-			Cam_Printk(KERN_NOTICE "Capture: set stream-on setting: 960x720 capture\n");
-		}
-		else if(pix->width == 640 && pix->height == 480){
-			sr130pc10_WRT_LIST(client, sr130pc10_Capture_Mode_640X480);
-			Cam_Printk(KERN_NOTICE "Capture: set stream-on setting: 640x480 capture\n");
-		}
-		else{
-			Cam_Printk(KERN_NOTICE "Capture: Unsupported stream-on setting: %dx%d capture\n", pix->width, pix->height);
-		}
-	}
-	else if(sr130pc10_cam_state == SR130PC10_STATE_CAMCORDER){
-		Cam_Printk(KERN_NOTICE "[start Recording] set init setting !!!\n");
-		sr130pc10_WRT_LIST(client, sr130pc10_Preview_Mode);
+ 		Cam_Printk(KERN_NOTICE "capture: set stream-on setting\n");
+		sr130pc10_WRT_LIST(client, sr130pc10_Capture_Mode);
 
-		if(sensor->record_width == 640 && sensor->record_height == 480){
-		sr130pc10_WRT_LIST(client, sr130pc10_fps_15fix);
-			Cam_Printk(KERN_NOTICE "640x480 Camcorder: set stream-on setting\n");
-		}
-		else if(sensor->record_width == 352 && sensor->record_height == 288){
-			sr130pc10_WRT_LIST(client, sr130pc10_fps_15fix_352X288);
-			Cam_Printk(KERN_NOTICE "352x288 Camcorder: set stream-on setting\n");
-		}
-		else if(sensor->record_width == 176 && sensor->record_height == 144){
-			sr130pc10_WRT_LIST(client, sr130pc10_fps_15fix_176X144);
-			Cam_Printk(KERN_NOTICE "176x144 Camcorder: set stream-on setting\n");
-		}
-		else{
-			Cam_Printk(KERN_NOTICE "Camcorder: Unsupported camcorder resolution %dx%d\n", sensor->record_width, sensor->record_height);
-		}
-	}
-	else
+ 	}
+ 	else
 	{
-		Cam_Printk(KERN_NOTICE "[start Preview] set init setting !!!\n");
 		sr130pc10_WRT_LIST(client, sr130pc10_Preview_Mode);
+		sr130pc10_WRT_LIST(client, sr130pc10_640_Preview);
 
-		if(sensor->jpeg_capture_w == 640 && sensor->jpeg_capture_h == 480){
-			Cam_Printk(KERN_NOTICE "preview: set stream-on setting: 640x480 preview\n");
-			//sr130pc10_WRT_LIST(client, sr130pc10_640_Preview); // sr130pc10_640_Preview setting is empty code
-		}
-		else if(sensor->jpeg_capture_w == 320 && sensor->jpeg_capture_h == 240){
-			Cam_Printk(KERN_NOTICE "preview: set stream-on setting: 320x240 preview\n");
-			sr130pc10_WRT_LIST(client, sr130pc10_320X240_Preview);
-		}
-		else if(sensor->jpeg_capture_w == 352 && sensor->jpeg_capture_h == 288){
-			Cam_Printk(KERN_NOTICE "preview: set stream-on setting: 352x288 preview\n");
-			sr130pc10_WRT_LIST(client, sr130pc10_352X288_Preview);
-		}
-		else if(sensor->jpeg_capture_w == 176 && sensor->jpeg_capture_h == 144){
-			Cam_Printk(KERN_NOTICE "preview: set stream-on setting: 176x144 preview\n");
-			sr130pc10_WRT_LIST(client, sr130pc10_fps_15fix_176X144);
-		}
-		else{
-			Cam_Printk(KERN_NOTICE "preview: Unsupported preview setting: %dx%d preview\n", sensor->jpeg_capture_w, sensor->jpeg_capture_h);
-		}
-	}
+ 		Cam_Printk(KERN_NOTICE "[start Preview] set init setting !!!\n");
+ 		//return - EINVAL;
+ 	}
 
-	return 0;
+			return 0;
 }
 
 
@@ -2192,6 +2008,7 @@ static int sr130pc10_streamoff(struct i2c_client *client)
 
 	/* What's wrong with this sensor, it has no stream off function, oh!,Vincent.Wan */
 	Cam_Printk(KERN_NOTICE " sr130pc10_sensor_stop_stream E");
+	sr130pc10_WRT_LIST(client,sr130pc10_stop_stream);
 	Cam_Printk(KERN_NOTICE " sr130pc10_sensor_stop_stream X");
 	return 0;
 }
@@ -2239,7 +2056,7 @@ static int sr130pc10_video_probe(struct soc_camera_device *icd,
 			Cam_Printk(KERN_NOTICE "=========siliconfile sr130pc10 sensor detected==========\n");
 			goto out;
 		}
-		
+
 	}
 
 	priv->model = V4L2_IDENT_SR130PC10;
@@ -2259,46 +2076,19 @@ static int sr130pc10_get_lux(struct i2c_client *client, int* lux)
 	return cur_lux; //this value is under 0x0032 in low light condition
 }
 
-static int sr130pc10_get_exposure_time(struct i2c_client *client)
-{
-	unsigned char a, b, c;
-	int exposureTime;
-	int fps;
-
-	a = sr130pc10_reg_read_and_check(client, 0x20, 0x80);
-	b = sr130pc10_reg_read_and_check(client, 0x20, 0x81);
-	c = sr130pc10_reg_read_and_check(client, 0x20, 0x82);
-
-	exposureTime = ((a<<19)+(b<<11)+(c<<3));
-	fps = 24000000/exposureTime; // PCLK(48MHz) (OPCLK = 48,000,000 / 2 = 24,000,000)
-
-	Cam_Printk(KERN_NOTICE "sr130pc10_get_exposure_time() : exposure time = %d, fps = %d\n", exposureTime, fps);
-
-	return fps;
-}
-
-static int sr130pc10_get_iso(struct i2c_client *client)
-{
-	int regData;
-
-	// Read data
-	regData = sr130pc10_reg_read_and_check(client, 0x20, 0xb0);
-
-	Cam_Printk(KERN_NOTICE "sr130pc10_get_iso() : regData = %d\n", regData);
-
-	return regData;
-}
 
 camera_light_status_type sr130pc10_check_illuminance_status(struct i2c_client *client)
 {
-	//struct sr130pc10_sensor *sensor = &sr130pc10;
-	//u32 lightStatus = 0;
-	//u16 lightStatus_low_word = 0;
-	//u16 lightStatus_high_word= 0;
-	//int err;
-	//u32 luxcheck_low = 0x0032;
+	struct sr130pc10_sensor *sensor = &sr130pc10;
+	u32 lightStatus = 0;
+	u16 lightStatus_low_word = 0;
+	u16 lightStatus_high_word= 0;
+	int err;
+	u32 luxcheck_low = 0x0032;
 
 	Cam_Printk(KERN_NOTICE "sr130pc10_check_illuminance_status() \r\n");
+
+
 
 	return 0;
 }
@@ -2319,7 +2109,7 @@ static int sr130pc10_s_thumbnail_size(struct i2c_client *client, struct v4l2_pix
 	pix->height= thumbnail->height;
 	int retval = 0;
 
-	
+
 	Cam_Printk(KERN_NOTICE "sr130pc10_s_thumbnail_size is called...(Width %d Height %d)\n",pix->width,pix->height);
 
 	return retval;
@@ -2332,10 +2122,10 @@ static int sr130pc10_AE_AWB_Status(struct i2c_client *client,int *LuxCheck)
 	u16 AWB_Check=0;
 	u32 lightStatus = CAMERA_SENSOR_LIGHT_STATUS_NORMAL;
 	u16 lightStatus_low_word = 0;
-	u16 lightStatus_high_word= 0;	
+	u16 lightStatus_high_word= 0;
 	int err;
 	u32 luxcheck_high = 0xFFFE;
-	u32 luxcheck_low = 0x0080;	
+	u32 luxcheck_low = 0x0080;
 
 	struct sr130pc10_sensor *sensor = &sr130pc10;
 
@@ -2348,32 +2138,10 @@ static int sr130pc10_AE_AWB_Status(struct i2c_client *client,int *LuxCheck)
 }
 
 #ifdef CONFIG_VIDEO_ADV_DEBUG
-// static int sr130pc10_g_register(struct i2c_client *client, struct v4l2_dbg_register * reg)
-static int sr130pc10_g_register(struct v4l2_subdev *sd, struct v4l2_dbg_register * reg)
+static int sr130pc10_g_register(struct i2c_client *client, struct v4l2_dbg_register * reg)
 {
-	Cam_Printk(KERN_NOTICE "sr130pc10_g_register is called...(%d)\n", reg->reg);
-
-	struct i2c_client *client = v4l2_get_subdevdata(sd);
-	// struct sr130pc10_sensor *sensor = &sr130pc10;
-	int retval = 0;
-
-	switch(reg->reg)
-{
-		case V4L2_CID_GET_EXIF_EXPOSURETIME_DENOMINAL:
-			reg->val = sr130pc10_get_exposure_time(client);
-			break;
-		case V4L2_CID_GET_EXIF_ISO_SPEED:
-			reg->val = sr130pc10_get_iso(client);
-			break;
-		case V4L2_CID_ESD_CHECK:
-			reg->val = 1;
-			break;
-		default:
-			Cam_Printk(SR130PC10_MOD_NAME "[id]Invalid value is ordered!!!\n");
-			break;
-	}
-
-	return retval;//sr130pc10_read(client, (unsigned char)reg->reg, (unsigned char *)&(reg->val));
+	printk("sr130pc10_g_register\n");
+	return 0;//sr130pc10_read(client, (unsigned char)reg->reg, (unsigned char *)&(reg->val));
 }
 
 static int sr130pc10_s_register(struct i2c_client *sd, struct v4l2_dbg_register * ctrl)
@@ -2384,7 +2152,7 @@ static int sr130pc10_s_register(struct i2c_client *sd, struct v4l2_dbg_register 
 
 	Cam_Printk(KERN_NOTICE "ioctl_s_ctrl is called...(%d)\n", ctrl->reg);
 
-	switch (ctrl->reg) 
+	switch (ctrl->reg)
 	{
 		case V4L2_CID_ISO:
 			retval = sr130pc10_t_ISO(client,ctrl->val);
@@ -2464,7 +2232,7 @@ static int sr130pc10_s_register(struct i2c_client *sd, struct v4l2_dbg_register 
 			retval = sr130pc10_set_still_status();
 			break;
 		case V4L2_CID_SET_PREVIEW_STATUS:
-			retval = sr130pc10_set_preview_status(ctrl->val);
+			retval = sr130pc10_set_preview_status();
 			break;
 		case V4L2_CID_BRIGHTNESS:
 			retval = sr130pc10_q_brightness(client,ctrl->val);
@@ -2490,7 +2258,7 @@ MODULE_DEVICE_TABLE(i2c, sr130pc10_idtable);
 /**************************************************************************/
 
 static int sr130pc10_AE_lock(struct i2c_client *client,s32 value)
-{       
+{
 	struct sr130pc10_sensor *sensor = &sr130pc10;
 
     Cam_Printk(KERN_NOTICE "AE set value = %d\n", value);
@@ -2523,21 +2291,21 @@ static int sr130pc10_set_focus_mode(struct i2c_client *client, s32 value, int st
 	u16 frame_delay = 0;
 
 	Cam_Printk(KERN_NOTICE "AF set value = %d\n", value);
-	
+
 	switch( step )
 	{
 		case SET_FOCUS_STEP1:
 
 			break;
-			
+
 		case SET_FOCUS_STEP2:
 
 			break;
-			
+
 		case SET_FOCUS_STEP3:
 
 			break;
-			
+
 		case SET_FOCUS_ALL:
 
 			break;
@@ -2551,7 +2319,7 @@ static int sr130pc10_set_focus_mode(struct i2c_client *client, s32 value, int st
 
 
 static int sr130pc10_set_focus(struct i2c_client *client,s32 value)
-{       
+{
 	struct sr130pc10_sensor *sensor = &sr130pc10;
 
 //	int cnt = 0;
@@ -2563,24 +2331,24 @@ static int sr130pc10_set_focus(struct i2c_client *client,s32 value)
 
 
 
-	switch(value) 
+	switch(value)
 	{
 		case SR130PC10_AF_START :
 
 			break;
-			
+
 		case SR130PC10_AF_STOP :
 
 			break;
-			
+
 		case SR130PC10_AF_STOP_STEP_1 :
 
 			break;
-			
+
 		case SR130PC10_AF_STOP_STEP_2 :
 
 			break;
-			
+
 		case SR130PC10_AF_STOP_STEP_3 :
 
 			break;
@@ -2634,14 +2402,14 @@ static int sr130pc10_get_focus_status(struct i2c_client *client, struct v4l2_con
 
 	Cam_Printk(KERN_NOTICE, "result = %d (1.progress, 2.success, 3.fail)\n", ctrl->value);
 	return 0;
-  
+
 }
 
 
-void sr130pc10_set_REG_TC_DBG_AutoAlgEnBits(struct i2c_client *client,int bit, int set) 
+void sr130pc10_set_REG_TC_DBG_AutoAlgEnBits(struct i2c_client *client,int bit, int set)
 {
 	//struct sr130pc10_sensor *sensor = &sr130pc10;
-	int REG_TC_DBG_AutoAlgEnBits = 0; 
+	int REG_TC_DBG_AutoAlgEnBits = 0;
 
 	return;
 }
@@ -2686,15 +2454,14 @@ static struct v4l2_subdev_ops sr130pc10_subdev_ops = {
  * i2c_driver function
  */
 
-
 static int sr130pc10_command(struct i2c_client *client, unsigned int cmd, void *arg)
 {
 
 
-	switch (cmd) { 
+	switch (cmd) {
 		case VIDIOC_DBG_G_CHIP_IDENT:
 			Cam_Printk(KERN_NOTICE " sr130pc10_command : VIDIOC_DBG_G_CHIP_IDENT\n");
-			return v4l2_chip_ident_i2c_client(client, arg, V4L2_IDENT_SR130PC10, 0);		
+			return v4l2_chip_ident_i2c_client(client, arg, V4L2_IDENT_SR130PC10, 0);
 		case VIDIOC_INT_RESET:
 			sr130pc10_reset(client);
 			Cam_Printk(KERN_NOTICE " sr130pc10_command : VIDIOC_INT_RESET\n");
@@ -2702,7 +2469,7 @@ static int sr130pc10_command(struct i2c_client *client, unsigned int cmd, void *
 		case VIDIOC_QUERYCAP:
 			Cam_Printk(KERN_NOTICE " sr130pc10_command : VIDIOC_QUERYCAP\n");
 			return sr130pc10_querycap(client, (struct v4l2_capability *) arg);
-#if 0			
+#if 0
 		case VIDIOC_ENUM_FMT:
 			Cam_Printk(KERN_NOTICE " sr130pc10_command : VIDIOC_ENUM_FMT\n");
 			return sr130pc10_enum_fmt(client, index, (struct v4l2_fmtdesc *) arg);
@@ -2716,7 +2483,7 @@ static int sr130pc10_command(struct i2c_client *client, unsigned int cmd, void *
 		case VIDIOC_S_FMT:
 			Cam_Printk(KERN_NOTICE " sr130pc10_command : VIDIOC_S_FMT\n");
 			return sr130pc10_s_fmt(client, (struct v4l2_format *) arg);
-#if 0			
+#if 0
 		case VIDIOC_QUERYCTRL:
 			Cam_Printk(KERN_NOTICE " sr130pc10_command : VIDIOC_QUERYCTRL\n");
 			return sr130pc10_queryctrl(client, (struct v4l2_queryctrl *) arg);
@@ -2730,7 +2497,7 @@ static int sr130pc10_command(struct i2c_client *client, unsigned int cmd, void *
 		case VIDIOC_G_PARM:
 			Cam_Printk(KERN_NOTICE " sr130pc10_command : VIDIOC_G_PARM\n");
 			return sr130pc10_g_parm(client, (struct v4l2_streamparm *) arg);
-#if 0		
+#if 0
 		case VIDIOC_S_INPUT:
 			Cam_Printk(KERN_NOTICE " sr130pc10_command : VIDIOC_S_INPUT\n");
 			return sr130pc10_s_input(client, (int *) arg);
@@ -2762,43 +2529,15 @@ static int sr130pc10_command(struct i2c_client *client, unsigned int cmd, void *
 	return -EINVAL;
 }
 
-static ssize_t front_camera_fw_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	return sprintf(buf, "%s", "SR130PC10 SR130PC10\n");
-}
-
-static ssize_t front_camera_type_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	char cam_type[] = "SF_SR130PC10_NONE\n";
-
-	return sprintf(buf, "%s", cam_type);
-}
-
-static struct device_attribute dev_attr_camtype_front =
-__ATTR(front_camtype, S_IRUGO, front_camera_type_show, NULL);
-
-static struct device_attribute dev_attr_camfw_front =
-__ATTR(front_camfw, S_IRUGO, front_camera_fw_show, NULL);
-
 static int __devinit sr130pc10_probe(struct i2c_client *client,
 			const struct i2c_device_id *did)
 {
 	struct sr130pc10_info *priv;
-	struct soc_camera_device *icd;
-	//struct soc_camera_link *icl;
+	struct soc_camera_device *icd	= client->dev.platform_data;
+	struct soc_camera_link *icl;
 	int ret;
 
 	printk("------------sr130pc10_probe--------------\n");
-
-	if(!client){
-		printk(KERN_ERR" client is NULL %s %d \n", __FUNCTION__, __LINE__);
-		return -EINVAL;
-	}
-	else{
-		icd = client->dev.platform_data;
-	}
 
 	if (!icd) {
 		dev_err(&client->dev, "Missing soc-camera data!\n");
@@ -2812,28 +2551,6 @@ static int __devinit sr130pc10_probe(struct i2c_client *client,
 	}
 
 	v4l2_i2c_subdev_init(&priv->subdev, client, &sr130pc10_subdev_ops);
-
-	cam_dev_front =  device_create(camera_class, NULL,
-			MKDEV(CAM_MAJOR, 1), NULL, "front");
-
-	if (IS_ERR(cam_dev_front)) {
-		dev_err(&client->dev, "Failed to create deivce (cam_dev_front)\n");
-		goto SKIP_SYSFS;
-	}
-
-	if (device_create_file(cam_dev_front, &dev_attr_camtype_front) < 0) {
-		dev_err(&client->dev, "Failed to create device file: %s\n",
-				dev_attr_camtype_front.attr.name);
-		goto SKIP_SYSFS;
-	}
-
-	if (device_create_file(cam_dev_front, &dev_attr_camfw_front) < 0) {
-		dev_err(&client->dev, "Failed to create device file: %s\n",
-				dev_attr_camfw_front.attr.name);
-		goto SKIP_SYSFS;
-	}
-
-	SKIP_SYSFS:
 
 	ret = sr130pc10_video_probe(icd, client);
 	if (ret < 0) {
@@ -2853,7 +2570,7 @@ static struct i2c_driver sr130pc10_driver = {
 	.driver = {
 		.name	= "sr130pc10",
 	},
-	.id_table       = sr130pc10_idtable,	
+	.id_table       = sr130pc10_idtable,
 	.command	= sr130pc10_command,
 	.probe		= sr130pc10_probe,
 	.remove		= sr130pc10_remove,

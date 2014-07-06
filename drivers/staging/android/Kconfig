@@ -76,7 +76,7 @@ config ANDROID_LOW_MEMORY_KILLER_AUTODETECT_OOM_ADJ_VALUES
 	  /sys/module/lowmemorykiller/parameters/adj and convert them
 	  to oom_score_adj values.
 
-config SEC_OOM_KILLER
+config ANDROID_OOM_KILLER
         bool "Android OOM Killer"
         default n
         help
@@ -101,7 +101,6 @@ config ANDROID_INTF_ALARM_DEV
 config RTC_CHN_ALARM_BOOT
 	tristate "Alarm Boot"
         default N
-
 
 endif # if ANDROID
 

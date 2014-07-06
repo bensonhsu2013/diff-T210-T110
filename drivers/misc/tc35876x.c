@@ -18,26 +18,29 @@
 #include <linux/mutex.h>
 #include <linux/uaccess.h>
 #include <mach/cputype.h>
-#include <mach/mfp-mmp2.h>
-#include <mach/gpio.h>
-#include <mach/regs-mpmu.h>
-#include <mach/tc35876x.h>
-#include <mach/pxa988.h>
-#include <mach/pxa168fb.h>
-
 #ifdef CONFIG_MACH_LT02
 #include <mach/mfp-pxa986-lt02.h>
-#elif defined(CONFIG_MACH_COCOA7)
-#include <mach/mfp-pxa986-cocoa7.h>
+#elif  defined(CONFIG_MACH_HARRISON)
+#include <mach/mfp-pxa986-harrison.h>
 #else
 #include <mach/mfp-mmp2.h>
 #endif
+#include <mach/gpio.h>
+#include <mach/regs-mpmu.h>
+#include <mach/tc35876x.h>
+#ifdef CONFIG_MACH_LT02
+#include <mach/pxa988.h>
+#include <mach/pxa168fb.h>
+#endif
+
+#define TC35876x_REG_NUM		(0x5a4)
 
 /* Unique ID allocation */
 static struct i2c_client *g_client;
 
 static DEFINE_MUTEX(lock);
 
+#ifdef CONFIG_MACH_LT02
 #ifdef Vx5B3D_MIPI_MERGE
  /* QL merge code here */
 #define QL_I2C_READ_AFTER_WRITE_DEBUG
@@ -141,7 +144,6 @@ int vx5d3b_i2c_read(u32 addr, u32 *val, u32 data_size)
 					write_size )) != write_size) {
 		printk(KERN_ERR
 		  "%s: i2c_master_send failed (%d)!\n", __func__, ret);
-		mutex_unlock(&lock);
 		return -1;
 	}
 
@@ -158,7 +160,6 @@ int vx5d3b_i2c_read(u32 addr, u32 *val, u32 data_size)
 				write_size )) != write_size) {
 
 		pr_info("i2c_master_send failed (%d)!\n", ret);
-		mutex_unlock(&lock);
 		return -1;
 	}
 
@@ -168,7 +169,6 @@ int vx5d3b_i2c_read(u32 addr, u32 *val, u32 data_size)
 					data_size )) != data_size) {
 
 		pr_info("i2c_master_recv failed (%d)!\n", ret);
-		mutex_unlock(&lock);
 		return -1;
 	}
 
@@ -207,6 +207,7 @@ int vx5d3b_i2c_release(void)
 
 	return ret;
 }
+#endif
 
 int tc35876x_read32(u16 reg, u32 *pval)
 {
@@ -274,6 +275,33 @@ out_unlock:
 }
 EXPORT_SYMBOL(tc35876x_read16);
 
+#if !defined(CONFIG_MACH_LT02)
+int tc35876x_write32(u16 reg, u32 val)
+{
+	int ret;
+	int status;
+	u8 data[6];
+
+	if (g_client == NULL)	/* No global client pointer? */
+		return -1;
+
+	mutex_lock(&lock);
+	data[0] = (reg >> 8) & 0xff;
+	data[1] = reg & 0xff;
+	data[2] = val & 0xff;
+	data[3] = (val >> 8) & 0xff;
+	data[4] = (val >> 16) & 0xff;
+	data[5] = (val >> 24) & 0xff;
+	ret = i2c_master_send(g_client, data, 6);
+	if (ret >= 0)
+		status = 0;
+	else
+		status = -EIO;
+	mutex_unlock(&lock);
+
+	return status;
+}
+#else
 int tc35876x_write32(u16 reg, u32 val)
 {
 	int status = 0;
@@ -299,36 +327,13 @@ int tc35876x_write32(u16 reg, u32 val)
 		status = 0;
 	else
 		status = -EIO;
-
 	udelay(10);
 	mutex_unlock(&lock);
 
-/* For I2C of tc35876x
-
-	 {
-		int ret;
-		u8 data[6];
-
-		if (g_client == NULL)
-			return -1;
-
-		mutex_lock(&lock);
-		data[0] = (reg >> 8) & 0xff;
-		data[1] = reg & 0xff;
-		data[2] = val & 0xff;
-		data[3] = (val >> 8) & 0xff;
-		data[4] = (val >> 16) & 0xff;
-		data[5] = (val >> 24) & 0xff;
-		ret = i2c_master_send(g_client, data, 6);
-		if (ret >= 0)
-			status = 0;
-		else
-			status = -EIO;
-		mutex_unlock(&lock);
-	}
-*/
 	return status;
 }
+#endif
+
 EXPORT_SYMBOL(tc35876x_write32);
 
 int tc35876x_write16(u16 reg, u16 val)
@@ -358,7 +363,6 @@ int tc35876x_write16(u16 reg, u16 val)
 EXPORT_SYMBOL(tc35876x_write16);
 
 #ifdef	CONFIG_PROC_FS
-#define TC35876x_REG_NUM		(0x5a4)
 #define	TC358762_PROC_FILE	"driver/tc35876x"
 static struct proc_dir_entry *tc35876x_proc_file;
 static unsigned long index;
@@ -370,7 +374,7 @@ static ssize_t tc35876x_proc_read(struct file *filp,
 	u32 reg_val;
 	int ret;
 
-	if ((index <= 0) || (index > TC35876x_REG_NUM))
+	if ((index < 0) || (index > TC35876x_REG_NUM))
 		return 0;
 
 	ret = tc35876x_read32(index, &reg_val);
@@ -419,8 +423,8 @@ static const struct file_operations tc35876x_proc_ops = {
 
 static void create_tc35876x_proc_file(void)
 {
-	tc35876x_proc_file = create_proc_entry(TC358762_PROC_FILE, 0644, NULL);
-
+	tc35876x_proc_file =
+	    create_proc_entry(TC358762_PROC_FILE, 0644, NULL);
 	if (tc35876x_proc_file)
 		tc35876x_proc_file->proc_fops = &tc35876x_proc_ops;
 	else

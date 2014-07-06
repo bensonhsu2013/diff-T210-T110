@@ -1,11 +1,12 @@
 /*
- * Last modified: Nov 12th, 2012
- * Revision: V2.5
+ * (C) Copyright 2013 Bosch Sensortec GmbH All Rights Reserved
+ *
  * This software program is licensed subject to the GNU General Public License
  * (GPL).Version 2,June 1991, available at http://www.fsf.org/copyleft/gpl.html
-
- * (C) Copyright 2011 Bosch Sensortec GmbH
- * All Rights Reserved
+ *
+ * @date        Jun 12th, 2013
+ * @version     v2.5.5
+ * @brief       BMM050 Linux Driver
  */
 
 #include <linux/version.h>
@@ -18,7 +19,7 @@
 #include <linux/mutex.h>
 #include <linux/slab.h>
 #include <linux/delay.h>
-#include <linux/sensors_head.h>
+#include "sensors_head.h"
 
 #ifdef CONFIG_HAS_EARLYSUSPEND
 #include <linux/earlysuspend.h>
@@ -38,7 +39,7 @@
 #define BMM_VAL_NAME(name) BMM050_##name
 #define BMM_CALL_API(name) bmm050_##name
 
-#define BMM_I2C_WRITE_DELAY_TIME 1
+#define BMM_I2C_WRITE_DELAY_TIME 5
 
 #define BMM_DEFAULT_REPETITION_XY BMM_VAL_NAME(REGULAR_REPXY)
 #define BMM_DEFAULT_REPETITION_Z BMM_VAL_NAME(REGULAR_REPZ)
@@ -86,8 +87,10 @@ struct bmm_client_data {
 #endif
 
 	atomic_t delay;
+	/* whether the system in suspend state */
+	atomic_t in_suspend;
 
-	struct bmm050_mdata value;
+	struct bmm050_mdata_s32 value;
 	u8 enable:1;
 	s8 op_mode:4;
 	u8 odr;
@@ -135,15 +138,13 @@ static void bmm_late_resume(struct early_suspend *handler);
 
 static int bmm_restore_hw_cfg(struct i2c_client *client);
 
-static void bmm_remap_sensor_data(struct bmm050_mdata *val,
+static void bmm_remap_sensor_data(struct bmm050_mdata_s32 *val,
 		struct bmm_client_data *client_data)
 {
 #ifdef CONFIG_BMM_USE_PLATFORM_DATA
 	struct bosch_sensor_data bsd;
 
-	if ((NULL == client_data->bst_pd) ||
-			(BOSCH_SENSOR_PLACE_UNKNOWN
-			 == client_data->bst_pd->place))
+	if (NULL == client_data->bst_pd)
 		return;
 
 	bsd.x = val->datax;
@@ -181,8 +182,15 @@ static void bmm_delay(u32 msec)
 	mdelay(msec);
 }
 
+static inline int bmm_get_forced_drdy_time(int rept_xy, int rept_z)
+{
+	return  (145 * rept_xy + 500 * rept_z + 980 + (1000 - 1)) / 1000;
+}
+
+
 static void bmm_dump_reg(struct i2c_client *client)
 {
+#ifdef DEBUG
 	int i;
 	u8 dbg_buf[64];
 	u8 dbg_buf_str[64 * 3 + 1] = "";
@@ -202,6 +210,7 @@ static void bmm_dump_reg(struct i2c_client *client)
 				(((i + 1) % BYTES_PER_LINE == 0) ? '\n' : ' '));
 	}
 	printk(KERN_DEBUG "%s\n", dbg_buf_str);
+#endif
 }
 
 static int bmm_wakeup(struct i2c_client *client)
@@ -213,6 +222,8 @@ static int bmm_wakeup(struct i2c_client *client)
 
 	PINFO("waking up the chip...");
 
+	mdelay(BMM_I2C_WRITE_DELAY_TIME);
+	
 	while (try_times) {
 		err = bmm_i2c_write(client,
 				BMM_REG_NAME(POWER_CNTL), (u8 *)&value, 1);
@@ -409,7 +420,7 @@ static void bmm_work_func(struct work_struct *work)
 
 	mutex_unlock(&client_data->mutex_op_mode);
 
-	BMM_CALL_API(read_mdataXYZ)(&client_data->value);
+	BMM_CALL_API(read_mdataXYZ_s32)(&client_data->value);
 	bmm_remap_sensor_data(&client_data->value, client_data);
 
 	input_report_abs(client_data->input, ABS_X, client_data->value.datax);
@@ -426,19 +437,8 @@ static void bmm_work_func(struct work_struct *work)
 static int bmm_set_odr(struct i2c_client *client, u8 odr)
 {
 	int err = 0;
-	int i;
 
-	for (i = 0; i < ARRAY_SIZE(odr_map); i++) {
-		if (odr_map[i] == odr)
-			break;
-	}
-
-	if (ARRAY_SIZE(odr_map) == i) {
-		err = -1;
-		return err;
-	}
-
-	err = BMM_CALL_API(set_datarate)(i);
+	err = BMM_CALL_API(set_datarate)(odr);
 	mdelay(BMM_I2C_WRITE_DELAY_TIME);
 
 	return err;
@@ -507,6 +507,21 @@ static inline int bmm_get_op_mode_idx(u8 op_mode)
 }
 
 
+static int bmm_set_op_mode(struct bmm_client_data *client_data, int op_mode)
+{
+	int err = 0;
+
+	err = BMM_CALL_API(set_functional_state)(
+			op_mode);
+
+	if (BMM_VAL_NAME(SUSPEND_MODE) == op_mode)
+		atomic_set(&client_data->in_suspend, 1);
+	else
+		atomic_set(&client_data->in_suspend, 0);
+
+	return err;
+}
+
 static ssize_t bmm_store_op_mode(struct device *dev,
 		struct device_attribute *attr,
 		const char *buf, size_t count)
@@ -534,8 +549,7 @@ static ssize_t bmm_store_op_mode(struct device *dev,
 				 * for optimization */
 				err = bmm_set_forced_mode(client);
 			} else {
-				err = BMM_CALL_API(set_functional_state)(
-						op_mode);
+				err = bmm_set_op_mode(client_data, op_mode);
 			}
 
 			if (!err) {
@@ -550,7 +564,7 @@ static ssize_t bmm_store_op_mode(struct device *dev,
 	} else {
 		err = -EINVAL;
 	}
-
+	mdelay(3);
 	mutex_unlock(&client_data->mutex_power_mode);
 
 	if (err)
@@ -784,11 +798,20 @@ static ssize_t bmm_show_value(struct device *dev,
 	struct input_dev *input = to_input_dev(dev);
 	struct bmm_client_data *client_data = input_get_drvdata(input);
 	int count;
+	struct bmm050_mdata_s32 value = {0, 0, 0, 0, 0};
 
-	BMM_CALL_API(read_mdataXYZ)(&client_data->value);
-	bmm_remap_sensor_data(&client_data->value, client_data);
+	BMM_CALL_API(read_mdataXYZ_s32)(&value);
+	if (value.drdy) {
+		bmm_remap_sensor_data(&value, client_data);
+		client_data->value = value;
+	} else
+		PERR("data not ready");
 
-	count = sprintf(buf, "%hd %hd %hd\n",
+	count = sprintf(buf, "%d %d %d\n",
+			client_data->value.datax,
+			client_data->value.datay,
+			client_data->value.dataz);
+	PDEBUG("%d %d %d",
 			client_data->value.datax,
 			client_data->value.datay,
 			client_data->value.dataz);
@@ -796,10 +819,44 @@ static ssize_t bmm_show_value(struct device *dev,
 	return count;
 }
 
-
 static ssize_t bmm_show_value_raw(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
+#if 1
+	struct bmm050_mdata_s32 value = {0, 0, 0, 0, 0};
+	static struct bmm050_mdata_s32 prev_value = {0, 0, 0};
+	int count;
+
+	BMM_CALL_API(read_mdataXYZ_s32)(&value);
+
+	if( (value.datax == 0) && (value.datay == 0) )
+	{
+		value.datax = prev_value.datax;
+		value.datay = prev_value.datay;
+		value.dataz = prev_value.dataz;
+	}
+	else
+	{
+		prev_value.datax = value.datax;
+		prev_value.datay = value.datay;
+		prev_value.dataz = value.dataz;
+	}
+
+	if (value.datax == BMM050_OVERFLOW_OUTPUT_S32)
+		value.datax = BMM050_OVERFLOW_OUTPUT_S32_XY;
+	if (value.datay == BMM050_OVERFLOW_OUTPUT_S32)
+		value.datay = BMM050_OVERFLOW_OUTPUT_S32_XY;
+	if (value.dataz == BMM050_OVERFLOW_OUTPUT_S32)
+		value.dataz = BMM050_OVERFLOW_OUTPUT_S32_Z;
+
+
+	count = sprintf(buf, "%d,%d,%d\n",
+			value.datax,
+			value.datay,
+			value.dataz);
+
+	return count;
+#else
 	struct bmm050_mdata value;
 	int count;
 
@@ -811,8 +868,46 @@ static ssize_t bmm_show_value_raw(struct device *dev,
 			value.dataz);
 
 	return count;
+#endif
 }
 
+static ssize_t bmm_show_raw_data(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct bmm050_mdata_s32 value = {0, 0, 0, 0, 0};
+	static struct bmm050_mdata_s32 prev_value = {0, 0, 0};
+	int count;
+
+	mdelay(10);
+	BMM_CALL_API(read_mdataXYZ_s32)(&value);
+
+	if( (value.datax == 0) && (value.datay == 0) )
+	{
+		value.datax = prev_value.datax;
+		value.datay = prev_value.datay;
+		value.dataz = prev_value.dataz;
+	}
+	else
+	{
+		prev_value.datax = value.datax;
+		prev_value.datay = value.datay;
+		prev_value.dataz = value.dataz;
+	}
+
+	if (value.datax == BMM050_OVERFLOW_OUTPUT_S32)
+		value.datax = BMM050_OVERFLOW_OUTPUT_S32_XY;
+	if (value.datay == BMM050_OVERFLOW_OUTPUT_S32)
+		value.datay = BMM050_OVERFLOW_OUTPUT_S32_XY;
+	if (value.dataz == BMM050_OVERFLOW_OUTPUT_S32)
+		value.dataz = BMM050_OVERFLOW_OUTPUT_S32_Z;
+
+	count = sprintf(buf, "%d %d %d\n",
+			value.datax,
+			value.datay,
+			value.dataz);
+
+	return count;
+}
 
 static ssize_t bmm_show_enable(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -840,6 +935,7 @@ static ssize_t bmm_store_enable(struct device *dev,
 	if (err)
 		return err;
 
+	PDEBUG("<%s> data:%d",__func__,data);
 	data = data ? 1 : 0;
 	mutex_lock(&client_data->mutex_enable);
 	if (data != client_data->enable) {
@@ -924,8 +1020,7 @@ static ssize_t bmm_store_test(struct device *dev,
 	/* the following code assumes the work thread is not running */
 	if (BMM_SELF_TEST == data) {
 		/* self test */
-		err = BMM_CALL_API(set_functional_state)(
-				BMM_VAL_NAME(SLEEP_MODE));
+		err = bmm_set_op_mode(client_data, BMM_VAL_NAME(SLEEP_MODE));
 		mdelay(3);
 		err = BMM_CALL_API(set_selftest)(1);
 		mdelay(3);
@@ -1008,6 +1103,23 @@ static ssize_t bmm_show_place(struct device *dev,
 	return sprintf(buf, "%d\n", place);
 }
 
+static ssize_t bmm_read_name(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct input_dev *input = to_input_dev(dev);
+
+	printk(KERN_INFO "Bosch Sensortec Device!%s registered \n",CHIP_NAME);
+	return sprintf(buf, "%s\n",CHIP_NAME);
+}
+
+static ssize_t bmm_read_vendor(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct input_dev *input = to_input_dev(dev);
+
+	printk(KERN_INFO "Magnetic] %s vendor \n",CHIP_VENDOR);
+	return sprintf(buf, "%s\n",CHIP_VENDOR);
+}
 
 static DEVICE_ATTR(chip_id, S_IRUGO,
 		bmm_show_chip_id, NULL);
@@ -1021,18 +1133,24 @@ static DEVICE_ATTR(rept_z, S_IRUGO|S_IWUSR,
 		bmm_show_rept_z, bmm_store_rept_z);
 static DEVICE_ATTR(value, S_IRUGO,
 		bmm_show_value, NULL);
-static DEVICE_ATTR(raw_data, S_IRUGO,
+static DEVICE_ATTR(value_raw, S_IRUGO,
 		bmm_show_value_raw, NULL);
+static DEVICE_ATTR(raw_data, S_IRUGO,
+		bmm_show_raw_data, NULL);
 static DEVICE_ATTR(enable, S_IRUGO|S_IWUSR,
 		bmm_show_enable, bmm_store_enable);
 static DEVICE_ATTR(delay, S_IRUGO|S_IWUSR,
 		bmm_show_delay, bmm_store_delay);
 static DEVICE_ATTR(selftest, S_IRUGO|S_IWUSR,
 		bmm_show_test, bmm_store_test);
-static DEVICE_ATTR(reg, S_IRUGO|S_IWUSR,
+static DEVICE_ATTR(reg, S_IRUGO,
 		bmm_show_reg, NULL);
-static DEVICE_ATTR(place, S_IRUGO|S_IWUSR,
+static DEVICE_ATTR(place, S_IRUGO,
 		bmm_show_place, NULL);
+static DEVICE_ATTR(name, S_IRUGO|S_IWUSR,
+		bmm_read_name, NULL);
+static DEVICE_ATTR(vendor, S_IRUGO|S_IWUSR,
+		bmm_read_vendor, NULL);
 
 static struct attribute *bmm_attributes[] = {
 	&dev_attr_chip_id.attr,
@@ -1041,6 +1159,7 @@ static struct attribute *bmm_attributes[] = {
 	&dev_attr_rept_xy.attr,
 	&dev_attr_rept_z.attr,
 	&dev_attr_value.attr,
+	&dev_attr_value_raw.attr,
 	&dev_attr_raw_data.attr,
 	&dev_attr_enable.attr,
 	&dev_attr_delay.attr,
@@ -1055,6 +1174,24 @@ static struct attribute_group bmm_attribute_group = {
 	.attrs = bmm_attributes
 };
 
+static struct attribute *bmm_attributes_sensors[] = {
+	&dev_attr_chip_id.attr,
+	&dev_attr_op_mode.attr,
+	&dev_attr_odr.attr,
+	&dev_attr_rept_xy.attr,
+	&dev_attr_rept_z.attr,
+	&dev_attr_value.attr,
+	&dev_attr_value_raw.attr,
+	&dev_attr_raw_data.attr,
+	&dev_attr_enable.attr,
+	&dev_attr_delay.attr,
+	&dev_attr_selftest.attr,
+	&dev_attr_reg.attr,
+	&dev_attr_place.attr,
+	&dev_attr_name.attr,
+	&dev_attr_vendor.attr,
+	NULL
+};
 
 static int bmm_input_init(struct bmm_client_data *client_data)
 {
@@ -1101,10 +1238,10 @@ static int bmm_restore_hw_cfg(struct i2c_client *client)
 	int op_mode;
 
 	mutex_lock(&client_data->mutex_op_mode);
-	err = BMM_CALL_API(set_functional_state)(BMM_VAL_NAME(SLEEP_MODE));
+	err = bmm_set_op_mode(client_data, BMM_VAL_NAME(SLEEP_MODE));
 
 	if (bmm_get_op_mode_idx(client_data->op_mode) != -1)
-		err = BMM_CALL_API(set_functional_state)(client_data->op_mode);
+		err = bmm_set_op_mode(client_data, client_data->op_mode);
 
 	op_mode = client_data->op_mode;
 	mutex_unlock(&client_data->mutex_op_mode);
@@ -1135,6 +1272,16 @@ static int bmm_restore_hw_cfg(struct i2c_client *client)
 	PINFO("BMM_NO_REPETITIONS_Z: %02x", value);
 	mutex_unlock(&client_data->mutex_rept_z);
 
+	mutex_lock(&client_data->mutex_op_mode);
+	if (BMM_OP_MODE_UNKNOWN == (int)client_data->op_mode) {
+		bmm_set_forced_mode(client);
+		PINFO("set forced mode after hw_restore");
+		mdelay(bmm_get_forced_drdy_time(client_data->rept_xy,
+					client_data->rept_z));
+	}
+	mutex_unlock(&client_data->mutex_op_mode);
+
+
 	PINFO("register dump after init");
 	bmm_dump_reg(client);
 
@@ -1159,8 +1306,8 @@ static int bmm_probe(struct i2c_client *client, const struct i2c_device_id *id)
 		bmm_client = client;
 	} else {
 		PERR("this driver does not support multiple clients");
-		err = -EINVAL;
-		goto exit_err_clean;
+		err = -EBUSY;
+		return err;
 	}
 
 	/* wake up the chip */
@@ -1176,7 +1323,8 @@ static int bmm_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	/* check chip id */
 	err = bmm_check_chip_id(client);
 	if (!err) {
-		PNOTICE("Bosch Sensortec Device %s detected", SENSOR_NAME);
+		PNOTICE("Bosch Sensortec Device %s detected: %#x",
+				SENSOR_NAME, client->addr);
 	} else {
 		PERR("Bosch Sensortec Device not found, chip id mismatch");
 		err = -1;
@@ -1229,7 +1377,7 @@ static int bmm_probe(struct i2c_client *client, const struct i2c_device_id *id)
 #endif
 
 	err = sensors_register(&magnetic_device, client_data,
-		bmm_attributes, "magnetic_sensor");
+		bmm_attributes_sensors, "magnetic_sensor");
 	if (err < 0) {
 		pr_info("%s: could not sensors_register\n", __func__);
 		goto exit_bmm_sensors_register;
@@ -1273,8 +1421,8 @@ static int bmm_probe(struct i2c_client *client, const struct i2c_device_id *id)
 #if 0
 	err = bmm_restore_hw_cfg(client);
 #else
-	err = BMM_CALL_API(set_functional_state)(
-			BMM_VAL_NAME(SUSPEND_MODE));
+
+	err = bmm_set_op_mode(client_data, BMM_VAL_NAME(SUSPEND_MODE));
 	if (err) {
 		PERR("fail to init h/w of %s", SENSOR_NAME);
 		err = -EIO;
@@ -1373,8 +1521,7 @@ static void bmm_early_suspend(struct early_suspend *handler)
 	BMM_CALL_API(get_powermode)(&power_mode);
 	if (power_mode) {
 		err = bmm_pre_suspend(client);
-		err = BMM_CALL_API(set_functional_state)(
-				BMM_VAL_NAME(SUSPEND_MODE));
+		err = bmm_set_op_mode(client_data, BMM_VAL_NAME(SUSPEND_MODE));
 	}
 	mutex_unlock(&client_data->mutex_power_mode);
 
@@ -1411,8 +1558,7 @@ static int bmm_suspend(struct i2c_client *client, pm_message_t mesg)
 	BMM_CALL_API(get_powermode)(&power_mode);
 	if (power_mode) {
 		err = bmm_pre_suspend(client);
-		err = BMM_CALL_API(set_functional_state)(
-				BMM_VAL_NAME(SUSPEND_MODE));
+		err = bmm_set_op_mode(client_data, BMM_VAL_NAME(SUSPEND_MODE));
 	}
 	mutex_unlock(&client_data->mutex_power_mode);
 
@@ -1456,8 +1602,7 @@ static int bmm_remove(struct i2c_client *client)
 		}
 		mutex_unlock(&client_data->mutex_op_mode);
 
-		err = BMM_CALL_API(set_functional_state)(
-				BMM_VAL_NAME(SUSPEND_MODE));
+		err = bmm_set_op_mode(client_data, BMM_VAL_NAME(SUSPEND_MODE));
 		mdelay(BMM_I2C_WRITE_DELAY_TIME);
 
 		sysfs_remove_group(&client_data->input->dev.kobj,
@@ -1510,7 +1655,7 @@ static void __exit BMM_exit(void)
 	i2c_del_driver(&bmm_driver);
 }
 
-MODULE_AUTHOR("Zhengguang.Guo <Zhengguang.Guo@bosch-sensortec.com>");
+MODULE_AUTHOR("Bosch Sensortec <contact@bosch-sensortec.com>");
 MODULE_DESCRIPTION("driver for " SENSOR_NAME);
 MODULE_LICENSE("GPL");
 

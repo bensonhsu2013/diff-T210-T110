@@ -814,7 +814,7 @@ static void read_send_work(struct work_struct *work)
 		ret = wait_event_interruptible(dev->write_wq,
 				((req = mtpg_req_get(dev, &dev->tx_idle))
 							|| dev->error));
-		if (ret < 0) {
+		if (ret < 0 || !req) {
 			r = ret;
 			printk(KERN_DEBUG "[%s]\t%d ret = %d\n",
 						__func__, __LINE__, r);
@@ -836,7 +836,7 @@ static void read_send_work(struct work_struct *work)
 
 		ret = vfs_read(file, req->buf + hdr_length,
 					xfer - hdr_length, &file_pos);
-		if (ret < 0) {
+		if (ret < 0 || !req) {
 			r = ret;
 			break;
 		}
@@ -845,7 +845,7 @@ static void read_send_work(struct work_struct *work)
 
 		req->length = xfer;
 		ret = usb_ep_queue(dev->bulk_in, req, GFP_KERNEL);
-		if (ret < 0) {
+		if (ret < 0 || !req) {
 			dev->error = 1;
 			r = -EIO;
 			printk(KERN_DEBUG "[%s]\t%d ret = %d\n",
@@ -880,6 +880,11 @@ static long  mtpg_ioctl(struct file *fd, unsigned int code, unsigned long arg)
 	char buf[USB_PTPREQUEST_GETSTATUS_SIZE+1] = {0};
 
 	cdev = dev->cdev;
+
+	if(dev->online == 0 || dev->error == 1) {
+	    printk(KERN_ERR "ioctl is calling when device is disable or not online\n");
+		return -EAGAIN;
+	}
 	if (!cdev) {
 		printk(KERN_ERR "usb: %s cdev not ready\n", __func__);
 		return -EAGAIN;
@@ -1062,6 +1067,14 @@ static long  mtpg_ioctl(struct file *fd, unsigned int code, unsigned long arg)
 		status = dev->read_send_result;
 		break;
 	}
+	case MTP_VBUS_DISABLE:
+		printk(KERN_DEBUG "[%s] line=[%d] \n",
+							__func__, __LINE__);
+		if (dev->cdev && dev->cdev->gadget) {
+			usb_gadget_vbus_disconnect(cdev->gadget);
+			printk(KERN_DEBUG "Restricted policy so disconnecting mtp gadget\n");
+		}
+		break;
 	default:
 		status = -ENOTTY;
 	}
@@ -1194,12 +1207,11 @@ mtpg_function_unbind(struct usb_configuration *c, struct usb_function *f)
 	struct usb_request *req;
 
 	printk(KERN_DEBUG "[%s]\tline = [%d]\n", __func__, __LINE__);
+	while ((req = mtpg_req_get(dev, &dev->tx_idle)))
+		mtpg_request_free(req, dev->bulk_in);
 
 	while ((req = mtpg_req_get(dev, &dev->rx_idle)))
 		mtpg_request_free(req, dev->bulk_out);
-
-	while ((req = mtpg_req_get(dev, &dev->tx_idle)))
-		mtpg_request_free(req, dev->bulk_in);
 
 	while ((req = mtpg_req_get(dev, &dev->intr_idle)))
 		mtpg_request_free(req, dev->int_in);

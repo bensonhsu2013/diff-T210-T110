@@ -42,6 +42,9 @@
 #include <asm/ptrace.h>
 #include <asm/localtimer.h>
 #include <asm/smp_plat.h>
+#ifdef CONFIG_SEC_DEBUG_SCHED_LOG
+#include <mach/sec_debug.h>
+#endif
 
 /*
  * as from 2.5, kernels no longer have an init_tasks structure
@@ -51,7 +54,8 @@
 struct secondary_data secondary_data;
 
 enum ipi_msg_type {
-	IPI_TIMER = 2,
+	IPI_WAKEUP =1,
+	IPI_TIMER,
 	IPI_RESCHEDULE,
 	IPI_CALL_FUNC,
 	IPI_CALL_FUNC_SINGLE,
@@ -381,7 +385,8 @@ void arch_send_call_function_single_ipi(int cpu)
 }
 
 static const char *ipi_types[NR_IPI] = {
-#define S(x,s)	[x - IPI_TIMER] = s
+#define S(x, s)	[x - IPI_WAKEUP] = s
+	S(IPI_WAKEUP, "CPU wakeup interrupts"),
 	S(IPI_TIMER, "Timer broadcast interrupts"),
 	S(IPI_RESCHEDULE, "Rescheduling interrupts"),
 	S(IPI_CALL_FUNC, "Function call interrupts"),
@@ -584,10 +589,15 @@ void handle_IPI(int ipinr, struct pt_regs *regs)
 	unsigned int cpu = smp_processor_id();
 	struct pt_regs *old_regs = set_irq_regs(regs);
 
-	if (ipinr >= IPI_TIMER && ipinr < IPI_TIMER + NR_IPI)
-		__inc_irq_stat(cpu, ipi_irqs[ipinr - IPI_TIMER]);
-
-	switch (ipinr) {
+	if (ipinr >= IPI_WAKEUP && ipinr < IPI_WAKEUP + NR_IPI)
+		__inc_irq_stat(cpu, ipi_irqs[ipinr - IPI_WAKEUP]);
+#ifdef CONFIG_SEC_DEBUG_SCHED_LOG
+	sec_debug_irq_log(ipinr, do_IPI, 1);
+#endif
+ 	switch (ipinr) {
+	case IPI_WAKEUP:
+		/* Wake up from WFI/WFE using SGI */
+		break;
 	case IPI_TIMER:
 		irq_enter();
 		ipi_timer();
@@ -625,6 +635,9 @@ void handle_IPI(int ipinr, struct pt_regs *regs)
 		       cpu, ipinr);
 		break;
 	}
+#ifdef CONFIG_SEC_DEBUG_SCHED_LOG
+	sec_debug_irq_log(ipinr, do_IPI, 2);
+#endif
 	set_irq_regs(old_regs);
 }
 

@@ -588,14 +588,10 @@ int acm_notify(void *dev, u16 state)
 
 static void acm_connect(struct gserial *port)
 {
-#ifndef CONFIG_USB_DUN_SUPPORT
 	struct f_acm		*acm = port_to_acm(port);
 
 	acm->serial_state |= ACM_CTRL_DSR | ACM_CTRL_DCD;
 	acm_notify_serial_state(acm);
-#else
-	printk(KERN_DEBUG "acm_connected\n");
-#endif
 }
 
 static void acm_disconnect(struct gserial *port)
@@ -608,7 +604,6 @@ static void acm_disconnect(struct gserial *port)
 
 static int acm_send_break(struct gserial *port, int duration)
 {
-#ifndef CONFIG_USB_DUN_SUPPORT
 	struct f_acm		*acm = port_to_acm(port);
 	u16			state;
 
@@ -619,10 +614,6 @@ static int acm_send_break(struct gserial *port, int duration)
 
 	acm->serial_state = state;
 	return acm_notify_serial_state(acm);
-#else
-	printk(KERN_DEBUG "acm_send_break\n");
-	return 0;
-#endif
 }
 
 /*-------------------------------------------------------------------------*/
@@ -724,9 +715,6 @@ acm_bind(struct usb_configuration *c, struct usb_function *f)
 			gadget_is_dualspeed(c->cdev->gadget) ? "dual" : "full",
 			acm->port.in->name, acm->port.out->name,
 			acm->notify->name);
-#ifdef CONFIG_USB_DUN_SUPPORT
-	acm_modem_register(acm);
-#endif
 	return 0;
 
 fail:

@@ -232,7 +232,7 @@ static int __devinit device_irq_init_805(struct pm80x_chip *chip)
 	    PM805_STATUS0_INT_CLEAR | PM805_STATUS0_INV_INT |
 	    PM800_STATUS0_INT_MASK;
 
-	data = PM805_STATUS0_INT_CLEAR;
+	data = (chip->irq_mode) ? PM805_STATUS0_INT_CLEAR : (0<<1);
 	ret = regmap_update_bits(map, PM805_INT_STATUS0, mask, data);
 	/*
 	 * PM805_INT_STATUS is under 32K clock domain, so need to
@@ -337,6 +337,7 @@ static int __devinit pm805_probe(struct i2c_client *client,
 	}
 
 	chip = i2c_get_clientdata(client);
+	chip->irq_mode = pdata->irq_mode;
 
 	ret = device_805_init(chip);
 	if (ret) {

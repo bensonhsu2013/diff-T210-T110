@@ -13,6 +13,7 @@
 #define _DATA_CHANNEL_KERNEL_H_
 
 #include <linux/list.h>
+#include <linux/skbuff.h>
 
 typedef enum {
 	TX_SUCCESS,

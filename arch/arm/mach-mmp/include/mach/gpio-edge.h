@@ -30,6 +30,9 @@ struct gpio_edge_desc {
 	void (*handler)(int, void *);
 };
 
+extern unsigned long gpio_wp_stat[];
+extern int gpio_edge_gpio_num;
+
 extern int mmp_gpio_edge_add(struct gpio_edge_desc *edge);
 extern int mmp_gpio_edge_del(struct gpio_edge_desc *edge);
 extern void mmp_gpio_edge_enable(void);

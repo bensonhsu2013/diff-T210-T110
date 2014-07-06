@@ -18,7 +18,9 @@
 #define MAX_CPU_NUM			CONFIG_NR_CPUS
 #define OFFSET_SCU_SHUTDOWN		(MAX_CPU_NUM << 2)
 #define OFFSET_SPINLOCK			(OFFSET_SCU_SHUTDOWN + 4)
+#define OFFSET_BARRIER			(OFFSET_SPINLOCK + 4)
 
+#define	INVALID_LPM			(-1)
 #define	LPM_C1				0
 #define	LPM_C2				1
 #define	LPM_D1P				2
@@ -37,6 +39,7 @@
 #define PMUA_MP_L2_SRAM_POWER_DOWN	(1 << 2)
 #define PMUA_MP_SCU_SRAM_POWER_DOWN	(1 << 3)
 #define PMUA_MP_MASK_CLK_OFF		(1 << 11)
+#define PMUA_DIS_MP_SLP			(1 << 18)
 
 #define ICU_MASK_FIQ			(1 << 0)
 #define ICU_MASK_IRQ			(1 << 1)
@@ -132,8 +135,8 @@ struct pxa988_lowpower_data {
 extern struct pxa988_lowpower_data pxa988_lpm_data[];
 extern void pxa988_hotplug_enter(u32 cpu, u32 power_mode);
 extern void pxa988_pm_suspend(u32 cpu, u32 power_mode);
-extern int pxa988_enter_lowpower(u32 cpu, u32 power_mode);
 extern void pxa988_enter_c1(u32 cpu);
+extern int pxa988_enter_lowpower(u32 cpu, u32 power_mode);
 
 extern void pl310_suspend(void);
 
@@ -142,17 +145,14 @@ extern void pmu_register_unlock(void);
 
 extern void pl310_disable(void);
 
+extern u32 sav_wucrs, sav_wucrm;
+
 #ifdef CONFIG_EOF_FC_WORKAROUND
 extern atomic_t disable_c2;
 #endif
 
-#if defined(CONFIG_CPU_PXA988) && defined(CONFIG_SMP)
 extern atomic_t freqchg_disable_c2;
-#endif
 
-#ifdef CONFIG_SMP
-extern int core1_c2;
-#endif
 #endif
 
 #endif

@@ -2150,10 +2150,12 @@ gckVIDMEM_Unlock(
 {
     gceSTATUS status = gcvSTATUS_OK;
     gckHARDWARE hardware;
+#if 0
     gctPOINTER buffer;
     gctSIZE_T requested, bufferSize;
-    gckCOMMAND command = gcvNULL;
     gceKERNEL_FLUSH flush;
+#endif
+    gckCOMMAND command = gcvNULL;
     gckOS os = gcvNULL;
     gctBOOL acquired = gcvFALSE;
     gctBOOL commitEntered = gcvFALSE;
@@ -2348,6 +2350,7 @@ gckVIDMEM_Unlock(
 
         else
         {
+#if 0
             /* If we need to unlock a node from virtual memory we have to be
             ** very carefull.  If the node is still inside the caches we
             ** might get a bus error later if the cache line needs to be
@@ -2366,6 +2369,7 @@ gckVIDMEM_Unlock(
 
             /* WORKAROUND:If process been killed(drv_release), don't do unmap operation
             here, let system free user space, we only need to free physical pages. */
+#endif
             if(!IsDrvRelease)
             {
                 gcmkONERROR(
@@ -2375,7 +2379,7 @@ gckVIDMEM_Unlock(
                                   Node->Virtual.bytes,
                                   Node->Virtual.logical));
             }
-
+#if 0
             if (!Node->Virtual.contiguous
             &&  (Node->Virtual.lockeds[Kernel->core] == 1)
             )
@@ -2429,10 +2433,11 @@ gckVIDMEM_Unlock(
                 gcmkONERROR(gckCOMMAND_ExitCommit(command, gcvFALSE));
                 commitEntered = gcvFALSE;
             }
+#endif
             /* Release the mutex. */
             gcmkVERIFY_OK(gckOS_ReleaseMutex(os, Node->Virtual.mutex));
             acquired = gcvFALSE;
-
+#if 0
             if(IsDrvRelease)
             {
                 status = gckCOMMAND_Stall(Kernel->command, gcvFALSE);
@@ -2441,7 +2446,7 @@ gckVIDMEM_Unlock(
                     gckOS_Log(_GFX_LOG_NOTIFY_, "gcvDB_VIDEO_MEMORY Unlock gcdGPU_ADVANCETIMER_STALL fail ERR");
                 }
             }
-
+#endif
             gcmkTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_VIDMEM,
                            "Scheduled unlock for virtual node 0x%x",
                            Node);

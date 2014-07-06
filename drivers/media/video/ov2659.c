@@ -215,6 +215,11 @@ static int ov2659_s_register(struct v4l2_subdev *sd,
 
 static int set_stream(struct i2c_client *client, int enable)
 {
+	if (enable)
+		ov2659_write(client, 0x4202, 0x0);
+	else
+		ov2659_write(client, 0x4202, 0xf);
+
 	return 0;
 }
 

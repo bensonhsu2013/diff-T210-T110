@@ -9,12 +9,13 @@ menuconfig POWER_SUPPLY
 if POWER_SUPPLY
 
 config BATTERY_SAMSUNG
-	tristate "samsung battery driver"
+    tristate "samsung battery driver"
 	help
-	 Say Y to include support for samsung battery driver
-	 This battery driver integrated all battery-related functions
-	 To see battery-related functions,
-	 refer to sec_charging_common.h
+	  Say Y to include support for samsung battery driver
+	  This battery driver integrated all battery-related functions
+	  To see battery-related functions,
+	  refer to sec_charging_common.h
+
 
 config POWER_SUPPLY_DEBUG
 	bool "Power supply debug"
@@ -79,88 +80,82 @@ config BATTERY_88PM80X
 	  battery is calculated via the voltage. So it may not be very
 	  accurate.
 
-config BATTERY_88PM860X
-	tristate "Marvell 88PM860x battery driver"
-	depends on MFD_88PM860X
-	help
-	  Say Y here to enable battery monitor for Marvell 88PM860x chip.
-
 config SPA
         tristate "Samsung Power&Accessory"
         help
          Samsung Power&Accessory
-
 config SPA_LPM_MODE
 	tristate "power off charging mode"
 	depends on SPA
 	help
 	  power off charging mode
-
 config SPA_FUEL_GAUGE_TEST
 	tristate "fuel gauge test binary"
 	depends on SPA
 	help
 	 fuel gauge test binary
-
 config SPA_POWER_OFF_BY_LOW_VOLTAGE
 	tristate "power off by low voltage"
 	depends on SPA
 	help
 	 power off by low voltage 
 
+config BATTERY_D2199
+	tristate "D2199 Fuel Gauge"
+	depends on MFD_D2199
+	depends on I2C
+	help
+	  This feature is depend on Power Supply class support
+	  	 
 config STC3105_FUELGAUGE
         tristate "STC3105_FUELGAUGE"
         help
          STC3105_FUELGAUGE
-
-config FSA9480_MICROUSB
-        tristate "FSA9480_MICROUSB"
-        help
-         FSA9480_MICROUSB
-
 config MAX17043_FUELGAUGE
         tristate "MAX17043_FUELGAUGE"
         help
          MAX17043_FUELGAUGE
-
 config BQ27425_FUELGAUGE
         tristate "BQ27425_FUELGAUGE"
         help
          BQ27425_FUELGAUGE
-
 config BQ27425_READ_VF
         tristate "BQ27425_READ_VF"
 	depends on BQ27425_FUELGAUGE
         help
          BQ27425_READ_VF
-
 config BQ27425_SOC_COMPENSATION_FOR_DISCHARGING
         tristate "BQ27425_SOC_COMPENSATION_FOR_DISCHARGING"
 	depends on BQ27425_FUELGAUGE
         help
          BQ27425_SOC_COMPENSATION_FOR_DISCHARGING
-
 config SS6000_CHARGER
 	tristate "SS6000_CHARGER"
 	help
 	 SS6000_CHARGER
-
 config SS6000_CHARGER_OVP_FEATURE
 	tristate "SS6000_CHARGER_OVP_FEATURE"
 	depends on SS6000_CHARGER
 	help
 	 SS6000_CHARGER_OVP_FEATURE
-
 config STC3115_FUELGAUGE
         tristate "STC3115_FUELGAUGE"
         help
          STC3115_FUELGAUGE
-
 config BQ24157_CHARGER
 	tristate "BQ24157_CHARGER"
 	help
 	 BQ24157_CHARGER
+config FSA9480_MICROUSB
+        tristate "FSA9480_MICROUSB"
+	help
+	 FSA9480_MICROUSB
 
+config FSA9480_MUIC_PXA_USB_NOTIFY
+	tristate "FSA9480_MUIC_PXA_USB_NOTIFY"
+	help
+	  Say Y here to enable PXA986/988/1088/1920 USB notify without Marvell PMIC 
+	
 config BATTERY_DS2760
 	tristate "DS2760 battery driver (HP iPAQ & others)"
 	depends on W1 && W1_SLAVE_DS2760
@@ -351,6 +346,12 @@ config CHARGER_MAX8903
 	  pins based on the status of charger connections with interrupt
 	  handlers.
 
+config CHARGER_T7
+	tristate "T7 Tablet Battery Charger"
+	depends on GPIOLIB
+	help
+	  Say Y to enable support for T7 Tablet battery charger interface.
+
 config CHARGER_TWL4030
 	tristate "OMAP TWL4030 BCI charger driver"
 	depends on TWL4030_CORE
@@ -422,5 +423,26 @@ config CHARGER_ISL9226
 	depends on I2C
 	help
 	  Say Y to include support for ISL9226 charger driver.
+
+config CHARGER_SMB358
+        tristate "Summit Microelectronics SMB358 Battery Charger"
+        depends on I2C
+        help
+          Say Y to include support for Summit Microelectronics SMB358
+          Battery Charger.
+
+config I2C_RT9455
+	tristate "RT9455 Switch Mode Charger driver"
+	depends on I2C
+	default n
+	help
+	  Say Y here to enable support for RT955 (I2C) chips.
+
+config I2C_RT9455_DBG
+	tristate "RT9455 Switch Mode Charger driver debug flag"
+	depends on I2C_RT9455
+	default n
+	help
+	  Say Y here to enable debug support for RT955 (I2C) chips.
 
 endif # POWER_SUPPLY

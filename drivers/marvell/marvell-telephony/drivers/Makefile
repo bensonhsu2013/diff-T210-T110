@@ -8,4 +8,4 @@ obj-y                           += cidatatty/
 obj-y                           += hwmap/
 obj-y                           += errorhandler/build/
 obj-y				+= usim_event/
-obj-y				+= cimodemtty/
+

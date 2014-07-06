@@ -84,7 +84,7 @@ obj-$(CONFIG_PPS)		+= pps/
 obj-$(CONFIG_PTP_1588_CLOCK)	+= ptp/
 obj-$(CONFIG_W1)		+= w1/
 obj-$(CONFIG_POWER_SUPPLY)	+= power/
-obj-$(CONFIG_BATTERY_SAMSUNG)	+= battery/
+obj-$(CONFIG_BATTERY_SAMSUNG)   += battery/
 obj-$(CONFIG_HWMON)		+= hwmon/
 obj-$(CONFIG_THERMAL)		+= thermal/
 obj-$(CONFIG_WATCHDOG)		+= watchdog/
@@ -130,15 +130,13 @@ obj-$(CONFIG_NFC)		+= nfc/
 obj-$(CONFIG_IOMMU_SUPPORT)	+= iommu/
 obj-$(CONFIG_REMOTEPROC)	+= remoteproc/
 obj-$(CONFIG_RPMSG)		+= rpmsg/
-obj-$(CONFIG_ACCESSORY)		+= accessory/
 
 # Virtualization drivers
 obj-$(CONFIG_VIRT_DRIVERS)	+= virt/
 obj-$(CONFIG_HYPERV)		+= hv/
 
 obj-$(CONFIG_PM_DEVFREQ)	+= devfreq/
-obj-$(CONFIG_NEW_SENSORS)       += sensors/
 obj-y				+= marvell/
-ifeq (1, $(shell if [ -d $(srctree)/drivers/exfat ]; then echo 1; fi))
-obj-y	+= exfat/
-endif
+
+obj-$(CONFIG_SENSOR_DIR)	+= sensor/
+obj-y                           += exfat/

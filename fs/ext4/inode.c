@@ -327,10 +327,11 @@ static int __check_block_validity(struct inode *inode, const char *func,
 {
 	if (!ext4_data_block_valid(EXT4_SB(inode->i_sb), map->m_pblk,
 				   map->m_len)) {
+		/* for debugging, sangwoo2.lee */
 		printk(KERN_ERR "printing inode..\n");
 		print_block_data(inode->i_sb, 0, (unsigned char *)inode,
-				0, EXT4_INODE_SIZE(inode->i_sb));
-
+						0, EXT4_INODE_SIZE(inode->i_sb));
+		/* for debugging */
 		ext4_error_inode(inode, func, line, map->m_pblk,
 				 "lblock %lu mapped to illegal pblock "
 				 "(length %d)", (unsigned long) map->m_lblk,
@@ -3817,14 +3818,15 @@ struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
 bad_inode:
 	/* for debugging, woojoong.lee */
 	printk(KERN_ERR "iloc info, offset : %lu,"
-			, iloc.offset);
+					, iloc.offset);
 	printk(KERN_ERR " group# : %u\n", iloc.block_group);
 	printk(KERN_ERR "sb info, inodes per group : %lu,"
-			, EXT4_SB(sb)->s_inodes_per_group);
+					, EXT4_SB(sb)->s_inodes_per_group);
 	printk(KERN_ERR " inode size : %d\n"
-			, EXT4_SB(sb)->s_inode_size);
+					, EXT4_SB(sb)->s_inode_size);
 	print_bh(sb, iloc.bh, 0, EXT4_BLOCK_SIZE(sb));
 	/* end */
+
 	brelse(iloc.bh);
 	iget_failed(inode);
 	return ERR_PTR(ret);
@@ -3935,8 +3937,8 @@ static int ext4_do_update_inode(handle_t *handle,
 	raw_inode->i_file_acl_lo = cpu_to_le32(ei->i_file_acl);
 	if (ei->i_disksize != ext4_isize(raw_inode)) {
 	ext4_isize_set(raw_inode, ei->i_disksize);
-        need_datasync = 1;
-    }	
+		need_datasync = 1;
+	}
 	if (ei->i_disksize > 0x7fffffffULL) {
 		struct super_block *sb = inode->i_sb;
 		if (!EXT4_HAS_RO_COMPAT_FEATURE(sb,

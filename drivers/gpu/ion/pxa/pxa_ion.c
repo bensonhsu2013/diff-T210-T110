@@ -16,9 +16,6 @@
 #include <linux/pxa_ion.h>
 #include <asm/cacheflush.h>
 #include "../ion_priv.h"
-#if defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
-#include <linux/dma-mapping.h>
-#endif
 
 struct pxa_ion_info {
 	struct ion_device       *idev;
@@ -90,31 +87,11 @@ static long pxa_ion_ioctl(struct ion_client *client, unsigned int cmd,
 		start = vma->vm_start + region.offset;
 		end = start + region.len;
 		/* don't check direction */
-#if defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
-		/* We don't have to do nothing, in this case */
-#else
 		dmac_flush_range((void *)start, (void *)end);
-#endif
 
 		pstart = buffer->priv_phys + region.offset;
 		pend = pstart + region.len;
-
-#if defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
-		if (region.dir == PXA_DMA_FROM_DEVICE) {
-			outer_inv_range(pstart, pend);
-			dmac_unmap_area((void *)start, end - start,
-					DMA_FROM_DEVICE);
-		} else {
-			if (region.len >= SZ_32K)
-			flush_cache_all();
-			else
-				dmac_flush_range((void *)start, (void *)end);
-			outer_flush_range(pstart, pend);
-		}
-#else
 		outer_flush_range(pstart, pend);
-#endif
-
 		mutex_unlock(&buffer->lock);
 		break;
 	}
@@ -142,20 +119,13 @@ static int pxa_ion_probe(struct platform_device *pdev)
 	info->heaps = devm_kzalloc(&pdev->dev,
 		sizeof(struct ion_heap *) * pdata->nr, GFP_KERNEL);
 	if (!info->heaps)
-	{
-		devm_kfree(&pdev->dev, info);                        
 		return -ENOMEM;
-	}
 
 	info->heap_cnt = pdata->nr;
 
 	info->idev = ion_device_create(pxa_ion_ioctl);
 	if (IS_ERR_OR_NULL(info->idev))
-	{
-		devm_kfree(&pdev->dev, info->heaps);
-		devm_kfree(&pdev->dev, info);  	
 		return PTR_ERR(info->idev);
-	}
 
 	pxa_ion_dev = info->idev;
 
@@ -175,7 +145,7 @@ static int pxa_ion_probe(struct platform_device *pdev)
 	return 0;
 
 err_heap:
-	for (; i > 0; i--)
+	for (; i >= 0; i--)
 		ion_heap_destroy(info->heaps[i]);
 	ion_device_destroy(info->idev);
 	return err;

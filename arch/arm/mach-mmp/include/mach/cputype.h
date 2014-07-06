@@ -2,6 +2,7 @@
 #define __ASM_MACH_CPUTYPE_H
 
 #include <asm/cputype.h>
+#include <asm/io.h>
 
 /*
  *  CPU   Stepping   CPU_ID      CHIP_ID
@@ -99,18 +100,6 @@ static inline int cpu_is_pxa986_a0(void)
 		((mmp_chip_id & 0xffffff) == 0xa0c926);
 }
 
-#define PXA98X_Z1	0x00
-#define PXA98X_Z2	0x01
-#define PXA98X_Z3	0x02
-#define PXA98X_A0	0xA0
-
-static inline int cpu_pxa98x_stepping(void)
-{
-	if ((mmp_chip_id & 0xf00000) == 0xf00000)
-		return (mmp_chip_id & 0xf0000) >> 16;
-
-	return (mmp_chip_id & 0xff0000) >> 16;
-}
 #else
 #define cpu_is_pxa988()	(0)
 #define cpu_is_pxa988_z1()	(0)
@@ -122,7 +111,59 @@ static inline int cpu_pxa98x_stepping(void)
 #define cpu_is_pxa986_z2()	(0)
 #define cpu_is_pxa986_z3()	(0)
 #define cpu_is_pxa986_a0()	(0)
-#define cpu_pxa98x_stepping()	(0)
+#endif
+
+#ifdef CONFIG_CPU_PXA1088
+static inline int cpu_is_pxa1088(void)
+{
+	return (((read_cpuid_id() >> 4) & 0xfff) == 0xc07) &&
+		(((mmp_chip_id & 0xffff) == 0x1088));
+}
+
+static inline int cpu_is_pxa1920(void)
+{
+	return (((read_cpuid_id() >> 4) & 0xfff) == 0xc07) &&
+		(((mmp_chip_id & 0xffff) == 0x1188));
+}
+
+#define BOOT_ROM_VER 0xFFE00028
+#define BOOT_ROM_A0 0x11122012
+#define BOOT_ROM_A1 0x01282013
+
+static inline unsigned long get_bootrom_ver(void)
+{
+	volatile u32 *bootrom_ver_p;
+	static u32 bootrom_ver;
+	static int first_n;
+
+	if (!first_n) {
+		first_n = 1;
+		bootrom_ver_p = ioremap(BOOT_ROM_VER, 4);
+		bootrom_ver = __raw_readl(bootrom_ver_p);
+		iounmap(bootrom_ver_p);
+	}
+
+	return bootrom_ver;
+}
+
+static inline int cpu_is_pxa1088_a0(void)
+{
+	return (((read_cpuid_id() >> 4) & 0xfff) == 0xc07) &&
+		(((mmp_chip_id & 0xffff) == 0x1088)) &&
+		(get_bootrom_ver() == BOOT_ROM_A0);
+}
+
+static inline int cpu_is_pxa1088_a1(void)
+{
+	return (((read_cpuid_id() >> 4) & 0xfff) == 0xc07) &&
+		(((mmp_chip_id & 0xffff) == 0x1088)) &&
+		(get_bootrom_ver() == BOOT_ROM_A1);
+}
+#else
+#define cpu_is_pxa1088()	(0)
+#define cpu_is_pxa1088_a0()	(0)
+#define cpu_is_pxa1088_a1()	(0)
+#define cpu_is_pxa1920()	(0)
 #endif
 
 #ifdef CONFIG_CPU_MMP2
@@ -167,5 +208,26 @@ static inline int cpu_is_mmp3fpgasoc(void)
 #else
 #define cpu_is_mmp3fpgasoc()	(0)
 #endif
+
+#ifdef CONFIG_CPU_EDEN
+static inline int cpu_is_eden(void)
+{
+	return (((read_cpuid_id() >> 4) & 0xfff) == 0xc07) &&
+		((mmp_chip_id & 0xffff) == 0xc192);
+}
+#else
+#define cpu_is_eden(id)	(0)
+#endif
+
+static inline int cpu_is_armv7_a7(void)
+{
+	return (((read_cpuid_id() >> 4) & 0xfff) == 0xc07);
+}
+
+static inline int cpu_is_armv7_a9(void)
+{
+	return (((read_cpuid_id() >> 4) & 0xfff) == 0xc09);
+}
+
 
 #endif /* __ASM_MACH_CPUTYPE_H */

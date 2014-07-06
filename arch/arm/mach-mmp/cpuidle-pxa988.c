@@ -21,10 +21,8 @@
 #include <asm/io.h>
 #include <asm/proc-fns.h>
 #include <mach/pxa988_lowpower.h>
-#include <mach/reset-pxa988.h>
-#include <mach/cputype.h>
+#include <mach/features.h>
 
-static bool cpu_done[NR_CPUS];
 static enum pxa988_lowpower_mode pxa988_idle_mode[] = {
 	PXA988_LPM_C1,
 	PXA988_LPM_C2,
@@ -59,20 +57,16 @@ static struct cpuidle_driver pxa988_idle_driver = {
 
 static DEFINE_PER_CPU(struct cpuidle_device, pxa988_cpuidle_device);
 
+#ifdef CONFIG_ARCH_NEEDS_CPU_IDLE_COUPLED
+static bool cpu_done[NR_CPUS];
 static atomic_t abort_barrier;
-
-static inline int has_feat_legacy_apmu_core_status(void)
-{
-	return cpu_is_pxa988_z1() || cpu_is_pxa986_z1() ||
-		cpu_is_pxa988_z2() || cpu_is_pxa986_z2() ||
-		cpu_is_pxa988_z3() || cpu_is_pxa986_z3();
-}
 
 static int pxa988_enter_lpm(struct cpuidle_device *dev,
 				struct cpuidle_driver *drv,
 				int index)
 {
-	enum pxa988_lowpower_mode *power_mode = cpuidle_get_statedata(&dev->states_usage[index]);
+	enum pxa988_lowpower_mode *power_mode = \
+			cpuidle_get_statedata(&dev->states_usage[index]);
 	int real_mode;		/*indicate the actual */
 
 	if (*power_mode == PXA988_LPM_C1) {
@@ -111,22 +105,42 @@ static int pxa988_enter_lpm(struct cpuidle_device *dev,
 
 	cpu_done[dev->cpu] = true;
 	/* Wakeup CPU1 only if it is not offlined */
-	if (dev->cpu == 0 && cpumask_test_cpu(1, cpu_online_mask)) {
+	if (dev->cpu == 0 && cpumask_test_cpu(1, cpu_online_mask))
 		smp_send_reschedule(1);
-		check_and_swrst_core1();
-	}
 fail:
 	cpuidle_coupled_parallel_barrier(dev, &abort_barrier);
 	cpu_done[dev->cpu] = false;
-	for (index = 0; index < CPUIDLE_STATE_MAX; index++)
+
+	for (index = 0; index < CPUIDLE_STATE_MAX; index++) {
+		if (real_mode == INVALID_LPM) {
+			index = INVALID_LPM;
+			break;
+		}
 		if (real_mode == *(int *) \
 			cpuidle_get_statedata(&dev->states_usage[index]))
 			break;
+	}
 
 	local_fiq_enable();
 
 	return index;
 }
+#else
+static int pxa988_enter_lpm(struct cpuidle_device *dev,
+				struct cpuidle_driver *drv,
+				int index)
+{
+	enum pxa988_lowpower_mode *power_mode = cpuidle_get_statedata(&dev->states_usage[index]);
+
+	local_fiq_disable();
+
+	index = pxa988_enter_lowpower(dev->cpu, *power_mode);
+
+	local_fiq_enable();
+
+	return index;
+}
+#endif
 
 /* Helper to fill the C-state common data*/
 static inline void _fill_state(struct cpuidle_driver *drv,
@@ -136,10 +150,15 @@ static inline void _fill_state(struct cpuidle_driver *drv,
 
 	state->exit_latency	= cpuidle_params_table[idx].exit_latency;
 	state->target_residency	= cpuidle_params_table[idx].target_residency;
-	if (idx <= drv->safe_state_index )
+#ifdef CONFIG_ARCH_NEEDS_CPU_IDLE_COUPLED
+	if (idx <= drv->safe_state_index)
 		state->flags	= CPUIDLE_FLAG_TIME_VALID;
 	else
-		state->flags	= CPUIDLE_FLAG_TIME_VALID | CPUIDLE_FLAG_COUPLED;
+		state->flags	= CPUIDLE_FLAG_TIME_VALID | \
+					CPUIDLE_FLAG_COUPLED;
+#else
+	state->flags		= CPUIDLE_FLAG_TIME_VALID;
+#endif
 	state->enter		= pxa988_enter_lpm;
 	strncpy(state->name, name, CPUIDLE_NAME_LEN - 1);
 	strncpy(state->desc, descr, CPUIDLE_DESC_LEN - 1);
@@ -163,8 +182,10 @@ static int pxa988_cpuidle_register_device(unsigned int cpu)
 
 	device = &per_cpu(pxa988_cpuidle_device, cpu);
 	device->cpu = cpu;
+#ifdef CONFIG_ARCH_NEEDS_CPU_IDLE_COUPLED
 	device->coupled_cpus = *cpu_present_mask;
 	device->safe_state_index = 0;
+#endif
 
 	cpuidle_set_statedata(&device->states_usage[0],
 			&pxa988_idle_mode[0]);
@@ -206,4 +227,3 @@ static int __init pxa988_cpuidle_init(void)
 }
 
 module_init(pxa988_cpuidle_init);
-

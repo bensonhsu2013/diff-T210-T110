@@ -29,7 +29,9 @@
 #define ECRYPTFS_KERNEL_H
 
 #include <keys/user-type.h>
+#if defined(CONFIG_ENCRYPTED_KEYS) || defined(CONFIG_ENCRYPTED_KEYS_MODULE)
 #include <keys/encrypted-type.h>
+#endif
 #include <linux/fs.h>
 #include <linux/fs_stack.h>
 #include <linux/namei.h>
@@ -346,9 +348,9 @@ struct ecryptfs_mount_crypt_stat {
 #ifdef CONFIG_WTL_ENCRYPTION_FILTER
 	int max_name_filter_len;
 	char enc_filter_name[ENC_NAME_FILTER_MAX_INSTANCE]
-				[ENC_NAME_FILTER_MAX_LEN];
+				[ENC_NAME_FILTER_MAX_LEN + 1];
 	char enc_filter_ext[ENC_EXT_FILTER_MAX_INSTANCE]
-				[ENC_EXT_FILTER_MAX_LEN];
+				[ENC_EXT_FILTER_MAX_LEN + 1];
 #endif
 
 };
@@ -591,6 +593,8 @@ struct ecryptfs_open_req {
 struct inode *ecryptfs_get_inode(struct inode *lower_inode,
 				 struct super_block *sb);
 void ecryptfs_i_size_init(const char *page_virt, struct inode *inode);
+int ecryptfs_initialize_file(struct dentry *ecryptfs_dentry,
+			     struct inode *ecryptfs_inode);
 int ecryptfs_decode_and_decrypt_filename(char **decrypted_name,
 					 size_t *decrypted_name_size,
 					 struct dentry *ecryptfs_dentry,
@@ -735,9 +739,9 @@ int ecryptfs_derive_iv(char *iv, struct ecryptfs_crypt_stat *crypt_stat,
 
 #ifdef CONFIG_WTL_ENCRYPTION_FILTER
 extern int is_file_name_match(struct ecryptfs_mount_crypt_stat *mcs,
-	struct dentry *fp_dentry);
+			      struct dentry *fp_dentry);
 extern int is_file_ext_match(struct ecryptfs_mount_crypt_stat *mcs,
-	char *str);
+			     char *str);
 #endif
 
 #endif /* #ifndef ECRYPTFS_KERNEL_H */

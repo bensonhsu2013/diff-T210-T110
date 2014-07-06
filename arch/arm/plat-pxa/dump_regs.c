@@ -16,7 +16,7 @@
 #include <plat/dump_regs.h>
 #include <mach/regs-map.h>
 
-#ifdef CONFIG_CPU_PXA988
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 #include <mach/regs-apmu.h>
 #endif
 
@@ -78,7 +78,7 @@ void dump_soc_regs(struct reg_map map[])
 
 			printk("\n");
 		}
-#ifdef CONFIG_CPU_PXA988
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 		if (strcmp(map[i].reg_name, "Apps_PMU_2") == 0) {
 			__raw_writel(__raw_readl(APMU_CP_CCR) | 0x80000000,
 					APMU_CP_CCR);

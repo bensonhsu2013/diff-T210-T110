@@ -40,24 +40,6 @@ config AD525X_DPOT_I2C
 	  To compile this driver as a module, choose M here: the
 	  module will be called ad525x_dpot-i2c.
 
-config NFC_PN544
-        bool "NXP PN544 NFC Controller Driver"
-        default n
-        help
-          NXP PN544 Near Field Communication controller support.
-          This option enables device driver support for the NFC.
-          It is used by many services. NFC is fully controlled using I2C
-          to communicate the AP chip.
-
-config NFC_PN547
-        bool "NXP PN547 NFC Controller Driver"
-        default n
-        help
-          NXP PN547 Near Field Communication controller support.
-          This option enables device driver support for the NFC.
-          It is used by many services. NFC is fully controlled using I2C
-          to communicate the AP chip.
-
 config AD525X_DPOT_SPI
 	tristate "support SPI bus connection"
 	depends on AD525X_DPOT && SPI_MASTER
@@ -528,6 +510,15 @@ config MAX8997_MUIC
 	  Maxim MAX8997 PMIC.
 	  The MAX8997 MUIC is a USB port accessory detector and switch.
 
+config SM5502_MUIC
+	tristate "SM5502 microUSB Switch"
+	depends on I2C
+	help
+	  The SM5502 is a USB port accessory detector and switch.
+	  The SM5502 is fully controlled using I2C and enables USB data,
+	  stereo and mono audio, video, microphone and UART data to use
+	  a common connector port.
+
 config WL127X_RFKILL
 	tristate "Bluetooth power control driver for TI wl127x"
 	depends on RFKILL
@@ -557,32 +548,6 @@ config TC35876X
 
 	  This driver can NOT be built as a module.
 
-config SENSORS_K3DH
-         tristate "K3DH acceleration sensor support"
-         depends on I2C
-         default n
-         help
-           Driver for STMicroelectronic K3DH accelerometer.
- 
-config SENSORS_ACC_12BIT
-         tristate "12bit acceleration sensor support"
-         depends on I2C
-         default n
-         help
-           Driver for 12bit accelerometer.
-
-config SENSORS_GP2AP002
-         tristate "gp2a proximity_sensor"
-         default n
-         help
-           This option enables magnetic sensors using gp2ap002 proximity driver.
-
-config SENSORS_PAS221
-         tristate "pas221 proximity_sensor"
-         default n
-         help
-           This option enables magnetic sensors using pas221 proximity driver.
-
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
 source "drivers/misc/cb710/Kconfig"
@@ -592,4 +557,7 @@ source "drivers/misc/lis3lv02d/Kconfig"
 source "drivers/misc/carma/Kconfig"
 source "drivers/misc/altera-stapl/Kconfig"
 source "drivers/misc/inv_mpu/Kconfig"
+source "drivers/misc/projector/Kconfig"
+source "drivers/misc/quicklogic/Kconfig"
+
 endmenu

@@ -20,8 +20,28 @@
 #include <media/soc_camera.h>
 #include <mach/camera.h>
 #include <linux/gpio.h>
+#ifdef CONFIG_LEDS_RT8547
+#include <linux/leds-rt8547.h>
+#endif /* #ifdef CONFIG_LEDS_RT8547 */
 
+#ifdef CONFIG_MACH_DELOS3GVIA
+#include <linux/spinlock.h> // MARVELL_VIA Flash Setting : dhee79.lee@samsung.com
+#endif /* #ifdef CONFIG_LEDS_KTD2692 */
+
+#ifdef CONFIG_MACH_HELANDELOS
+#include "s5k4ecgx_regs_delos.h"
+#elif defined(CONFIG_MACH_WILCOX)
+#include "s5k4ecgx_regs_wilcox.h"
+#elif defined(CONFIG_MACH_CS02)
+#include "s5k4ecgx_regs_cs02.h"
+#elif defined(CONFIG_MACH_BAFFIN) || defined(CONFIG_MACH_BAFFINQ)
+#include "s5k4ecgx_regs_baffin.h"
+#elif defined(CONFIG_MACH_CS05)
+#include "s5k4ecgx_regs_cs05.h"
+#else
 #include "s5k4ecgx_regs.h"
+#endif
+
 #include "s5k4ecgx.h"
 
 MODULE_AUTHOR("Jonathan Corbet <corbet@lwn.net>");
@@ -30,11 +50,12 @@ MODULE_LICENSE("GPL");
 
 #define to_s5k4ecgx(sd)		container_of(sd, struct s5k4ecgx_info, subdev)
 
+extern unsigned int system_rev;
+
 static const struct s5k4ecgx_datafmt s5k4ecgx_colour_fmts[] = {
 	{V4L2_MBUS_FMT_UYVY8_2X8, V4L2_COLORSPACE_JPEG},
 	//{V4L2_MBUS_FMT_JPEG_1X8, V4L2_COLORSPACE_JPEG},
 };
-
 
 #define CAM_DEBUG 
 
@@ -50,7 +71,15 @@ static const struct s5k4ecgx_datafmt s5k4ecgx_colour_fmts[] = {
 #define TRUE 1
 static int gflash_status = FALSE;
 static int need_flash = FALSE;
+static int auto_flash_lock = FALSE;
 static int gflash_exif = FALSE;
+static int gFPS_flag = FALSE;
+static int gFPS_value = FALSE;
+static int gTouch_shutter_value = FALSE;
+#ifndef CONFIG_MACH_WILCOX
+static int s5k4ecgx_Movie_flash_state = 0; /* Disable to set pre-flash state in camcorder mode */
+#endif
+
 /*
  * Basic window sizes.  These probably belong somewhere more globally
  * useful.
@@ -60,18 +89,26 @@ static int gflash_exif = FALSE;
 
 #define Wide4M_WIDTH	2560
 #define Wide4M_HEIGHT	1536
+#define HEIGHT_1440		1440
 
 #define QXGA_WIDTH		2048
 #define QXGA_HEIGHT	1536
 
 #define Wide2_4M_WIDTH	2048
 #define Wide2_4M_HEIGHT	1232
+#define HEIGHT_1152		1152
 
 #define UXGA_WIDTH		1600
 #define UXGA_HEIGHT     	1200
 
 #define Wide1_5M_WIDTH	1600
 #define Wide1_5M_HEIGHT	 960
+
+#define WIDTH_960		960
+#define HEIGHT_720		720
+
+#define WIDTH_720		720
+#define HEIGHT_540		540
 
 #define SXGA_WIDTH		1280
 #define SXGA_HEIGHT     	960
@@ -123,6 +160,10 @@ static int s5k4ecgx_AE_lock_state = FALSE;
 static int s5k4ecgx_AWB_lock_state = FALSE;
 static int s5k4ecgx_cam_state;
 
+#ifdef CONFIG_MACH_DELOS3GVIA
+spinlock_t state_lock; // MARVELL_VIA Flash Setting : dhee79.lee@samsung.com
+#endif
+
 static void s5k4ecgx_AE_lock(struct i2c_client *client,s32 value);
 static void s5k4ecgx_AWB_lock(struct i2c_client *client,s32 value);
 static int s5k4ecgx_AE_AWB_lock(struct i2c_client *client,s32 value);
@@ -137,7 +178,7 @@ int s5k4ecgx_s_exif_info(struct i2c_client *client);
 static void s5k4ecgx_set_flash(struct i2c_client *client, int mode);
 static int s5k4ecgx_get_flash_status(struct i2c_client *client);
 static int s5k4ecgx_set_flash_mode(struct i2c_client *client, int mode);
-
+static int s5k4ecgx_t_fps(struct i2c_client *client, int value);
 
 struct s5k4ecgx_sensor s5k4ecgx = {
 	.timeperframe = {
@@ -186,7 +227,8 @@ struct s5k4ecgx_sensor s5k4ecgx = {
 		.exposure_time.denominal =0,
 		.exposure_time.inumerator =0,
 		.iso_speed_rationg =0,
-			}
+			},
+	.cam_mode           =  CAMERA_MODE,
 };
 
 extern struct s5k4ecgx_platform_data s5k4ecgx_platform_data0;
@@ -203,6 +245,42 @@ struct s5k4ecgx_info {
 	struct soc_camera_device icd;
 
 };
+
+#ifdef CONFIG_MACH_DELOS3GVIA
+/*++ Marvell_VIA Flash Setting(KTD2692) : dhee79.lee@samsung.com ++*/
+void KTD2692_ctrl_cmd(unsigned int ctl_cmd)
+{
+	int i=0;
+	unsigned long flags;
+
+	printk(KERN_ERR"KTD2692_ctrl_cmd..\n");	
+	printk(KERN_ERR" cmd : 0x%2X \n", ctl_cmd);
+	spin_lock_irqsave(&state_lock, flags);
+	gpio_direction_output(camera_flash_en, 1);
+	udelay(T_DS);
+	for(i = 0; i < 8; i++) {
+		if(ctl_cmd & 0x80) { /* set bit to 1 */
+			gpio_direction_output(camera_flash_en, 0);
+			udelay(T_L_HB);
+			gpio_direction_output(camera_flash_en, 1);
+			udelay(T_H_HB);
+		} else { /* set bit to 0 */
+			gpio_direction_output(camera_flash_en, 0);
+			udelay(T_L_LB);
+			gpio_direction_output(camera_flash_en, 1);
+			udelay(T_H_LB);
+		}
+		ctl_cmd = ctl_cmd << 1;
+	}
+	gpio_direction_output(camera_flash_en, 0);
+	udelay(T_EOD_L);
+	gpio_direction_output(camera_flash_en, 1);
+	spin_unlock_irqrestore(&state_lock, flags);
+	udelay(T_EOD_H);
+}
+EXPORT_SYMBOL(KTD2692_ctrl_cmd);
+/*-- Marvell_VIA Flash Setting(KTD2692) : dhee79.lee@samsung.com --*/
+#endif
 
 static int s5k4ecgx_read(struct i2c_client *c, u16 reg, u16 *value)
 {
@@ -357,7 +435,6 @@ static int s5k4ecgx_regs_table_write(struct i2c_client *c, char *name)
 			break;
 
 		/* Write Value to Address */	
-		if (reg != NULL) {
 			memcpy(reg_buf, (reg + 1), 6);	
 			memcpy(data_buf, (reg + 9), 6);	
 			addr = (unsigned short)simple_strtoul(reg_buf, NULL, 16); 
@@ -377,9 +454,6 @@ static int s5k4ecgx_regs_table_write(struct i2c_client *c, char *name)
 				}
 			}
 		}
-		else
-			printk(KERN_ERR " EXCEPTION! reg value : %c  addr : 0x%x,  value : 0x%x\n", *reg, addr, value);
-	}
 	printk(KERN_ERR "***** Writing [%s] Ended\n",name);
 
 	return 0;
@@ -390,7 +464,7 @@ static short s5k4ecgx_regs_max_value(char *name)
 {
 
 	char *start, *reg;	
-	unsigned short value;
+	unsigned short value = 0;
 	char data_buf[7];
 	
 	*(data_buf + 6) = '\0';
@@ -509,7 +583,6 @@ static int s5k4ecgx_write_regs(struct i2c_client *c, tagCamReg32_t *vals, u32 re
 	u8 iic_data[3000] = {0};
 	u16 iic_length = 2;
 
-//	while((vals->reg_num != 0xFFFF) || (vals->value != 0xFFFF)) 
 	for(i=0;i<reg_length;i++){
 		if( vals[i].addr == 0x0F12 )
 		{	
@@ -597,7 +670,7 @@ static int s5k4ecgx_init(struct v4l2_subdev *sd, u32 val)
 	struct i2c_client *c = v4l2_get_subdevdata(sd);
 	struct s5k4ecgx_sensor *sensor = &s5k4ecgx;
 	int result =0;
-	
+
 #ifdef CONFIG_LOAD_FILE
 	result = s5k4ecgx_regs_table_init();
 	if (result > 0)
@@ -611,7 +684,6 @@ static int s5k4ecgx_init(struct v4l2_subdev *sd, u32 val)
 	result=s5k4ecgx_write_regs(c,regs_s5k4ecgx_init_arm,ARRAY_SIZE(regs_s5k4ecgx_init_arm),"regs_s5k4ecgx_init_arm");
 	msleep(10);
 	result=s5k4ecgx_write_regs(c,regs_s5k4ecgx_initialize,ARRAY_SIZE(regs_s5k4ecgx_initialize),"regs_s5k4ecgx_initialize");
-
 
 	sensor->state 		= S5K4ECGX_STATE_PREVIEW;
 	sensor->mode 		= S5K4ECGX_MODE_CAMERA;
@@ -706,6 +778,12 @@ static struct s5k4ecgx_win_size {
 		.width		= D1_WIDTH,
 		.height		= D1_HEIGHT,
 	},
+	/* 720*540 */
+	{
+		.width		= WIDTH_720,
+		.height		= HEIGHT_540,
+	},
+
 	/* 704*576 */
 	{
 		.width		= WIDTH_704,
@@ -715,6 +793,16 @@ static struct s5k4ecgx_win_size {
 	{
 		.width		= Wide4K_WIDTH,
 		.height		= Wide4K_HEIGHT,
+	},
+	/* 960*540 */
+	{
+		.width		= WIDTH_960,
+		.height		= HEIGHT_540,
+	},
+	/* 960*720 */
+	{
+		.width		= WIDTH_960,
+		.height		= HEIGHT_720,
 	},
 	/* ROTATED_QCIF For VT */
 	{
@@ -732,6 +820,12 @@ static struct s5k4ecgx_win_size {
 		.width          = QXGA_WIDTH,
 		.height         = QXGA_HEIGHT,
 	},
+	/* QXGA */
+	{
+		.width          = QXGA_WIDTH,
+		.height         = HEIGHT_1152,
+	},
+
 	/* UXGA */
 	{
 		.width          = UXGA_WIDTH,
@@ -751,6 +845,11 @@ static struct s5k4ecgx_win_size {
 	{
 		.width		= Wide4M_WIDTH,
 		.height		= Wide4M_HEIGHT,
+	},	
+	/* 4M Wide */
+	{
+		.width		= Wide4M_WIDTH,
+		.height		= HEIGHT_1440,
 	},
 	/* 2.4M Wide */
 	{
@@ -771,7 +870,7 @@ static struct s5k4ecgx_win_size {
 	{
 		.width    = HD_WIDTH,
 		.height   = HD_HEIGHT,
-	}, 	
+	},	
 };
 
 static struct s5k4ecgx_win_size  s5k4ecgx_win_sizes_jpeg[] = {
@@ -1007,59 +1106,122 @@ static int s5k4ecgx_s_fmt(struct v4l2_subdev *sd, struct v4l2_mbus_framefmt *mf)
 			sensor->pix.pixelformat = V4L2_PIX_FMT_YUV422P;
 			if(s5k4ecgx_cam_state == S5K4ECGX_STATE_PREVIEW)
 			{
-			    	switch (mf->width)
+		    	switch (mf->width)
 				{
-						case ROTATED_QCIF_WIDTH:
-							s5k4ecgx_write_regs(c, regs_s5k4ecgx_preview_144_176, ARRAY_SIZE(regs_s5k4ecgx_preview_144_176),"regs_s5k4ecgx_preview_144_176");		
-							Cam_Printk(KERN_ERR"choose rotated(144x176) qcif Preview setting \n");
-							break;
-							
-						case QCIF_WIDTH:
-							s5k4ecgx_write_regs(c, regs_s5k4ecgx_preview_176_144, ARRAY_SIZE(regs_s5k4ecgx_preview_176_144),"regs_s5k4ecgx_preview_176_144");					
-							Cam_Printk(KERN_ERR"choose qcif(176x144) Preview setting \n");
-							break;
+					case ROTATED_QCIF_WIDTH:
+						s5k4ecgx_write_regs(c, regs_s5k4ecgx_preview_144_176, ARRAY_SIZE(regs_s5k4ecgx_preview_144_176),"regs_s5k4ecgx_preview_144_176");		
+						Cam_Printk(KERN_ERR"choose rotated(144x176) qcif Preview setting \n");
+						break;
+						
+					case QCIF_WIDTH:
+						s5k4ecgx_write_regs(c, regs_s5k4ecgx_preview_176_144, ARRAY_SIZE(regs_s5k4ecgx_preview_176_144),"regs_s5k4ecgx_preview_176_144");					
+						Cam_Printk(KERN_ERR"choose qcif(176x144) Preview setting \n");
+						break;
 
-						case QVGA_WIDTH:
+					case QVGA_WIDTH:
+#if defined(CONFIG_MACH_WILCOX)
+						if(sensor->cam_mode == CAMERA_MODE) {
 							s5k4ecgx_write_regs(c, regs_s5k4ecgx_preview_320_240, ARRAY_SIZE(regs_s5k4ecgx_preview_320_240),"regs_s5k4ecgx_preview_320_240");					
-							Cam_Printk(KERN_ERR"choose qvga(320x240) Preview setting \n");
-							break;
+						} else {
+							s5k4ecgx_write_regs(c, regs_s5k4ecgx_camcorder_320_240, ARRAY_SIZE(regs_s5k4ecgx_camcorder_320_240),"regs_s5k4ecgx_camcorder_320_240");				
+						}
+#else
+						s5k4ecgx_write_regs(c, regs_s5k4ecgx_preview_320_240, ARRAY_SIZE(regs_s5k4ecgx_preview_320_240),"regs_s5k4ecgx_preview_320_240");					
+#endif
+						Cam_Printk(KERN_ERR"choose qvga(320x240) Preview setting \n");
+						break;
 
-						case CIF_WIDTH:
-							s5k4ecgx_write_regs(c, regs_s5k4ecgx_preview_320_240, ARRAY_SIZE(regs_s5k4ecgx_preview_352_288),"regs_s5k4ecgx_preview_352_288");					
-							Cam_Printk(KERN_ERR"choose qvga(320x240) Preview setting \n");
-							break;
+					case CIF_WIDTH:
+						s5k4ecgx_write_regs(c, regs_s5k4ecgx_preview_352_288, ARRAY_SIZE(regs_s5k4ecgx_preview_352_288),"regs_s5k4ecgx_preview_352_288");					
+						Cam_Printk(KERN_ERR"choose qvga(352x288) Preview setting \n");
+						break;
 
-						case WIDTH_704:
-							s5k4ecgx_write_regs(c, regs_s5k4ecgx_preview_704_576, ARRAY_SIZE(regs_s5k4ecgx_preview_704_576),"regs_s5k4ecgx_preview_704_576");					
-							Cam_Printk(KERN_ERR"choose qvga(704x576) Preview setting \n");
-							break;
+					case WIDTH_704:
+						s5k4ecgx_write_regs(c, regs_s5k4ecgx_preview_704_576, ARRAY_SIZE(regs_s5k4ecgx_preview_704_576),"regs_s5k4ecgx_preview_704_576");					
+						Cam_Printk(KERN_ERR"choose qvga(704x576) Preview setting \n");
+						break;
 
-						case D1_WIDTH:
+					case D1_WIDTH:
+						if(mf->height == HEIGHT_540) 
+						{		
+							if(sensor->preview_size == PREVIEW_SIZE_1280_720) {
+								s5k4ecgx_write_regs(c, regs_s5k4ecgx_preview_disable_1280_720, ARRAY_SIZE(regs_s5k4ecgx_preview_disable_1280_720),"regs_s5k4ecgx_preview_disable_1280_720"); 	
+								s5k4ecgx_t_fps(c,sensor->fps);
+								Cam_Printk(KERN_ERR"DISABLE Preview setting \n");
+							}
+							s5k4ecgx_write_regs(c, regs_s5k4ecgx_preview_720_540, ARRAY_SIZE(regs_s5k4ecgx_preview_720_540),"regs_s5k4ecgx_preview_720_540");					
+							Cam_Printk(KERN_ERR"choose d1(720x540) Preview setting \n");
+							sensor->preview_size = PREVIEW_SIZE_720_540;
+						} else {
 							s5k4ecgx_write_regs(c, regs_s5k4ecgx_preview_720_480, ARRAY_SIZE(regs_s5k4ecgx_preview_720_480),"regs_s5k4ecgx_preview_720_480");					
 							Cam_Printk(KERN_ERR"choose d1(720x480) Preview setting \n");
-							break;
+							sensor->preview_size = PREVIEW_SIZE_720_480;
+						}
+						break;
 
-						case VGA_WIDTH:
+					case VGA_WIDTH:
+#if defined(CONFIG_MACH_WILCOX)
+						if(sensor->cam_mode == CAMERA_MODE) {
 							s5k4ecgx_write_regs(c, regs_s5k4ecgx_preview_640_480, ARRAY_SIZE(regs_s5k4ecgx_preview_640_480),"regs_s5k4ecgx_preview_640_480");					
-							Cam_Printk(KERN_ERR"choose vga(640x480) Preview setting \n");
-							break;
+						} else {
+							s5k4ecgx_write_regs(c, regs_s5k4ecgx_camcorder_640_480, ARRAY_SIZE(regs_s5k4ecgx_camcorder_640_480),"regs_s5k4ecgx_camcorder_640_480");				
+						}
+#else
+						s5k4ecgx_write_regs(c, regs_s5k4ecgx_preview_640_480, ARRAY_SIZE(regs_s5k4ecgx_preview_640_480),"regs_s5k4ecgx_preview_640_480");					
+#endif
+						Cam_Printk(KERN_ERR"choose vga(640x480) Preview setting \n");
+							sensor->preview_size = PREVIEW_SIZE_640_480;
+						break;
 
-						case Wide4K_WIDTH:
-							s5k4ecgx_write_regs(c, regs_s5k4ecgx_preview_800_480, ARRAY_SIZE(regs_s5k4ecgx_preview_800_480),"regs_s5k4ecgx_preview_800_480");					
-							Cam_Printk(KERN_ERR"choose WVGA(800x480) Preview setting \n");
-							break;
+					case Wide4K_WIDTH:
+						s5k4ecgx_write_regs(c, regs_s5k4ecgx_preview_800_480, ARRAY_SIZE(regs_s5k4ecgx_preview_800_480),"regs_s5k4ecgx_preview_800_480");					
+						Cam_Printk(KERN_ERR"choose WVGA(800x480) Preview setting \n");
+						break;
 
-						case HD_WIDTH:
+					case WIDTH_960:
+						if(mf->height == HEIGHT_540)
+						{
+							if(sensor->preview_size == PREVIEW_SIZE_1280_720) {
+								s5k4ecgx_write_regs(c, regs_s5k4ecgx_preview_disable_1280_720, ARRAY_SIZE(regs_s5k4ecgx_preview_disable_1280_720),"regs_s5k4ecgx_preview_disable_1280_720"); 	
+								s5k4ecgx_t_fps(c,sensor->fps);
+								Cam_Printk(KERN_ERR"DISABLE Preview setting \n");
+							}
+							s5k4ecgx_write_regs(c, regs_s5k4ecgx_preview_960_540, ARRAY_SIZE(regs_s5k4ecgx_preview_960_540),"regs_s5k4ecgx_preview_960_540");					
+							Cam_Printk(KERN_ERR"choose WVGA(960x540) Preview setting \n");
+
+							sensor->preview_size = PREVIEW_SIZE_960_540;
+
+						} else {
+							s5k4ecgx_write_regs(c, regs_s5k4ecgx_preview_960_720, ARRAY_SIZE(regs_s5k4ecgx_preview_960_720),"regs_s5k4ecgx_preview_960_720");					
+							Cam_Printk(KERN_ERR"choose WVGA(960x720) Preview setting \n");
+						}
+						break;
+
+					case HD_WIDTH:
+#if defined(CONFIG_MACH_WILCOX)
+						if(sensor->cam_mode == CAMERA_MODE) {
 							s5k4ecgx_write_regs(c, regs_s5k4ecgx_preview_1280_720, ARRAY_SIZE(regs_s5k4ecgx_preview_1280_720),"regs_s5k4ecgx_preview_1280_720");					
-							Cam_Printk(KERN_ERR"choose WVGA(1280x720) Preview setting \n");
-							break;
+							s5k4ecgx_t_fps(c,sensor->fps);
+						} else {
+							s5k4ecgx_write_regs(c, regs_s5k4ecgx_camcorder_1280_720, ARRAY_SIZE(regs_s5k4ecgx_camcorder_1280_720),"regs_s5k4ecgx_camcorder_1280_720");					
+						}
+						Cam_Printk(KERN_ERR"choose HD(1280x720) Preview setting \n");
+						sensor->preview_size = PREVIEW_SIZE_1280_720;
+#else
+						s5k4ecgx_write_regs(c, regs_s5k4ecgx_preview_1280_720, ARRAY_SIZE(regs_s5k4ecgx_preview_1280_720),"regs_s5k4ecgx_preview_1280_720");					
+						Cam_Printk(KERN_ERR"choose WVGA(1280x720) Preview setting \n");
+						sensor->preview_size = PREVIEW_SIZE_1280_720;
+						s5k4ecgx_t_brightness(c,sensor->ev);
 
-						default:
-							printk("\n unsupported size for preview! %s %d w=%d h=%d\n", __FUNCTION__, __LINE__, mf->width, mf->height);
-							goto out;
-							break;
-			    	}
-			}
+#endif
+						break;
+
+					default:
+						printk("\n unsupported size for preview! %s %d w=%d h=%d\n", __FUNCTION__, __LINE__, mf->width, mf->height);
+						goto out;
+						break;
+		    	}
+					}
 			else if(s5k4ecgx_cam_state == S5K4ECGX_STATE_CAPTURE)
 			{
 				switch (mf->width) 			
@@ -1078,10 +1240,12 @@ static int s5k4ecgx_s_fmt(struct v4l2_subdev *sd, struct v4l2_mbus_framefmt *mf)
 						if((mf->height)==QXGA_HEIGHT){// 3M Capture
 							s5k4ecgx_write_regs(c, regs_s5k4ecgx_capture_2048_1536, ARRAY_SIZE(regs_s5k4ecgx_capture_2048_1536),"regs_s5k4ecgx_capture_2048_1536"); 	
 							Cam_Printk(KERN_ERR"choose 3M(2048x1536) jpeg setting \n");
-						}
-						else if((mf->height)==Wide2_4M_HEIGHT){//2.4M  Wide Capture
+						} else if((mf->height)==Wide2_4M_HEIGHT){//2.4M  Wide Capture
 							s5k4ecgx_write_regs(c, regs_s5k4ecgx_capture_2048_1232, ARRAY_SIZE(regs_s5k4ecgx_capture_2048_1232),"regs_s5k4ecgx_capture_2048_1232"); 	
 							Cam_Printk(KERN_ERR"choose 2.4M(2048x1232) Wide jpeg setting \n");
+						} else if((mf->height)==HEIGHT_1152){//2.4M 16:9 Wide Capture
+							s5k4ecgx_write_regs(c, regs_s5k4ecgx_capture_2048_1152, ARRAY_SIZE(regs_s5k4ecgx_capture_2048_1152),"regs_s5k4ecgx_capture_2048_1152"); 	
+							Cam_Printk(KERN_ERR"choose 2.4M(2048x1152) Wide jpeg setting \n");
 						}
 						break;
 						
@@ -1094,15 +1258,17 @@ static int s5k4ecgx_s_fmt(struct v4l2_subdev *sd, struct v4l2_mbus_framefmt *mf)
 							Cam_Printk(KERN_ERR"choose 1.5M(1600x960) jpeg setting \n");
 						}
 						break;
-						
+	
 					case WQXGA_WIDTH: 
 						if((mf->height)==WQXGA_HEIGHT){// 5M Capture
 							s5k4ecgx_write_regs(c, regs_s5k4ecgx_capture_2560_1920, ARRAY_SIZE(regs_s5k4ecgx_capture_2560_1920),"regs_s5k4ecgx_capture_2560_1920"); 	
 							Cam_Printk(KERN_ERR"choose 5M(2560x1920) jpeg setting \n");
-						}
-						else if((mf->height)==Wide4M_HEIGHT){//4M Wide Capture
+						} else if((mf->height)==Wide4M_HEIGHT){//4M Wide Capture
 							s5k4ecgx_write_regs(c, regs_s5k4ecgx_capture_2560_1536, ARRAY_SIZE(regs_s5k4ecgx_capture_2560_1536),"regs_s5k4ecgx_capture_2560_1536"); 	
 							Cam_Printk(KERN_ERR"choose 4M(2560x1536) Wide jpeg setting \n");
+						} else if((mf->height)==HEIGHT_1440){//4M Wide Capture
+							s5k4ecgx_write_regs(c, regs_s5k4ecgx_capture_2560_1440, ARRAY_SIZE(regs_s5k4ecgx_capture_2560_1440),"regs_s5k4ecgx_capture_2560_1440"); 	
+							Cam_Printk(KERN_ERR"choose 4M(2560x1440) Wide jpeg setting \n");
 						}
 						break;
 	
@@ -1115,14 +1281,13 @@ static int s5k4ecgx_s_fmt(struct v4l2_subdev *sd, struct v4l2_mbus_framefmt *mf)
 				Cam_Printk(KERN_NOTICE "Start to Capture \n");
 
 			}
-			
+
 			break;
 			
 		default:
 			printk("\n unsupported format! %s %d\n", __FUNCTION__, __LINE__);
 			break;
 	}
-
 out:
 	return ret;
 }
@@ -1344,7 +1509,7 @@ static int s5k4ecgx_t_brightness(struct i2c_client *client, int value)
 	}
 
 	sensor->ev = value;
-	Cam_Printk(KERN_NOTICE "%s success [scene:%d]\n",__func__, sensor->scene);
+	Cam_Printk(KERN_NOTICE "%s success [ev:%d]\n",__func__, sensor->ev);
 	return 0;
 }
 
@@ -1429,6 +1594,8 @@ static int s5k4ecgx_t_vflip(struct i2c_client *client, int value)
 	return 0;
 }
 
+static int s5k4ecgx_t_whitebalance(struct i2c_client *client, int value);
+static int s5k4ecgx_t_effect(struct i2c_client *client, int value);
 static int s5k4ecgx_t_scene(struct i2c_client *client, int value)
 {
 	struct s5k4ecgx_sensor *sensor = &s5k4ecgx;
@@ -1436,11 +1603,19 @@ static int s5k4ecgx_t_scene(struct i2c_client *client, int value)
 
 	Cam_Printk(KERN_NOTICE "%s is called... [old:%d][new:%d]\n",__func__, old_value, value);
 
+#if defined(CONFIG_MACH_WILCOX)
+	if(old_value == SCENE_SPORTS)
+	{
+		s5k4ecgx_t_fps(client,sensor->fps);
+	}
+#endif
+
 	if(value != SCENE_OFF){
 		s5k4ecgx_write_regs(client,regs_s5k4ecgx_scene_off,ARRAY_SIZE(regs_s5k4ecgx_scene_off),"regs_s5k4ecgx_scene_off");		
 		Cam_Printk(KERN_NOTICE "regs_s5k4ecgx_scene_off");
 	}
-	s5k4ecgx_write_regs(client,regs_s5k4ecgx_effect_off,ARRAY_SIZE(regs_s5k4ecgx_effect_off),"regs_s5k4ecgx_effect_off");		
+	s5k4ecgx_t_whitebalance(client,WB_AUTO);
+	s5k4ecgx_t_effect(client,EFFECT_OFF);
 	switch(value)
 	{
 		case SCENE_OFF:
@@ -1479,6 +1654,7 @@ static int s5k4ecgx_t_scene(struct i2c_client *client, int value)
 			s5k4ecgx_write_regs(client,regs_s5k4ecgx_scene_backlight,ARRAY_SIZE(regs_s5k4ecgx_scene_backlight),"regs_s5k4ecgx_scene_backlight");		
 			break;
 		case SCENE_FIRE:
+			s5k4ecgx_set_REG_TC_DBG_AutoAlgEnBits(client,5,0);
 			s5k4ecgx_write_regs(client,regs_s5k4ecgx_scene_fire,ARRAY_SIZE(regs_s5k4ecgx_scene_fire),"regs_s5k4ecgx_scene_fire");		
 			break;
 		case SCENE_TEXT:
@@ -1798,13 +1974,17 @@ static int s5k4ecgx_t_fps(struct i2c_client *client, int value)
 	struct s5k4ecgx_sensor *sensor = &s5k4ecgx;
 	s32 old_value = (s32)sensor->fps;
 
-	//tagCamReg32_t    *pregs = NULL;
-	//u32 regs_length = 0;
-
 	Cam_Printk(KERN_NOTICE "%s is called... [old:%d][new:%d]\n",__func__, old_value, value);
 	if(old_value == value){
 		Cam_Printk(KERN_NOTICE "%s new value is same as existing value\n", __func__);
+#if defined(CONFIG_MACH_WILCOX)  //for fix recovery fixed fps at J camera apps
+		if(sensor->scene == SCENE_SPORTS || sensor->scene == SCENE_NIGHT){
+			return 0;
+		} else {
+		}
+#else
 		return 0;
+#endif
 	}
 
 	switch(value)
@@ -2063,6 +2243,9 @@ static int s5k4ecgx_preview_size(struct i2c_client *client, int value)
 				case S5K4ECGX_PREVIEW_SIZE_320_240:
 					s5k4ecgx_write_regs(client,regs_s5k4ecgx_preview_320_240,ARRAY_SIZE(regs_s5k4ecgx_preview_320_240),"regs_s5k4ecgx_preview_320_240");			
 					break;
+				case S5K4ECGX_PREVIEW_SIZE_352_288:
+					s5k4ecgx_write_regs(client,regs_s5k4ecgx_preview_352_288,ARRAY_SIZE(regs_s5k4ecgx_preview_352_288),"regs_s5k4ecgx_preview_352_288");			
+					break;
 				case S5K4ECGX_PREVIEW_SIZE_640_480:
 					s5k4ecgx_write_regs(client,regs_s5k4ecgx_preview_640_480,ARRAY_SIZE(regs_s5k4ecgx_preview_640_480),"regs_s5k4ecgx_preview_640_480");			
 					break;
@@ -2089,6 +2272,9 @@ static int s5k4ecgx_preview_size(struct i2c_client *client, int value)
 				break;
 			case S5K4ECGX_CAMCORDER_SIZE_320_240:
 				s5k4ecgx_write_regs(client,regs_s5k4ecgx_preview_320_240,ARRAY_SIZE(regs_s5k4ecgx_preview_320_240),"regs_s5k4ecgx_preview_320_240");			
+				break;
+			case S5K4ECGX_CAMCORDER_SIZE_352_288:
+				s5k4ecgx_write_regs(client,regs_s5k4ecgx_preview_352_288,ARRAY_SIZE(regs_s5k4ecgx_preview_352_288),"regs_s5k4ecgx_preview_352_288");			
 				break;
 			case S5K4ECGX_CAMCORDER_SIZE_640_480:
 				s5k4ecgx_write_regs(client,regs_s5k4ecgx_preview_640_480,ARRAY_SIZE(regs_s5k4ecgx_preview_640_480),"regs_s5k4ecgx_preview_640_480");			
@@ -2318,10 +2504,32 @@ static int s5k4ecgx_set_still_status(void)
 	return 0;
 }
 
-static int s5k4ecgx_set_preview_status(void)
+static int s5k4ecgx_set_preview_status(struct i2c_client *client, int value)
 {
+	struct s5k4ecgx_sensor *sensor = &s5k4ecgx;
+	s32 old_value = (s32)sensor->cam_mode;
+	
 	Cam_Printk(KERN_NOTICE "[DHL]s5k4ecgx_set_preview_status.. \n");
 
+#ifndef CONFIG_MACH_WILCOX
+	if(value == CAMCORDER_MODE){
+		 s5k4ecgx_Movie_flash_state = MOVIE_FLASH;
+		 printk("s5k4ecgx_set_preview_status : Current movie flash state is Movie state\n");
+	}
+	else{
+		s5k4ecgx_Movie_flash_state = 0;
+		printk("s5k4ecgx_set_preview_status : Current movie flash state is Preview state\n");
+	}	
+#endif
+
+	if((old_value==CAMCORDER_MODE)&&(value==CAMERA_MODE)){
+#if defined(CONFIG_MACH_WILCOX)  // skip disable HD wilcox due to HD(recording) -> HD(preview) case
+#else
+		printk( "[DHL]Disable 1280x720 setting...!!!\n");	
+		s5k4ecgx_write_regs(client, regs_s5k4ecgx_preview_disable_1280_720, ARRAY_SIZE(regs_s5k4ecgx_preview_disable_1280_720),"regs_s5k4ecgx_preview_disable_1280_720"); 
+#endif	
+	}
+       sensor->cam_mode = value;
 	s5k4ecgx_cam_state = S5K4ECGX_STATE_PREVIEW;	
 
 	return 0;
@@ -2356,11 +2564,17 @@ static int s5k4ecgx_set_flash_mode(struct i2c_client *client, int mode)
 
 	if (mode) 
 	{		/* start AF */
-		int need_flash = 0;
+		need_flash = 0;
 		CAM_DEBUG(" Flash Turn ON...\n");
-		
+
 		if(sensor->flash_mode == S5K4ECGX_FLASH_ON)
 			need_flash = 1;
+		else if(sensor->flash_mode == S5K4ECGX_FLASH_TORCH){
+			need_flash = 1;
+#ifndef CONFIG_MACH_WILCOX			
+			s5k4ecgx_Movie_flash_state = MOVIE_FLASH;
+#endif
+		}
 		else if(sensor->flash_mode == S5K4ECGX_FLASH_AUTO)
 		{
 			LightStatus1 = s5k4ecgx_check_illuminance_status(client);
@@ -2371,7 +2585,7 @@ static int s5k4ecgx_set_flash_mode(struct i2c_client *client, int mode)
 			s5k4ecgx_set_flash(client, MOVIE_FLASH);
 	} 
 	else 
-	{		
+	{
 		CAM_DEBUG(" Flash Turn OFF...\n");
 		s5k4ecgx_set_flash(client, FLASH_OFF);
 	}
@@ -2390,7 +2604,7 @@ static int s5k4ecgx_get_flash_status(struct i2c_client *client)
 
 	if(LightStatus2 == CAMERA_SENSOR_LIGHT_STATUS_LOW)
 	{ 
-		if ((sensor->flash_mode == S5K4ECGX_FLASH_AUTO) || (sensor->flash_mode == S5K4ECGX_FLASH_ON)) 
+		if ((sensor->flash_mode == S5K4ECGX_FLASH_AUTO) || (sensor->flash_mode == S5K4ECGX_FLASH_ON) || (sensor->flash_mode == S5K4ECGX_FLASH_TORCH) )
 		{
 			flash_status = 1;
 		}
@@ -2405,35 +2619,86 @@ static void s5k4ecgx_set_flash(struct i2c_client *client, int mode)
 {
 	struct s5k4ecgx_sensor *sensor = &s5k4ecgx;
 	int i = 0;
-
+#if defined(CONFIG_LEDS_RT8547)
+	int rc = 0;
+#endif
 	CAM_DEBUG(" %d", mode);
 	Cam_Printk(KERN_NOTICE "s5k4ecgx_set_flash : %d...\n", mode);  
 
 	if (mode == MOVIE_FLASH)
 	{
 		Cam_Printk(" MOVIE FLASH ON");
-		gpio_direction_output(camera_flash_en, 1); 
-		gpio_direction_output(camera_flash_set, 0);
-
+#if defined(CONFIG_LEDS_RT8547)
+#if defined(CONFIG_MACH_WILCOX)
+		if(system_rev == 1)
+			rc = rt8547_set_led_low();
+		else {
+			gpio_direction_output(camera_flash_en, 0); 
+			gpio_direction_output(camera_flash_set, 1);
+		}
+#else
+		rc = rt8547_set_led_low();
+#endif
+#elif defined(CONFIG_MACH_DELOS3GVIA)
+		KTD2692_ctrl_cmd(MODE_CONTROL | 0x01);
+#else
+		gpio_direction_output(camera_flash_en, 0); 
+		gpio_direction_output(camera_flash_set, 1);
+#endif
 		gflash_status = TRUE;
 	} 
 	else if (mode == CAPTURE_FLASH) 
 	{
 		Cam_Printk(" CAPTURE FLASH ON");
+#if defined(CONFIG_LEDS_RT8547)
+#if defined(CONFIG_MACH_WILCOX)
+		if(system_rev == 1)
+			rc = rt8547_set_led_high();
+		else {
+			for(i=0;i<FLASH_PULSE_VALUE;i++)
+			{
+				gpio_direction_output(camera_flash_en, 1);
+				gpio_direction_output(camera_flash_en, 0);
+			}
+			gpio_direction_output(camera_flash_en, 1);
+			gpio_direction_output(camera_flash_set, 1);
+		}
+#else
+		rc = rt8547_set_led_high();
+#endif
+#elif defined(CONFIG_MACH_DELOS3GVIA)
+		KTD2692_ctrl_cmd(MODE_CONTROL | 0x02);
+#else
 		for(i=0;i<FLASH_PULSE_VALUE;i++)
 		{
 			gpio_direction_output(camera_flash_en, 1);
 			gpio_direction_output(camera_flash_en, 0);
 		}
 		gpio_direction_output(camera_flash_en, 1);
-		gpio_direction_output(camera_flash_set, 0);
+		gpio_direction_output(camera_flash_set, 1);
+#endif
 		gflash_status = TRUE;
 	}
 	else if (mode == PRE_CAPTURE_FLASH) 
 	{
 		Cam_Printk(" Pre-CAPTURE FLASH ON");
-		gpio_direction_output(camera_flash_en, 1);
+#if defined(CONFIG_LEDS_RT8547)
+#if defined(CONFIG_MACH_WILCOX)
+		if(system_rev == 1)
+			rc = rt8547_set_led_low();
+		else {
+			gpio_direction_output(camera_flash_en, 0);
+			gpio_direction_output(camera_flash_set, 1);
+		}
+#else
+		rc = rt8547_set_led_low();
+#endif
+#elif defined(CONFIG_MACH_DELOS3GVIA)
+		KTD2692_ctrl_cmd(MODE_CONTROL | 0x01);
+#else
+		gpio_direction_output(camera_flash_en, 0);
 		gpio_direction_output(camera_flash_set, 1);
+#endif
 		gflash_status = TRUE;
 	}
 	else 
@@ -2442,8 +2707,23 @@ static void s5k4ecgx_set_flash(struct i2c_client *client, int mode)
 		{
 			gflash_status = FALSE;
 			CAM_DEBUG(" FLASH OFF");
+#if defined(CONFIG_LEDS_RT8547)
+#if defined(CONFIG_MACH_WILCOX)
+			if(system_rev == 1)
+				rc = rt8547_set_led_off();
+			else {
+				gpio_direction_output(camera_flash_en, 0);
+				gpio_direction_output(camera_flash_set, 0);
+			}
+#else
+			rc = rt8547_set_led_off();
+#endif
+#elif defined(CONFIG_MACH_DELOS3GVIA)
+		KTD2692_ctrl_cmd(MODE_CONTROL | 0x00);
+#else
 			gpio_direction_output(camera_flash_en, 0);
 			gpio_direction_output(camera_flash_set, 0);
+#endif
 		}
 	}
 
@@ -2485,16 +2765,32 @@ int s5k4ecgx_streamon(struct i2c_client *client)
 
 	struct s5k4ecgx_sensor *sensor = &s5k4ecgx;
 	struct v4l2_pix_format* pix = &sensor->pix;
-	volatile int checkvalue, timeout = 30;
-	camera_light_status_type illuminance=CAMERA_SENSOR_LIGHT_STATUS_NORMAL;
+	volatile int checkvalue = 0, timeout = 30;
 	int err = 0;
 	u16 frame_time = 0;
+	camera_light_status_type LightStatus1 = CAMERA_SENSOR_LIGHT_STATUS_INVALID;
 
 	Cam_Printk(KERN_NOTICE "s5k4ecgx_streamon is called...\n");  
 
 	if(s5k4ecgx_cam_state == S5K4ECGX_STATE_CAPTURE)
 	{
 		frame_time = s5k4ecgx_get_frame_time(client);
+
+		if((sensor->flash_mode == S5K4ECGX_FLASH_ON) || (sensor->flash_mode == S5K4ECGX_FLASH_TORCH)) {
+			need_flash = TRUE;
+		} else if(sensor->flash_mode == S5K4ECGX_FLASH_AUTO) {
+			if(auto_flash_lock == FALSE) {
+				LightStatus1 = s5k4ecgx_check_illuminance_status(client);
+				if(LightStatus1 == CAMERA_SENSOR_LIGHT_STATUS_LOW)
+					need_flash = TRUE;
+				else
+					need_flash = FALSE;
+			}
+
+		} else {
+			need_flash = FALSE;
+		}
+
 		if(need_flash == TRUE)	
 		{
 			Cam_Printk(KERN_NOTICE "The Capture Process in Flash On..!! AE & AWB Unlock.. \n");
@@ -2503,15 +2799,17 @@ int s5k4ecgx_streamon(struct i2c_client *client)
 
 			Cam_Printk(KERN_NOTICE "Main Flash ON...\n");  
 			s5k4ecgx_set_flash(client, CAPTURE_FLASH);
- 			s5k4ecgx_main_flash_mode(client, MAIN_FLASH_ON);
+			s5k4ecgx_main_flash_mode(client, MAIN_FLASH_ON);
+#if defined(CONFIG_LEDS_RT8547)
+			msleep(130); // To solve the shading issue in flash 
+#else
 			msleep(200);
-		}
-		else{
+#endif
+		} else {
 			msleep(frame_time);
 		}
 		
 		s5k4ecgx_write_regs(client, regs_s5k4ecgx_Capture_Start, ARRAY_SIZE(regs_s5k4ecgx_Capture_Start),"regs_s5k4ecgx_Capture_Start"); 
- 		s5k4ecgx_s_exif_info(client);
  		sensor->state = S5K4ECGX_STATE_CAPTURE;
 	
 		while((checkvalue != 0x0100) && (timeout-- > 0)) {
@@ -2523,9 +2821,10 @@ int s5k4ecgx_streamon(struct i2c_client *client)
 				//s5k4ecgx_write_regs(client, regs_s5k4ecgx_Capture_Start, ARRAY_SIZE(regs_s5k4ecgx_Capture_Start),"regs_s5k4ecgx_Capture_Start"); 
 			}
 		}
- 	}
- 	else
-	{
+
+		s5k4ecgx_s_exif_info(client); // Update EXIF
+		
+ 	} else {
 		if(sensor->main_flash_mode == TRUE)
 		{
 		Cam_Printk(KERN_NOTICE "[DHL]Flash OFF...!!!!! \n");  
@@ -2543,14 +2842,25 @@ int s5k4ecgx_streamon(struct i2c_client *client)
 		}
 		
 		err = s5k4ecgx_t_whitebalance(client, sensor->wb);
-		if((sensor->scene == SCENE_SUNSET) ||(sensor->scene == SCENE_DAWN) ||(sensor->scene == SCENE_CANDLE))
+		if((sensor->scene == SCENE_SUNSET) ||(sensor->scene == SCENE_DAWN) ||(sensor->scene == SCENE_CANDLE) || (sensor->scene == SCENE_NIGHT))
 			err = s5k4ecgx_t_scene(client, sensor->scene); 	
 
+#if defined(CONFIG_MACH_WILCOX) || defined(CONFIG_MACH_CS05)
+		if((sensor->scene == SCENE_OFF) && (sensor->cam_mode == CAMERA_MODE)){
+			Cam_Printk(KERN_NOTICE "Added setting before preview!!!!!!! \n");
+			s5k4ecgx_AE_lock(client, AE_UNLOCK);
+			s5k4ecgx_AWB_lock(client, AWB_UNLOCK);
+			s5k4ecgx_t_ISO(client,sensor->iso);
+			s5k4ecgx_t_photometry(client,sensor->photometry);
+		}
+#endif
+		s5k4ecgx_t_brightness(client,sensor->ev);
 		s5k4ecgx_write_regs(client, regs_s5k4ecgx_Preview_Return, ARRAY_SIZE(regs_s5k4ecgx_Preview_Return),"regs_s5k4ecgx_Preview_Return"); 	
+		auto_flash_lock = FALSE;
+		
 		Cam_Printk(KERN_NOTICE "Return to Preview..\n");
  		Cam_Printk(KERN_NOTICE "[start Preview] !!!\n");
  	}
- 	
 	return 0;
 }
 
@@ -2701,8 +3011,8 @@ static int s5k4ecgx_s_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
 			retval = s5k4ecgx_set_still_status();
 			break;
 		case V4L2_CID_SET_PREVIEW_STATUS:
-			retval = s5k4ecgx_set_preview_status();
-			break;		
+			retval = s5k4ecgx_set_preview_status(client, ctrl->value);
+			break;	
 		case V4L2_CID_SET_FLASH_STATUS:
 			printk( "[DHL]V4L2_CID_SET_FLASH_STATUS.. \n");			
 			s5k4ecgx_set_flash_mode(client, ctrl->value);
@@ -2832,7 +3142,11 @@ camera_light_status_type s5k4ecgx_check_illuminance_status(struct i2c_client *cl
 	u16 lightStatus_low_word = 0;
 	u16 lightStatus_high_word= 0;	
 	int err;
-	u32 luxcheck_low = 0x0032;
+#if defined(CONFIG_MACH_BAFFIN)
+	u32 luxcheck_low = 0x0041; // Auto flash on under 70lux
+#else
+	u32 luxcheck_low = 0x0038;
+#endif
 
 	Cam_Printk(KERN_NOTICE "s5k4ecgx_check_illuminance_status() \r\n");
 	camera_light_status_type LightStatus = CAMERA_SENSOR_LIGHT_STATUS_INVALID;
@@ -2877,11 +3191,11 @@ int s5k4ecgx_s_exif_info(struct i2c_client *client)
 
 	struct s5k4ecgx_sensor *sensor = &s5k4ecgx;
 	u32 exposure_time =0;
-	u32 exposure_time_lsb = 0;
-	u32 exposure_time_msb= 0;	
+	u16 exposure_time_lsb = 0;
+	u16 exposure_time_msb= 0;	
 	u32 iso_gain= 0;
-	u32 iso_a_gain= 0;
-	u32 iso_d_gain= 0;
+	u16 iso_a_gain= 0;
+	u16 iso_d_gain= 0;
 	u32 iso_value= 0;
 	u32 temp1= 0;
 	int err;
@@ -2895,10 +3209,9 @@ int s5k4ecgx_s_exif_info(struct i2c_client *client)
 	err = s5k4ecgx_write(client,0x002E, 0x2BC2);
 	err = s5k4ecgx_read (client, 0x0F12, &exposure_time_msb);
 
-	temp1 = ((exposure_time_msb << 16) | exposure_time_lsb)/400;
-	exposure_time = 1000 / temp1;
-	Cam_Printk(KERN_NOTICE "[DHL]exposure_time : %d \r\n",exposure_time);
-	Cam_Printk(KERN_NOTICE "[DHL]exposure_time : %d \r\n",temp1);
+	temp1 = ((exposure_time_msb << 16) | exposure_time_lsb);
+
+	exposure_time = 400000 / temp1;
 
 	sensor->exif_info.exposure_time.inumerator=1;
 	sensor->exif_info.exposure_time.denominal=exposure_time;
@@ -2912,15 +3225,15 @@ int s5k4ecgx_s_exif_info(struct i2c_client *client)
 	err = s5k4ecgx_write(client,0x002E, 0x2BC6);
 	err = s5k4ecgx_read (client, 0x0F12, &iso_d_gain);	
 
-	iso_gain = ((iso_a_gain * iso_d_gain) / 100)/2;
+	iso_gain = ((iso_a_gain * iso_d_gain) / 0x100)/2;
 
 	Cam_Printk(KERN_NOTICE "iso_gain() %d \n",iso_gain);
 
-	if(iso_gain < 0xD0)  // 208
+	if(iso_gain < 0x100)  
 		iso_value =50;
-	else if(iso_gain < 0x1A0)  // 416
+	else if(iso_gain < 0x200) 
 		iso_value =100;
-	else if(iso_gain < 0x380)  // 896
+	else if(iso_gain < 0x380) 
 		iso_value = 200;
 	else 
 		iso_value = 400;
@@ -3028,7 +3341,6 @@ static int s5k4ecgx_AE_AWB_Status(struct i2c_client *client,int *LuxCheck)
 	return 0;
 }
 
-//#ifdef CONFIG_VIDEO_ADV_DEBUG
 static int s5k4ecgx_g_register(struct v4l2_subdev *sd,  struct v4l2_dbg_register * reg)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
@@ -3036,7 +3348,7 @@ static int s5k4ecgx_g_register(struct v4l2_subdev *sd,  struct v4l2_dbg_register
 	
 	switch (reg->reg) {
 		case V4L2_CID_AF_STATUS:
-		{
+{
 			struct v4l2_control focusCtrl;
 			s5k4ecgx_get_focus_status( client, &focusCtrl, S5K4ECGX_AF_CHECK_STATUS );
 			reg->val = (__s64)focusCtrl.value;
@@ -3095,7 +3407,7 @@ static int s5k4ecgx_s_register(struct v4l2_subdev *sd,  struct v4l2_dbg_register
 	struct s5k4ecgx_sensor *sensor = &s5k4ecgx;
 	int retval = 0;
 
-	Cam_Printk(KERN_NOTICE "ioctl_s_ctrl is called...(%d)\n", reg->reg);
+	Cam_Printk(KERN_NOTICE "ioctl_s_ctrl(register) is called...(%d)\n", reg->reg);
 
 	switch (reg->reg) 
 	{ 
@@ -3181,14 +3493,13 @@ static int s5k4ecgx_s_register(struct v4l2_subdev *sd,  struct v4l2_dbg_register
 			retval = s5k4ecgx_set_still_status();
 			break;
 		case V4L2_CID_SET_PREVIEW_STATUS:
-			retval = s5k4ecgx_set_preview_status();
+			retval = s5k4ecgx_set_preview_status(client, reg->val);
 			break;		
 		case V4L2_CID_SET_FLASH_STATUS:
 			printk( "[DHL]V4L2_CID_SET_FLASH_STATUS.. \n");			
 			s5k4ecgx_set_flash_mode(client, reg->val);
 			break;
 		case V4L2_CID_SET_FLASH_MODE:
-			{
 			sensor->flash_mode = reg->val;
 				if(sensor->scene == SCENE_BACKLIGHT)
 				{
@@ -3196,14 +3507,13 @@ static int s5k4ecgx_s_register(struct v4l2_subdev *sd,  struct v4l2_dbg_register
 					{
 						printk("The Scene Backlight mode change to Spot setting when the flash off...\n");
 						s5k4ecgx_write_regs(client, regs_s5k4ecgx_metering_spot, ARRAY_SIZE(regs_s5k4ecgx_metering_spot),"regs_s5k4ecgx_metering_spot");	
-					}
+}
 					else
 					{
 						printk("The Scene Backlight mode change to CenterWeighted setting when the flash off...\n");
 						s5k4ecgx_write_regs(client, regs_s5k4ecgx_metering_centerweighted, ARRAY_SIZE(regs_s5k4ecgx_metering_centerweighted),"regs_s5k4ecgx_metering_centerweighted");
 					}
 				}
-			}
 			break;
 				
 		default:
@@ -3215,7 +3525,7 @@ static int s5k4ecgx_s_register(struct v4l2_subdev *sd,  struct v4l2_dbg_register
 //#endif
 
 static struct i2c_device_id s5k4ecgx_idtable[] = {
-	{ "s5k4ecgx", 1 },
+	{ "samsung_mainsensor", 1 },
 	{ }
 };
 
@@ -3263,13 +3573,14 @@ static void s5k4ecgx_AWB_lock(struct i2c_client *client,s32 value)
 	switch(value)
 	{
 		case AWB_LOCK :	
+			if(sensor->wb==WB_AUTO){
 			s5k4ecgx_write_regs(client, regs_s5k4ecgx_AWB_lock, ARRAY_SIZE(regs_s5k4ecgx_AWB_lock),"regs_s5k4ecgx_AWB_lock");			
 			Cam_Printk(KERN_NOTICE "AWB_LOCK \n");
 			s5k4ecgx_AWB_lock_state = true;
+			}
 			break;
 		case AWB_UNLOCK :
-			if(s5k4ecgx_AWB_lock_state == true)
-			{		
+			if((s5k4ecgx_AWB_lock_state == true)&&(sensor->wb==WB_AUTO)){		
 				s5k4ecgx_write_regs(client, regs_s5k4ecgx_AWB_unlock, ARRAY_SIZE(regs_s5k4ecgx_AWB_unlock),"regs_s5k4ecgx_AWB_unlock");			
 				Cam_Printk(KERN_NOTICE "AWB_UNLOCK \n");
 				s5k4ecgx_AWB_lock_state = false;
@@ -3297,10 +3608,13 @@ static int s5k4ecgx_AE_AWB_lock(struct i2c_client *client,s32 value)
 			if((s5k4ecgx_AE_lock_state == true) || (s5k4ecgx_AWB_lock_state == true))
 			{
 				s5k4ecgx_write_regs(client, regs_s5k4ecgx_AE_unlock, ARRAY_SIZE(regs_s5k4ecgx_AE_unlock),"regs_s5k4ecgx_AE_unlock");			
-				s5k4ecgx_write_regs(client, regs_s5k4ecgx_AWB_unlock, ARRAY_SIZE(regs_s5k4ecgx_AWB_unlock),"regs_s5k4ecgx_AWB_unlock");			
-				Cam_Printk(KERN_NOTICE "AWB_AE_UNLOCK \n");
 				s5k4ecgx_AE_lock_state = false;
+				if(sensor->wb==WB_AUTO){
+					Cam_Printk(KERN_NOTICE "AWB_AE_UNLOCK \n");
+					s5k4ecgx_write_regs(client, regs_s5k4ecgx_AWB_unlock, ARRAY_SIZE(regs_s5k4ecgx_AWB_unlock),"regs_s5k4ecgx_AWB_unlock");		
 				s5k4ecgx_AWB_lock_state = false;
+			}
+				else Cam_Printk(KERN_NOTICE "AE_UNLOCK \n");
 			}
 			else
 				Cam_Printk(KERN_NOTICE "No need to AWB_AE_UNLOCK \n");
@@ -3424,13 +3738,16 @@ static int s5k4ecgx_set_focus(struct i2c_client *client,s32 value)
 	{
 
 		illuminance = s5k4ecgx_check_illuminance_status(client);
+		if (sensor->flash_mode == S5K4ECGX_FLASH_AUTO)
+			auto_flash_lock = TRUE;
 
 		if (((sensor->flash_mode == S5K4ECGX_FLASH_AUTO) && (illuminance == CAMERA_SENSOR_LIGHT_STATUS_LOW))
-			|| (sensor->flash_mode == S5K4ECGX_FLASH_ON)) 
-		{				
+			|| (sensor->flash_mode == S5K4ECGX_FLASH_ON) || (sensor->flash_mode == S5K4ECGX_FLASH_TORCH))
+	{
+#if defined (CONFIG_MACH_WILCOX)
 			Cam_Printk(KERN_NOTICE "Pre-Flash mode is start...\n");  
 
-			need_flash = TRUE;	
+			need_flash = TRUE;
 			/**++ Pre-Flash Process Start ++**/
 			s5k4ecgx_write_regs(client,reg_s5k4ecgx_FAST_AE_ON,ARRAY_SIZE(reg_s5k4ecgx_FAST_AE_ON),"reg_s5k4ecgx_FAST_AE_ON");	
 			s5k4ecgx_write_regs(client,reg_s5k4ecgx_Pre_Flash_On,ARRAY_SIZE(reg_s5k4ecgx_Pre_Flash_On),"reg_s5k4ecgx_Pre_Flash_On");
@@ -3438,45 +3755,53 @@ static int s5k4ecgx_set_focus(struct i2c_client *client,s32 value)
 			/**-- Pre-Flash Process Start --**/
 
 			msleep(400);
-
-			#if 0
-			for (i=0 ; i < 10; i++){
-			
-					if(s5k4ecgx_check_ae_status(client) == 0001)
+#else
+			if(s5k4ecgx_Movie_flash_state != MOVIE_FLASH) /* Disable to set pre-flash state in camcorder mode */
 			{
-				         	Cam_Printk(KERN_NOTICE "The AE_status is stable : %d \n", i);  							
-                                     	break;
-			}
-					else
-					{
-						Cam_Printk(KERN_NOTICE "The AE_status is re-check : 0x%x \n", i);  					
-				       	msleep(20);
-					}
-				}
-			#endif
+				Cam_Printk(KERN_NOTICE "Pre-Flash mode is start...\n");  
 
+				need_flash = TRUE;
+				/**++ Pre-Flash Process Start ++**/
+				s5k4ecgx_write_regs(client,reg_s5k4ecgx_FAST_AE_ON,ARRAY_SIZE(reg_s5k4ecgx_FAST_AE_ON),"reg_s5k4ecgx_FAST_AE_ON");	
+				s5k4ecgx_write_regs(client,reg_s5k4ecgx_Pre_Flash_On,ARRAY_SIZE(reg_s5k4ecgx_Pre_Flash_On),"reg_s5k4ecgx_Pre_Flash_On");
+				s5k4ecgx_set_flash(client, PRE_CAPTURE_FLASH);
+				/**-- Pre-Flash Process Start --**/
+
+				msleep(400);
+			}
+#endif
 		}	
 		
-		if(sensor->focus_type == AUTO_FOCUS_MODE)
-		{
+		if(sensor->focus_type == AUTO_FOCUS_MODE){
 			Cam_Printk(KERN_NOTICE "FOCUS_MODE_AUTO! AE Lock.. \n");
 			s5k4ecgx_AE_lock(client, AE_LOCK);
 
-			if(!need_flash)
-			{
+			if(!need_flash){
 			s5k4ecgx_AWB_lock(client, AWB_LOCK);
 				Cam_Printk(KERN_NOTICE "AF without Flash..!!AWB Lock.. \n");
 		}
 		}
-		else
-		{
+		else if((sensor->focus_type == TOUCH_FOCUS_MODE)&&(gTouch_shutter_value==TRUE)){
+			Cam_Printk(KERN_NOTICE "FOCUS_MODE_HALF_SHUTTER_TOUCH! AE Lock.. \n");
+			s5k4ecgx_AE_lock(client, AE_LOCK);
+
+			if(!need_flash){
+			s5k4ecgx_AWB_lock(client, AWB_LOCK);
+				Cam_Printk(KERN_NOTICE "AF without Flash..!!AWB Lock.. \n");
+			}
+			gTouch_shutter_value=FALSE;	
+		}
+		else	{
+			Cam_Printk(KERN_NOTICE "AE & AWB Unlock.. \n");
+			s5k4ecgx_AE_lock(client, AE_UNLOCK);
+			s5k4ecgx_AWB_lock(client, AWB_UNLOCK);
 			Cam_Printk(KERN_NOTICE "CHECK FOCUS MODE for not AE,AWB Lock = %d\n",sensor->focus_type);		
 		}
 	}
-	
+
 	switch(value) 
 	{
-		case S5K4ECGX_AF_START :
+		case S5K4ECGX_AF_START :			
 			s5k4ecgx_write_regs(client, regs_s5k4ecgx_AF_start, ARRAY_SIZE(regs_s5k4ecgx_AF_start),"regs_s5k4ecgx_AF_start");			
 			Cam_Printk(KERN_NOTICE "S5K4ECGX_AF_START \n");
 			break;
@@ -3563,21 +3888,39 @@ static int s5k4ecgx_get_focus_status(struct i2c_client *client, struct v4l2_cont
 				case 2:
 					Cam_Printk(KERN_NOTICE "[1st]AF - SUCCESS \n");
 					ctrl->value = S5K4ECGX_AF_STATUS_SUCCESS;
+					Cam_Printk(KERN_NOTICE "AF is SUCCESS..!! \n");
 					break;
 				default:
 					{
 					Cam_Printk(KERN_NOTICE "[1st]AF - FAIL\n");
 					ctrl->value = S5K4ECGX_AF_STATUS_FAIL;
+#if defined (CONFIG_MACH_WILCOX)
 
 						Cam_Printk(KERN_NOTICE "[AF-FAIL]Pre-Flash mode is end...\n");  
-						
+
 						/**++ Pre-Flash Process End ++**/
 						s5k4ecgx_write_regs(client,reg_s5k4ecgx_FAST_AE_Off,ARRAY_SIZE(reg_s5k4ecgx_FAST_AE_Off),"reg_s5k4ecgx_FAST_AE_Off");	
 						s5k4ecgx_write_regs(client,reg_s5k4ecgx_Pre_Flash_Off,ARRAY_SIZE(reg_s5k4ecgx_Pre_Flash_Off),"reg_s5k4ecgx_Pre_Flash_Off");
 						s5k4ecgx_set_flash(client, FLASH_OFF);
 						sensor->focus_type = AUTO_FOCUS_MODE;
 						/**-- Pre-Flash Process End --**/
+#else
+						if(s5k4ecgx_Movie_flash_state != MOVIE_FLASH) /* Disable to set pre-flash state in camcorder mode */
+						{
+							Cam_Printk(KERN_NOTICE "[AF-FAIL]Pre-Flash mode is end...\n");  
+							
+							/**++ Pre-Flash Process End ++**/
+							s5k4ecgx_write_regs(client,reg_s5k4ecgx_FAST_AE_Off,ARRAY_SIZE(reg_s5k4ecgx_FAST_AE_Off),"reg_s5k4ecgx_FAST_AE_Off");	
+							s5k4ecgx_write_regs(client,reg_s5k4ecgx_Pre_Flash_Off,ARRAY_SIZE(reg_s5k4ecgx_Pre_Flash_Off),"reg_s5k4ecgx_Pre_Flash_Off");
+							s5k4ecgx_set_flash(client, FLASH_OFF);
+							sensor->focus_type = AUTO_FOCUS_MODE;
+							/**-- Pre-Flash Process End --**/
+						}
+#endif
 					}
+					Cam_Printk(KERN_NOTICE "AF is FAIL..!! AE & AWB Unlock.. \n");
+					s5k4ecgx_AE_lock(client, AE_UNLOCK);
+					s5k4ecgx_AWB_lock(client, AWB_UNLOCK);
 					break;
 			}
 			break;
@@ -3597,10 +3940,6 @@ static int s5k4ecgx_get_focus_status(struct i2c_client *client, struct v4l2_cont
 					Cam_Printk(KERN_NOTICE "[2nd]AF - SUCCESS \n");
 					ctrl->value = S5K4ECGX_AF_STATUS_SUCCESS;
 					break;
-				default:
-					Cam_Printk(KERN_NOTICE "[2nd]AF - PROGRESS \n");
-					ctrl->value = S5K4ECGX_AF_STATUS_PROGRESS;
-					break;
 			}
 			break;
 
@@ -3613,6 +3952,18 @@ static int s5k4ecgx_get_focus_status(struct i2c_client *client, struct v4l2_cont
 
 	if((value == S5K4ECGX_AF_CHECK_2nd_STATUS) && (ctrl->value == S5K4ECGX_AF_STATUS_SUCCESS) && (need_flash == TRUE))
 		{
+#if defined (CONFIG_MACH_WILCOX)
+			Cam_Printk(KERN_NOTICE "Pre-Flash mode is end...\n");  
+
+			/**++ Pre-Flash Process End ++**/
+			s5k4ecgx_write_regs(client,reg_s5k4ecgx_FAST_AE_Off,ARRAY_SIZE(reg_s5k4ecgx_FAST_AE_Off),"reg_s5k4ecgx_FAST_AE_Off");	
+			s5k4ecgx_write_regs(client,reg_s5k4ecgx_Pre_Flash_Off,ARRAY_SIZE(reg_s5k4ecgx_Pre_Flash_Off),"reg_s5k4ecgx_Pre_Flash_Off");
+			s5k4ecgx_set_flash(client, FLASH_OFF);
+			sensor->focus_type = AUTO_FOCUS_MODE;
+			/**-- Pre-Flash Process End --**/
+#else
+		if(s5k4ecgx_Movie_flash_state != MOVIE_FLASH) /* Disable to set pre-flash state in camcorder mode */
+		{
 			Cam_Printk(KERN_NOTICE "Pre-Flash mode is end...\n");  
 			
 			/**++ Pre-Flash Process End ++**/
@@ -3621,6 +3972,8 @@ static int s5k4ecgx_get_focus_status(struct i2c_client *client, struct v4l2_cont
 			s5k4ecgx_set_flash(client, FLASH_OFF);
 			sensor->focus_type = AUTO_FOCUS_MODE;
 			/**-- Pre-Flash Process End --**/
+		}
+#endif
 		}
 
 		return 0;
@@ -3632,6 +3985,8 @@ static int s5k4ecgx_get_focus_status(struct i2c_client *client, struct v4l2_cont
 #define INNER_WINDOW_HEIGHT             143
 #define OUTER_WINDOW_WIDTH              320
 #define OUTER_WINDOW_HEIGHT             266
+#define HALF_SHUTTER_TOUCH_AF		0
+#define NORMAL_TOUCH_AF	1
 
 static int s5k4ecgx_set_focus_touch_position(struct i2c_client *client, s32 value)
 {
@@ -3648,6 +4003,10 @@ static int s5k4ecgx_set_focus_touch_position(struct i2c_client *client, s32 valu
 	struct s5k4ecgx_sensor *sensor = &s5k4ecgx;
 
 	Cam_Printk(KERN_NOTICE "value : %d\n", value);
+	if(value==HALF_SHUTTER_TOUCH_AF){
+		Cam_Printk(KERN_NOTICE "[DHL] The Half Shutter Touch Mode On..\n");
+		gTouch_shutter_value=TRUE;
+	}
 
 	/* get x,y touch position */
 	touch_x = (u16)sensor->position.x;
@@ -3779,7 +4138,7 @@ static int s5k4ecgx_set_focus_touch_position(struct i2c_client *client, s32 valu
 		return -EIO;
 	}
 
-	return 0;
+		return 0;
 }
 
 void s5k4ecgx_set_REG_TC_DBG_AutoAlgEnBits(struct i2c_client *client,int bit, int set) 
@@ -3793,7 +4152,7 @@ void s5k4ecgx_set_REG_TC_DBG_AutoAlgEnBits(struct i2c_client *client,int bit, in
 	s5k4ecgx_read(client, 0x0F12, (unsigned short*)&REG_TC_DBG_AutoAlgEnBits);
 
 	if(bit == 3 && set == true) {
-		if(REG_TC_DBG_AutoAlgEnBits & 0x8 == 1) return;
+		if(REG_TC_DBG_AutoAlgEnBits & 0x8) return;
 		msleep(100);
 		REG_TC_DBG_AutoAlgEnBits = REG_TC_DBG_AutoAlgEnBits | 0x8; 
 		s5k4ecgx_write(client, 0x0028, 0x7000);
@@ -3807,14 +4166,14 @@ void s5k4ecgx_set_REG_TC_DBG_AutoAlgEnBits(struct i2c_client *client,int bit, in
 		s5k4ecgx_write(client, 0x002A, 0x04E6);
 		s5k4ecgx_write(client, 0x0F12, REG_TC_DBG_AutoAlgEnBits);
 	} else if(bit == 5 && set == true) {
-		if(REG_TC_DBG_AutoAlgEnBits & 0x20 == 1)return;
+		if(REG_TC_DBG_AutoAlgEnBits & 0x20) return;
 		msleep(100);
 		REG_TC_DBG_AutoAlgEnBits = REG_TC_DBG_AutoAlgEnBits | 0x20;
 		s5k4ecgx_write(client, 0x0028, 0x7000);
 		s5k4ecgx_write(client, 0x002A, 0x04E6);
 		s5k4ecgx_write(client, 0x0F12, REG_TC_DBG_AutoAlgEnBits);
 	} else if(bit == 5 && set == false) {
-		if(REG_TC_DBG_AutoAlgEnBits & 0x20 == 0)return;
+		if(REG_TC_DBG_AutoAlgEnBits & 0x20)return;
 		msleep(100);
 		REG_TC_DBG_AutoAlgEnBits = REG_TC_DBG_AutoAlgEnBits & 0xFFDF;
 		s5k4ecgx_write(client, 0x0028, 0x7000);
@@ -3998,7 +4357,7 @@ static int s5k4ecgx_remove(struct i2c_client *client)
 
 static struct i2c_driver s5k4ecgx_driver = {
 	.driver = {
-		.name	= "s5k4ecgx",
+		.name	= "samsung_mainsensor",
 	},
 	.id_table       = s5k4ecgx_idtable,	
 	.command	= s5k4ecgx_command,
@@ -4015,6 +4374,13 @@ static int __init s5k4ecgx_mod_init(void)
 	Cam_Printk(KERN_NOTICE "SYS.LSI s5k4ecgx sensor driver, at your service\n");
 	ret = i2c_add_driver(&s5k4ecgx_driver);
 	Cam_Printk(KERN_NOTICE "SYS.LSI s5k4ecgx :%d \n ",ret);
+
+#ifdef CONFIG_MACH_DELOS3GVIA
+/*++ Marvell_VIA Flash Setting(KTD2692) : dhee79.lee@samsung.com ++*/
+	KTD2692_ctrl_cmd(LVP_SETTING | 0x00);
+/*-- Marvell_VIA Flash Setting(KTD2692) : dhee79.lee@samsung.com --*/
+#endif
+
 	return ret;
 	//return i2c_add_driver(&s5k4ecgx_driver);
 }
@@ -4022,6 +4388,14 @@ static int __init s5k4ecgx_mod_init(void)
 static void __exit s5k4ecgx_mod_exit(void)
 {
 	i2c_del_driver(&s5k4ecgx_driver);
+#if defined(CONFIG_LEDS_RT8547)
+#if defined(CONFIG_MACH_WILCOX)
+	if(system_rev == 1)
+		rt8547_release_handle();
+#else
+		rt8547_release_handle();
+#endif
+#endif
 }
 
 module_init(s5k4ecgx_mod_init);

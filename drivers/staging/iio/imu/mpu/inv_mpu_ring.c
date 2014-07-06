@@ -673,6 +673,25 @@ static int inv_report_gyro_accl_compass(struct iio_dev *indio_dev,
 	return 0;
 }
 
+#define I2C_ERR_THRESHOLD (50)
+static void inv_fifo_i2c_err_handle(struct inv_mpu_iio_s *st)
+{
+	static int err_count;
+	err_count++;
+	if (I2C_ERR_THRESHOLD == err_count) {
+		pr_err("inv i2c err 1*threshold hit, re-init\n");
+		/* try to re-init sensor */
+		st->set_power_state(st, false);
+		usleep_range(1000, 1000);
+		st->set_power_state(st, true);
+	} else if ((2*I2C_ERR_THRESHOLD) == err_count) {
+		pr_err("inv i2c err 2*threshold hit, stop sensor\n");
+		/* stop sensor if i2c error continues */
+		st->set_power_state(st, false);
+		free_irq(st->client->irq, st);
+	}
+}
+
 /**
  *  inv_read_fifo() - Transfer data from FIFO to ring buffer.
  */
@@ -701,10 +720,12 @@ irqreturn_t inv_read_fifo(int irq, void *dev_id)
 	if (st->chip_config.dmp_on && st->chip_config.flick_int_on) {
 		/* dmp interrupt status */
 		result = inv_i2c_read(st, REG_DMP_INT_STATUS, 1, data);
-		if (!result)
+		if (!result) {
 			if (data[0] & FLICK_INT_STATUS)
 				sysfs_notify(&indio_dev->dev.kobj, NULL,
 						"event_flick");
+		} else
+			inv_fifo_i2c_err_handle(st);
 	}
 	if (st->mot_int.zrmot_on | st->mot_int.mot_on) {
 		/* motion/zero motion interrupt */
@@ -714,21 +735,28 @@ irqreturn_t inv_read_fifo(int irq, void *dev_id)
 				sysfs_notify(&indio_dev->dev.kobj, NULL,
 						"event_accel_motion");
 			if (data[0] & BIT_ZMOT_INT) {
-				inv_i2c_read(st,
+				result = inv_i2c_read(st,
 					REG_ACCEL_INTEL_STATUS, 1, data);
+				if (result) {
+					inv_fifo_i2c_err_handle(st);
+					goto end_session;
+				}
 				st->mot_int.zrmot_status =
 					(data[0] & ZRMOT_STATUS);
 				sysfs_notify(&indio_dev->dev.kobj, NULL,
 						"event_accel_no_motion");
 			}
-		}
+		} else
+			inv_fifo_i2c_err_handle(st);
 	}
 
 	if (st->chip_config.lpa_mode) {
 		result = inv_i2c_read(st, reg->raw_accl,
 				      BYTES_PER_SENSOR, data);
-		if (result)
+		if (result) {
+			inv_fifo_i2c_err_handle(st);
 			goto end_session;
+		}
 		inv_report_gyro_accl_compass(indio_dev, data,
 					     get_time_ns());
 		goto end_session;
@@ -746,8 +774,10 @@ irqreturn_t inv_read_fifo(int irq, void *dev_id)
 	if (bytes_per_datum != 0) {
 		result = inv_i2c_read(st, reg->fifo_count_h,
 				FIFO_COUNT_BYTE, data);
-		if (result)
+		if (result) {
+			inv_fifo_i2c_err_handle(st);
 			goto end_session;
+		}
 		fifo_count = be16_to_cpup((__be16 *)(&data[0]));
 		if (fifo_count < bytes_per_datum)
 			goto end_session;
@@ -781,8 +811,10 @@ irqreturn_t inv_read_fifo(int irq, void *dev_id)
 	while ((bytes_per_datum != 0) && (fifo_count >= bytes_per_datum)) {
 		result = inv_i2c_read(st, reg->fifo_r_w, bytes_per_datum,
 			data);
-		if (result)
+		if (result) {
+			inv_fifo_i2c_err_handle(st);
 			goto flush_fifo;
+		}
 
 		result = kfifo_to_user(&st->timestamps,
 			&timestamp, sizeof(timestamp), &copied);

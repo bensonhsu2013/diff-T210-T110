@@ -24,9 +24,12 @@
 #include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
+#include <linux/dma-contiguous.h>
 #include "ion_priv.h"
 
 #include <asm/mach/map.h>
+
+#define ION_FLAG_CMA	(1 << 16)
 
 struct ion_carveout_heap {
 	struct ion_heap heap;
@@ -53,7 +56,6 @@ void ion_carveout_free(struct ion_heap *heap, ion_phys_addr_t addr,
 {
 	struct ion_carveout_heap *carveout_heap =
 		container_of(heap, struct ion_carveout_heap, heap);
-
 	if (addr == ION_CARVEOUT_ALLOCATE_FAIL)
 		return;
 	gen_pool_free(carveout_heap->pool, addr, size);
@@ -73,15 +75,41 @@ static int ion_carveout_heap_allocate(struct ion_heap *heap,
 				      unsigned long size, unsigned long align,
 				      unsigned long flags)
 {
+	struct page *page;
+	unsigned int alignfix = get_order(size);
+
 	buffer->priv_phys = ion_carveout_allocate(heap, size, align);
-	return buffer->priv_phys == ION_CARVEOUT_ALLOCATE_FAIL ? -ENOMEM : 0;
+	if (buffer->priv_phys != ION_CARVEOUT_ALLOCATE_FAIL) {
+		buffer->flags &= ~ION_FLAG_CMA;
+		return 0;
+	}
+
+	if (alignfix < get_order(align))
+		alignfix = get_order(align);
+
+	page = dma_alloc_from_contiguous(NULL, size >> PAGE_SHIFT, alignfix);
+
+	if (!page) {
+		buffer->priv_phys = ION_CARVEOUT_ALLOCATE_FAIL;
+		return -ENOMEM;
+	}
+
+	buffer->flags |= ION_FLAG_CMA;
+	buffer->priv_phys = page_to_phys(page);
+	return 0;
 }
 
 static void ion_carveout_heap_free(struct ion_buffer *buffer)
 {
 	struct ion_heap *heap = buffer->heap;
 
-	ion_carveout_free(heap, buffer->priv_phys, buffer->size);
+	if (buffer->flags & ION_FLAG_CMA)
+		dma_release_from_contiguous(NULL,
+			phys_to_page(buffer->priv_phys),
+			buffer->size >> PAGE_SHIFT);
+	else
+		ion_carveout_free(heap, buffer->priv_phys, buffer->size);
+
 	buffer->priv_phys = ION_CARVEOUT_ALLOCATE_FAIL;
 }
 

@@ -56,7 +56,11 @@ typedef enum
 {
 	Sensor_ON_CS,
 	Sensor_ON_PS,
+	Sensor_ON_RB_TEST,
 	Sensor_ON_CS_PS,
+	Sensor_ON_CS_RB_TEST,
+	Sensor_ON_PS_RB_TEST,
+	Sensor_ON_CS_PS_RB_TEST,
 	Sensor_OFF
 } SensorStatus;
 
@@ -71,6 +75,7 @@ static void msocket_disconnect(void);
 static DECLARE_WORK(sync_work, msocket_sync_worker);
 static volatile bool msocket_is_sync_canceled;
 static spinlock_t msocket_sync_lock;
+static struct wakeup_source cp_power_resume_wakeup;
 
 bool msocket_is_synced = false;
 bool msocket_recv_up_ioc = false;
@@ -78,8 +83,6 @@ DECLARE_COMPLETION(msocket_peer_sync);
 extern int NVM_wake_lock_num;
 extern int NVM_wake_unlock_num;
 extern int rx_workq_sch_num;
-static struct wakeup_source cp_power_resume_wakeup;
-
 /* open a msocket in kernel */
 int msocket(int port)
 {
@@ -789,6 +792,12 @@ static int msocket_ioctl(struct inode *inode, struct file *filp,
 
 	case MSOCKET_IOC_UP:
 		printk(KERN_INFO "MSOCK: MSOCKET_UP is received!\n");
+		/*In the case AP initiative reset CP, AP will first make msocket
+		linkdown then hold so CP still can send packet to share memory
+		in this interval, so CP still can send packet to share memory in
+		this interval, so clean up share memory one more time in msocket
+		linkup*/
+		shm_rb_data_init(portq_rbctl);
 		spin_lock(&msocket_sync_lock);
 		msocket_recv_up_ioc = true;
 		spin_unlock(&msocket_sync_lock);
@@ -823,6 +832,11 @@ static int msocket_ioctl(struct inode *inode, struct file *filp,
 	case MSOCKET_IOC_CONNECT:
 		printk(KERN_INFO "MSOCK: MSOCKET_IOC_CONNECT is received!\n");
 		msocket_connect();
+		return 0;
+
+	case MSOCKET_IOC_RESET_CP_REQUEST:
+		printk(KERN_INFO "MSOCK: MSOCKET_IOC_RESET_CP_REQUEST is received!\n");
+		acipc_reset_cp_request();
 		return 0;
 
 	case MSOCKET_IOC_SENSOR_STATUS_NOTIFY:
@@ -1044,12 +1058,12 @@ static int px_suspend_notifier_event(struct notifier_block *this,
 	switch (event) {
 	case PM_SUSPEND_PREPARE:
 		printk("MSOCK: gCpPowerMode:%d,gSensorStatus:%d\n", gCpPowerMode, gSensorStatus);
-		/*
-		if (gCpPowerMode == 1 && (gSensorStatus != Sensor_ON_CS && gSensorStatus != Sensor_ON_CS_PS)) {
+		if (gCpPowerMode == 1 && (gSensorStatus != Sensor_ON_CS && gSensorStatus != Sensor_ON_CS_PS
+			 && gSensorStatus != Sensor_ON_RB_TEST && gSensorStatus != Sensor_ON_PS_RB_TEST
+			 && gSensorStatus != Sensor_ON_CS_RB_TEST && gSensorStatus != Sensor_ON_CS_PS_RB_TEST)) {
 			__pm_wakeup_event(&cp_power_resume_wakeup, 1000 * 5);
 			portq_send_msg(CISTUB_PORT, MsocketSuspendNotify);
 		}
-		*/
 		break;
 	case PM_POST_SUSPEND:
 		break;
@@ -1112,10 +1126,12 @@ static int __init msocket_init(void)
 	if ((rc = cmsockdev_init_module()) < 0) {
 		goto cmsock_err;
 	}
+
 	wakeup_source_init(&cp_power_resume_wakeup, "cp_power_resume_wakeup");
 	if ((rc = register_pm_notifier(&suspend_notifier))) {
 		goto suspendReg_err;
 	}
+
 	/* start msocket peer sync */
 	msocket_connect();
 
@@ -1145,6 +1161,7 @@ portq_err:
 static void __exit msocket_exit(void)
 {
 	/* reverse order of initialization */
+	unregister_pm_notifier(&suspend_notifier);
 	msocket_disconnect();
 	cmsockdev_cleanup_module(cmsockdev_nr_devs);
 	misc_deregister(&msocketDump_dev);

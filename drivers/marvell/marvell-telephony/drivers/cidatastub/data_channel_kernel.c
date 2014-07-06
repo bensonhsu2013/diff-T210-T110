@@ -32,7 +32,7 @@ static int psd_package_lose_counter = 0;
 static int cidatastubsockfd = -1;
 #endif
 static int cicsdstubsockfd = -1;
-DataRxCallbackFunc dataRxCbFunc[4] = { NULL, NULL, NULL, NULL };
+DataRxCallbackFunc dataRxCbFunc[5] = { NULL, NULL, NULL, NULL, NULL};
 
 #if 0
 struct task_struct *ciDataRcvTaskRef = NULL;
@@ -159,7 +159,7 @@ int clientCiDataIndicateCallback(UINT8 * dataIndArgs)
 
 	if (pDataOptIndParam->connInfo.type == CI_DAT_CONNTYPE_CS) {
 		if (pNode->handle.connectionType == ATCI_REMOTE)
-			index = PDP_PPP + ATCI_REMOTE;
+			index = CSD_MODEM;
 		else if (pNode->handle.connectionType == ATCI_LOCAL)
 			index = CSD_RAW;
 		else {

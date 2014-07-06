@@ -112,6 +112,8 @@
 #define	APBC_PXA988_GBS		CPBC_REG(0x00c)
 #define	APBC_PXA988_GCER	CPBC_REG(0x034)
 
+#define APBC_PXA1088_TIMERS2	APBC_REG(0x068)
+
 /*
  * APB Clock register offsets for MMP2
  */
@@ -152,6 +154,11 @@
 #define APBC_MMP2_RIPC		APBC_REG(0x08c)
 #define APBC_MMP2_THSENS1	APBC_REG(0x090)	/* Thermal Sensor */
 #define APBC_MMP2_THSENS_INTSTS	APBC_REG(0x0a4)
+
+
+#define APBC_EDEN_IPC_CP	APBC_REG(0x0ac)
+
+
 /* Common APB clock register bit definitions */
 #define APBC_APBCLK	(1 << 0)  /* APB Bus Clock Enable */
 #define APBC_FNCLK	(1 << 1)  /* Functional Clock Enable */
@@ -161,5 +168,12 @@
 
 /* Functional Clock Selection Mask */
 #define APBC_FNCLKSEL(x)	(((x) & 0xf) << 4)
+
+#ifdef CONFIG_CPU_PXA1088
+/* Clock Control Register for Generic Counter */
+#define APBC_COUNTER_CLK_SEL	APBC_REG(0x64)
+#define FREQ_HW_CTRL		0x1
+#define FREQ_SW_SEL		0x2
+#endif
 
 #endif /* __ASM_MACH_REGS_APBC_H */

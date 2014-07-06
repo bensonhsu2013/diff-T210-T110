@@ -41,6 +41,7 @@ struct isl9226_device_info {
 	struct delayed_work chg_update_work;
 	int interval;
 	int ischarging;
+	int is_eoc;
 	int ac_chg_online;
 	int usb_chg_online;
 	u8 chg_cur_in;
@@ -57,7 +58,7 @@ static const u32 input_current_table[] = {
 };
 
 static const u32 eoc_current_table[] = {
-	50, 75, 100,
+	50, 75, 100, 240
 };
 
 static const u32 prechg_current_table[] = {
@@ -70,6 +71,7 @@ static const u32 prechg_voltage_table[] = {
 
 static char *isl9226_supply_to[] = {
 	"battery",
+	"bq27425-0",
 };
 
 static enum power_supply_property isl9226_ac_props[] = {
@@ -312,56 +314,6 @@ static inline int isl9226_get_sta1(struct isl9226_device_info *info)
 		return value;
 }
 
-static int isl9226_check_battery_full(struct isl9226_device_info *info)
-{
-	struct power_supply *psy;
-	union power_supply_propval val;
-	int i, ret = 0;
-
-	for (i = 0; i < info->ac.num_supplicants; i++) {
-		psy = power_supply_get_by_name(info->ac.supplied_to[i]);
-		if (!psy || !psy->get_property)
-			continue;
-		ret = psy->get_property(psy, POWER_SUPPLY_PROP_STATUS, &val);
-		if (ret == 0 && val.intval == POWER_SUPPLY_STATUS_FULL)
-			return 1;
-	}
-	for (i = 0; i < info->usb.num_supplicants; i++) {
-		psy = power_supply_get_by_name(info->usb.supplied_to[i]);
-		if (!psy || !psy->get_property)
-			continue;
-		ret = psy->get_property(psy, POWER_SUPPLY_PROP_STATUS, &val);
-		if (ret == 0 && val.intval == POWER_SUPPLY_STATUS_FULL)
-			return 1;
-	}
-	return 0;
-}
-
-static int isl9226_get_battery_capacity(struct isl9226_device_info *info)
-{
-	struct power_supply *psy;
-	union power_supply_propval val;
-	int i, ret = 0;
-
-	for (i = 0; i < info->ac.num_supplicants; i++) {
-		psy = power_supply_get_by_name(info->ac.supplied_to[i]);
-		if (!psy || !psy->get_property)
-			continue;
-		ret = psy->get_property(psy, POWER_SUPPLY_PROP_CAPACITY, &val);
-		if (ret == 0)
-			return val.intval;
-	}
-	for (i = 0; i < info->usb.num_supplicants; i++) {
-		psy = power_supply_get_by_name(info->usb.supplied_to[i]);
-		if (!psy || !psy->get_property)
-			continue;
-		ret = psy->get_property(psy, POWER_SUPPLY_PROP_CAPACITY, &val);
-		if (ret == 0)
-			return val.intval;
-	}
-	return 0;
-}
-
 static int isl9226_has_supplicant(struct isl9226_device_info *info)
 {
 #ifndef CONFIG_BATTERY_88PM80X
@@ -432,7 +384,10 @@ static int isl9226_start_charging(struct isl9226_device_info *info)
 	/*disable jeita, we don't use that */
 	isl9226_set_jeita(info, 0);
 
-	/*set EOC detection current */
+	/*
+	 * set EOC detection current
+	 * the current can be controlled by Riset2
+	 */
 	isl9226_set_eoc_cur(info, info->eoc_cur);
 
 	/*set precharge current */
@@ -466,23 +421,25 @@ static void isl9226_stop_charging(struct isl9226_device_info *info)
 
 static void isl9226_update_work_func(struct work_struct *work)
 {
+	u8 eoc;
 	struct isl9226_device_info *info =
-				container_of(work, struct isl9226_device_info,
-						chg_update_work.work);
-	int capacity;
-	if (isl9226_check_battery_full(info)) {
-		if (info->ischarging) {
-			isl9226_stop_charging(info);
-			dev_info(info->dev, "battery full, disable charge\n");
-		}
+		container_of(work, struct isl9226_device_info,
+			     chg_update_work.work);
+
+	isl9226_read_reg(info->client, STAT1, &eoc);
+	dev_dbg(info->dev, "eoc data = 0x%x\n", eoc);
+
+	if ((((eoc >> 1) & 0x1) == 1) ||
+	    (((eoc >> 2) & 0x3) == 3)) {
+		dev_dbg(info->dev, "battery full...\n");
+		info->ischarging = 0;
+		info->is_eoc = 1;
+	} else {
+		dev_dbg(info->dev, "battery not full...\n");
+		info->ischarging = 1;
+		info->is_eoc = 0;
 	}
-	capacity = isl9226_get_battery_capacity(info);
-	if (capacity <= RECHARGE_CAPACITY) {
-		if (!info->ischarging) {
-			isl9226_start_charging(info);
-			dev_info(info->dev, "re-enable charge\n");
-		}
-	}
+
 	schedule_delayed_work(&info->chg_update_work, info->interval);
 }
 
@@ -504,10 +461,11 @@ static int isl9226_chg_notifier_callback(struct notifier_block *nb,
 	case VBUS_CHARGER:
 		info->chg_cur_in = info->usb_chg_cur;
 		/*set output current higher than input */
-		if (info->usb_chg_cur <= 500)
-			info->chg_cur_out = 0;
+		if (info->usb_chg_cur == 475)
+			info->chg_cur_out = 1;
 		else
-			info->chg_cur_out = 3;
+			info->chg_cur_out = 0;
+
 		info->usb_chg_online = 1;
 		break;
 	case AC_CHARGER_STANDARD:
@@ -550,6 +508,8 @@ static int isl9226_ac_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_STATUS:
 		if (info->ischarging)
 			val->intval = POWER_SUPPLY_STATUS_CHARGING;
+		else if (info->is_eoc)
+			val->intval = POWER_SUPPLY_STATUS_FULL;
 		else
 			val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
 		break;
@@ -572,6 +532,8 @@ static int isl9226_usb_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_STATUS:
 		if (info->ischarging)
 			val->intval = POWER_SUPPLY_STATUS_CHARGING;
+		else if (info->is_eoc)
+			val->intval = POWER_SUPPLY_STATUS_FULL;
 		else
 			val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
 		break;

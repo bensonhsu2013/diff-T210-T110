@@ -15,7 +15,7 @@
 #include <linux/jiffies.h>
 #include <linux/smp.h>
 #include <linux/io.h>
-
+#include <linux/irq.h>
 #include <asm/cacheflush.h>
 #include <mach/hardware.h>
 #include <asm/hardware/gic.h>
@@ -23,12 +23,24 @@
 #include <asm/localtimer.h>
 #include <asm/smp_scu.h>
 
+#include <mach/irqs.h>
 #include <mach/addr-map.h>
 #include <mach/regs-apmu.h>
-#include <mach/cputype.h>
+#include <mach/features.h>
 #include <plat/pxa_trace.h>
 
 #include "platsmp.h"
+
+#ifdef CONFIG_TZ_HYPERVISOR
+#include <asm/smp_plat.h>
+#include "./tzlc/pxa_tzlc.h"
+#endif
+
+#if (defined CONFIG_DEBUG_FS) && ((defined CONFIG_CPU_PXA988)\
+|| (defined CONFIG_CPU_PXA1088))
+#include <mach/pxa988_lowpower.h>
+#include <mach/clock-pxa988.h>
+#endif
 
 /*
  * control for which core is the next to come out of the secondary
@@ -48,7 +60,7 @@ static void __cpuinit write_pen_release(int val)
 	__cpuc_flush_dcache_area((void *)&pen_release, sizeof(pen_release));
 	outer_clean_range(__pa(&pen_release), __pa(&pen_release + 1));
 }
-
+#ifdef CONFIG_HAVE_ARM_SCU
 void notrace __iomem *pxa_scu_base_addr(void)
 {
 	return (void __iomem *)SCU_VIRT_BASE;
@@ -61,12 +73,32 @@ static inline unsigned int get_core_count(void)
 		return scu_get_core_count(scu_base);
 	return 1;
 }
+#else
+static inline unsigned int get_core_count(void)
+{
+#ifdef CONFIG_CPU_CA7MP
+	unsigned int val;
+	/* Read L2 control register */
+	asm volatile("mrc p15, 1, %0, c9, c0, 2" : "=r"(val));
+	/* core count : [25:24] of L2 register + 1 */
+	val = ((val>>24) & 3) + 1;
+	return val;
+#else
+	return 1;
+#endif
+}
+#endif
 
 static DEFINE_SPINLOCK(boot_lock);
 
 void __cpuinit platform_secondary_init(unsigned int cpu)
 {
 	trace_pxa_core_hotplug(HOTPLUG_EXIT, cpu);
+#if (defined CONFIG_DEBUG_FS) && ((defined CONFIG_CPU_PXA988)\
+|| (defined CONFIG_CPU_PXA1088))
+	pxa988_cpu_dcstat_event(cpu, CPU_IDLE_EXIT, PXA988_MAX_LPM_INDEX);
+#endif
+
 	pxa_secondary_init(cpu);
 
 	/*
@@ -136,19 +168,43 @@ int __cpuinit boot_secondary(unsigned int cpu, struct task_struct *idle)
 	return pen_release != -1 ? -ENOSYS : 0;
 }
 
-#ifdef CONFIG_CPU_PXA988
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 void pxa988_gic_raise_softirq(const struct cpumask *mask, unsigned int irq)
 {
 	unsigned int val = 0;
 	int targ_cpu;
 
-	gic_raise_softirq(mask, irq);
+#ifdef CONFIG_TZ_HYPERVISOR
+	int cpu;
+	unsigned long map = 0;
+	tzlc_cmd_desc cmd_desc;
+	tzlc_handle tzlc_handle;
 
-	if (cpu_pxa98x_stepping() < PXA98X_A0) {
+	/* Convert our logical CPU mask into a physical one. */
+	for_each_cpu(cpu, mask)
+		map |= 1 << cpu_logical_map(cpu);
+
+	/*
+	 * Ensure that stores to Normal memory are visible to the
+	 * other CPUs before issuing the IPI.
+	 */
+	dsb();
+
+	tzlc_handle = pxa_tzlc_create_handle();
+
+	cmd_desc.op = TZLC_CMD_TRIGER_SGI;
+	cmd_desc.args[0] = map << 16 | irq;
+	pxa_tzlc_cmd_op(tzlc_handle, &cmd_desc);
+
+	pxa_tzlc_destroy_handle(tzlc_handle);
+#else
+	gic_raise_softirq(mask, irq);
+#endif
+
+	if (has_feat_ipc_wakeup_core()) {
 		#define IPCC_VIRT_BASE	(APB_VIRT_BASE + 0x1D800)
 		/*
-		* WORKAROUND: "Trigger IPC interrupt to wake cores when sending
-		* IPI"
+		* "Trigger IPC interrupt to wake cores when sending IPI"
 		* Trigger IPC GP_INT to generate IRQ19 as wake up source inside
 		* the ICU to wake up the cores when sending IPI.
 		*/
@@ -181,7 +237,7 @@ void __init smp_init_cpus(void)
 	for (i = 0; i < ncores; i++)
 		set_cpu_possible(i, true);
 
-#ifdef CONFIG_CPU_PXA988
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 	set_smp_cross_call(pxa988_gic_raise_softirq);
 #else
 	set_smp_cross_call(gic_raise_softirq);
@@ -198,8 +254,9 @@ void __init platform_smp_prepare_cpus(unsigned int max_cpus)
 	 */
 	for (i = 0; i < max_cpus; i++)
 		set_cpu_present(i, true);
-
+#ifdef CONFIG_HAVE_ARM_SCU
 	scu_enable(pxa_scu_base_addr());
+#endif
 
 	pxa_cpu_reset_handler_init();
 }

@@ -62,7 +62,7 @@ unsigned char mfs_gpio_i2c_check_scl_hold(void);
 #endif
 
 #define FORCE_DELAY
-unsigned int need_check;
+extern int need_check;
 
 
 unsigned char mfs_gpio_i2c_write( unsigned char ucAddress, unsigned char *pucData , int nLength )

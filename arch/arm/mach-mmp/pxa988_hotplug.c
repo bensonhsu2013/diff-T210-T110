@@ -19,22 +19,18 @@
 #include <asm/io.h>
 #include <mach/regs-apmu.h>
 #include <mach/pxa988_lowpower.h>
-#include <mach/cputype.h>
-
-
-static inline int apmu_core_status_zx(void)
-{
-	return cpu_is_pxa988_z1() || cpu_is_pxa986_z1() ||
-		cpu_is_pxa988_z2() || cpu_is_pxa986_z2() ||
-		cpu_is_pxa988_z3() || cpu_is_pxa986_z3();
-}
+#include <mach/features.h>
 
 static int pxa988_powergate_is_powered(u32 cpu)
 {
-	if (apmu_core_status_zx())
+#ifdef CONFIG_CPU_PXA988
+	if (has_feat_legacy_apmu_core_status())
 		return !(__raw_readl(APMU_CORE_STATUS) & (1 << (3 + 2 * cpu)));
 	else
 		return !(__raw_readl(APMU_CORE_STATUS) & (1 << (4 + 3 * cpu)));
+#elif defined(CONFIG_CPU_PXA1088)
+	return !(__raw_readl(APMU_CORE_STATUS) & (1 << (7 + 3 * cpu)));
+#endif
 }
 
 /*

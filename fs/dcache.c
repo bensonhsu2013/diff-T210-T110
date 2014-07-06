@@ -1932,6 +1932,8 @@ struct dentry *__d_lookup(struct dentry *parent, struct qstr *name)
 						tlen, tname, name))
 				goto next;
 		} else {
+			if (dentry->d_name.len != len)
+				goto next;
 			if (dentry_cmp(tname, tlen, str, len))
 				goto next;
 		}

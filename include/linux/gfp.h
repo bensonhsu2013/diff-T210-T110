@@ -37,6 +37,7 @@ struct vm_area_struct;
 #define ___GFP_NO_KSWAPD	0x400000u
 #define ___GFP_OTHER_NODE	0x800000u
 #define ___GFP_WRITE		0x1000000u
+#define ___GFP_CMA		0x20000000u
 
 /*
  * GFP bitmasks..
@@ -87,6 +88,7 @@ struct vm_area_struct;
 #define __GFP_NO_KSWAPD	((__force gfp_t)___GFP_NO_KSWAPD)
 #define __GFP_OTHER_NODE ((__force gfp_t)___GFP_OTHER_NODE) /* On behalf of other node */
 #define __GFP_WRITE	((__force gfp_t)___GFP_WRITE)	/* Allocator intends to dirty page */
+#define __GFP_CMA	((__force gfp_t)___GFP_CMA)	/* Allocator intends to cma page */
 
 /*
  * This may seem redundant, but it's a way of annotating false positives vs.
@@ -390,5 +392,17 @@ static inline bool pm_suspended_storage(void)
 	return false;
 }
 #endif /* CONFIG_PM_SLEEP */
+
+#ifdef CONFIG_CMA
+
+/* The below functions must be run on a range from a single zone. */
+extern int alloc_contig_range(unsigned long start, unsigned long end,
+			      unsigned migratetype);
+extern void free_contig_range(unsigned long pfn, unsigned nr_pages);
+
+/* CMA stuff */
+extern void init_cma_reserved_pageblock(struct page *page);
+
+#endif
 
 #endif /* __LINUX_GFP_H */

@@ -328,6 +328,8 @@ static int nfc_llcp_build_gb(struct nfc_llcp_local *local)
 
 	if (gb_len > NFC_MAX_GT_LEN) {
 		kfree(version_tlv);
+		kfree(lto_tlv);
+		kfree(wks_tlv);
 		return -EINVAL;
 	}
 
@@ -347,6 +349,7 @@ static int nfc_llcp_build_gb(struct nfc_llcp_local *local)
 
 	kfree(version_tlv);
 	kfree(lto_tlv);
+	kfree(wks_tlv);
 
 	local->gb_len = gb_len;
 

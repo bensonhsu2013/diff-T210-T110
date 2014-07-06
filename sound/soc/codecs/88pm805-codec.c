@@ -12,6 +12,9 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#ifdef CONFIG_MFD_88PM822
+#include <linux/mfd/88pm822.h>
+#endif
 #include <linux/mfd/88pm80x.h>
 #include <linux/slab.h>
 #include <linux/delay.h>
@@ -26,9 +29,6 @@
 #include <trace/events/asoc.h>
 
 #include "88pm805-codec.h"
-#include <mach/gpio-edge.h>
-#include <mach/mfp-pxa988-aruba.h>
-#include <linux/gpio.h>
 
 struct pm805_priv {
 	struct snd_soc_codec *codec;
@@ -40,70 +40,13 @@ struct pm805_priv {
 	int irq_audio_short2;
 };
 
-#ifdef CONFIG_MACH_HENDRIX
-#define GPIO_STATUS_LEN	1
-static char gpio_status[GPIO_STATUS_LEN] = "0";
-static int mute_gpio;
-
-static ssize_t gpio_read_proc(char *page, char **start, off_t off,
-		int count, int *eof, void *data)
-{
-	copy_to_user(page,gpio_status,1);
-	printk("gpio_status=%c\n",gpio_status[0]);
-	return 1;
-}
-
-static ssize_t gpio_write_proc(struct file *filp,
-		const char *buff, size_t len, loff_t *off)
-{
-	char messages[256];
-	int  ret;
-
-	if (len > 255)
-		len = 255;
-
-	memset(messages, 0, sizeof(messages));
-
-	if (!buff || copy_from_user(messages, buff, len))
-		return -EFAULT;
-   gpio_status[0]=messages[0];
-
-	printk("write gpio5 value 0x%x\n", messages[0]);
-	if(messages[0]==1)
-		gpio_direction_output(mute_gpio, 1);	/*pull high to mute */
-	else if(messages[0]==0)
-		gpio_direction_output(mute_gpio, 0);	/* pull low  to un-mute */
-		
-	return len;
-}
-
-static void create_gpio_proc_file(void)
-{
-	struct proc_dir_entry *gpio_proc_file = NULL;
-
-	gpio_proc_file = create_proc_entry("driver/gpio_mute", 0666, NULL);
-	if (!gpio_proc_file) {
-		pr_err("gpio proc file create failed!\n");
-		return;
-	}
-
-	gpio_proc_file->read_proc = gpio_read_proc;
-	gpio_proc_file->write_proc = (write_proc_t  *)gpio_write_proc;
-	
-	mute_gpio = mfp_to_gpio(MFP_PIN_GPIO31);
-	if (!mute_gpio)  {
-		printk(KERN_ERR "mfp_to_gpio  failed,"
-			"gpio: mute_gpio :%d\n", mute_gpio);	
-		//return;
-	}
-	gpio_direction_output(mute_gpio, 0);	/* pull low to un-mute */
-
-}
-#endif
-
 static struct regmap *pm80x_get_companion(struct pm80x_chip *chip)
 {
+#ifdef CONFIG_MFD_88PM822
+	struct pm822_chip *chip_comp;
+#else
 	struct pm80x_chip *chip_comp;
+#endif
 
 	if (!chip->companion) {
 		pr_err("%s: no companion chip\n", __func__);
@@ -126,13 +69,26 @@ static unsigned int pm805_read(struct snd_soc_codec *codec, unsigned int reg)
 
 	map = chip->regmap;
 
-	if (reg >= PM800_CLASS_D_INDEX) {
-		reg = reg - PM800_CLASS_D_INDEX + PM800_CLASS_D_REG_BASE;
+#ifdef CONFIG_MFD_88PM822
+	if (reg >= PMIC_INDEX) {
+		if (reg == PM822_CLASS_D_1)
+			reg = PM822_CLASS_D_REG_BASE;
+		else if (reg == PM822_MIS_CLASS_D_1)
+			reg = PM822_MIS_CLASS_D_REG_1;
+		else if (reg == PM822_MIS_CLASS_D_2)
+			reg = PM822_MIS_CLASS_D_REG_2;
 		map = pm80x_get_companion(chip);
 		if (!map)
 			return -EINVAL;
 	}
-
+#else
+	if (reg >= PMIC_INDEX) {
+		reg = reg - PMIC_INDEX + PM800_CLASS_D_REG_BASE;
+		map = pm80x_get_companion(chip);
+		if (!map)
+			return -EINVAL;
+	}
+#endif
 	ret = regmap_read(map, reg, &val);
 	if (ret < 0) {
 		dev_err(chip->dev, "Failed to read reg 0x%x: %d\n", reg, ret);
@@ -157,8 +113,23 @@ static int pm805_write(struct snd_soc_codec *codec,
 
 	map = chip->regmap;
 
-	/* Enable pm800 audio mode */
+	/* Enable pm800 audio mode, or pm822 classD */
 	map_comp = pm80x_get_companion(chip);
+
+#ifdef CONFIG_MFD_88PM822
+	if (map_comp) {
+		if (reg >= PMIC_INDEX) {
+			if (reg == PM822_CLASS_D_1)
+				reg = PM822_CLASS_D_REG_BASE;
+			else if (reg == PM822_MIS_CLASS_D_1)
+				reg = PM822_MIS_CLASS_D_REG_1;
+			else if (reg == PM822_MIS_CLASS_D_2)
+				reg = PM822_MIS_CLASS_D_REG_2;
+
+			map = map_comp;
+		}
+	}
+#else
 	if (map_comp) {
 		if (reg == PM805_CODEC_MAIN_POWERUP) {
 			if (value & PM805_STBY_B)
@@ -170,13 +141,15 @@ static int pm805_write(struct snd_soc_codec *codec,
 				regmap_update_bits(map_comp,
 						   PM800_LOW_POWER2,
 						   PM800_AUDIO_MODE_EN, 0);
-			msleep(1);
-		} else if (reg >= PM800_CLASS_D_INDEX) {
+			usleep_range(1000, 1200);
+		} else if (reg >= PMIC_INDEX) {
 			reg =
-			    reg - PM800_CLASS_D_INDEX + PM800_CLASS_D_REG_BASE;
+			    reg - PMIC_INDEX + PM800_CLASS_D_REG_BASE;
 			map = map_comp;
+
 		}
 	}
+#endif
 
 	ret = regmap_write(map, reg, value);
 	if (ret < 0)
@@ -188,6 +161,30 @@ static int pm805_write(struct snd_soc_codec *codec,
 static int pm805_bulk_read_reg(struct snd_kcontrol *kcontrol,
 			       struct snd_ctl_elem_value *ucontrol)
 {
+	struct soc_mixer_control *mc =
+	    (struct soc_mixer_control *)kcontrol->private_value;
+	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
+	unsigned int reg = mc->reg;
+	unsigned char buf[PM805_MIXER_COEFFICIENT_MAX_NUM];
+	int i, count = 0;
+	struct pm80x_chip *chip = (struct pm80x_chip *)codec->control_data;
+
+	count = (ucontrol->value.integer.value[0] & 0xff);
+
+	if (count < 1 || count >= PM805_MIXER_COEFFICIENT_MAX_NUM) {
+		pr_info("error count %d, must between 1~64\n", count);
+		return -EINVAL;
+	}
+
+	pr_debug("%s: 0x%x, count %d\n", __func__, reg, count);
+
+	regmap_write(chip->regmap, reg, ucontrol->value.integer.value[1]);
+	i2c_master_recv(chip->client, buf, count);
+	for (i = 0; i < count; i++) {
+		(ucontrol->value.integer.value[i]) = buf[i];
+		pr_debug("read value 0x%x\n", buf[i]);
+	}
+
 	return 0;
 }
 
@@ -442,12 +439,17 @@ static const struct snd_kcontrol_new pm805_audio_controls[] = {
 		   PM805_CODEC_FLL_SPREAD_SPECTRUM_3, 0, 0xff, 0),
 	SOC_SINGLE("PM805_CODEC_FLL_STS", PM805_CODEC_FLL_STS, 0, 0xff, 0),
 
-
+#ifdef CONFIG_MFD_88PM822
+	SOC_SINGLE("PM822_CLASS_D_1", PM822_CLASS_D_1, 0, 0xff, 0),
+	SOC_SINGLE("PM822_MIS_CLASS_D_1", PM822_MIS_CLASS_D_1, 0, 0xff, 0),
+	SOC_SINGLE("PM822_MIS_CLASS_D_2", PM822_MIS_CLASS_D_2, 0, 0xff, 0),
+#else
 	SOC_SINGLE("PM800_CLASS_D_1", PM800_CLASS_D_1, 0, 0xff, 0),
 	SOC_SINGLE("PM800_CLASS_D_2", PM800_CLASS_D_2, 0, 0xff, 0),
 	SOC_SINGLE("PM800_CLASS_D_3", PM800_CLASS_D_3, 0, 0xff, 0),
 	SOC_SINGLE("PM800_CLASS_D_4", PM800_CLASS_D_4, 0, 0xff, 0),
 	SOC_SINGLE("PM800_CLASS_D_5", PM800_CLASS_D_5, 0, 0xff, 0),
+#endif
 };
 
 /*
@@ -469,7 +471,7 @@ static void pm805_short_work(struct work_struct *work)
 	regmap_read(map, PM805_CODEC_HEADPHONE_SHORT_STS, &val);
 	val &= 0x3;
 
-	while(short_count-- && val) {
+	while (short_count-- && val) {
 		/* clear short status */
 		regmap_write(map, PM805_CODEC_HEADPHONE_SHORT_STS, 0);
 
@@ -490,7 +492,8 @@ static irqreturn_t pm805_short_handler(int irq, void *data)
 {
 	struct pm805_priv *pm805 = data;
 
-	if ((irq == pm805->irq_audio_short1) || (irq == pm805->irq_audio_short2))
+	if ((irq == pm805->irq_audio_short1)
+	    || (irq == pm805->irq_audio_short2))
 		queue_work(system_wq, &pm805->work_short);
 
 	return IRQ_HANDLED;
@@ -764,10 +767,6 @@ static int __devinit pm805_codec_probe(struct platform_device *pdev)
 	pm805->chip = chip;
 	pm805->regmap = chip->regmap;
 
-#ifdef CONFIG_MACH_HENDRIX
-	create_gpio_proc_file();
-#endif
-
 	/* refer to drivers/mfd/88pm805.c for irq resource */
 	irq_short1 = platform_get_irq(pdev, 1);
 	if (irq_short1 < 0)
@@ -779,16 +778,24 @@ static int __devinit pm805_codec_probe(struct platform_device *pdev)
 
 	pm805->irq_audio_short1 = irq_short1 + chip->irq_base;
 	pm805->irq_audio_short2 = irq_short2 + chip->irq_base;
-//KSND Marvell patch
+
 	INIT_WORK(&pm805->work_short, pm805_short_work);
 
-	ret = devm_request_threaded_irq(&pdev->dev, pm805->irq_audio_short1, NULL, pm805_short_handler, IRQF_ONESHOT, "audio_short1", pm805);
+	ret =
+	    devm_request_threaded_irq(&pdev->dev, pm805->irq_audio_short1, NULL,
+				      pm805_short_handler, IRQF_ONESHOT,
+				      "audio_short1", pm805);
 	if (ret < 0)
-		dev_err(&pdev->dev, "Failed to request IRQ: #%d: %d\n", pm805->irq_audio_short1, ret);
+		dev_err(&pdev->dev, "Failed to request IRQ: #%d: %d\n",
+			pm805->irq_audio_short1, ret);
 
-	ret = devm_request_threaded_irq(&pdev->dev, pm805->irq_audio_short2, NULL, pm805_short_handler, IRQF_ONESHOT, "audio_short2", pm805);
+	ret =
+	    devm_request_threaded_irq(&pdev->dev, pm805->irq_audio_short2, NULL,
+				      pm805_short_handler, IRQF_ONESHOT,
+				      "audio_short2", pm805);
 	if (ret < 0)
-		dev_err(&pdev->dev, "Failed to request IRQ: #%d: %d\n", pm805->irq_audio_short2, ret);
+		dev_err(&pdev->dev, "Failed to request IRQ: #%d: %d\n",
+			pm805->irq_audio_short2, ret);
 
 	platform_set_drvdata(pdev, pm805);
 

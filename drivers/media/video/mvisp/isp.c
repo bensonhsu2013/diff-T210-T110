@@ -45,357 +45,66 @@
 #include "ispdma.h"
 #include "ispccic.h"
 
+#define BIT2BYTE			8
+#define MIPI_DDR_TO_BIT_CLK		2
+
 #define MVISP_DUMMY_BUF_SIZE	(1920*1080*2)
 #define ISP_STOP_TIMEOUT	msecs_to_jiffies(1000)
 
-#ifdef CONFIG_CPU_PXA988
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 static struct pm_qos_request mvisp_qos_idle;
 #endif
-
-/*
- * mvisp_enable_interrupts - Enable ISP interrupts.
- */
-static void mvisp_enable_interrupts(struct mvisp_device *isp)
-{
-	mvisp_reg_writel(isp, 0x1, ISP_IOMEM_ISPDMA, ISP_IRQMASK);
-}
-
-/*
- * mvisp_disable_interrupts - Disable ISP interrupts.
- */
-static void mvisp_disable_interrupts(struct mvisp_device *isp)
-{
-	mvisp_reg_writel(isp, 0x0, ISP_IOMEM_ISPDMA, ISP_IRQMASK);
-}
-
-
-static void mvisp_power_settings(struct mvisp_device *isp, int idle)
-{
-}
-
 
 static irqreturn_t mvisp_ipc_isr(int irq, void *_isp)
 {
 	struct mvisp_device *isp = _isp;
-	u32 irqstatus;
+	union agent_id id = {
+		.dev_type	= PCAM_IP_DXO,
+		.dev_id	= 0,
+		.mod_type	= MAP_AGENT_DMA_OUT,
+		.mod_id	= AGENT_DXO_CORE,
+	};
+	struct isp_ispdma_device *ispdma = container_of(
+					get_agent(isp->manager.hw, id),
+					struct isp_ispdma_device, agent.hw);
 
-	irqstatus = mvisp_reg_readl(isp,
-			ISP_IOMEM_ISPDMA, ISP_IRQSTAT);
-	mvisp_reg_writel(isp, irqstatus,
-			ISP_IOMEM_ISPDMA, ISP_IRQSTAT);
-	mv_ispdma_ipc_isr_handler(&isp->mvisp_ispdma);
-
-	return IRQ_HANDLED;
-}
-
-static irqreturn_t pxa_ccic_isr_1(int irq, void *_isp)
-{
-
-	struct mvisp_device *isp = _isp;
-	u32 irqstatus;
-
-	irqstatus = mvisp_reg_readl(isp,
-			CCIC_ISP_IOMEM_1, CCIC_IRQ_STATUS);
-	mvisp_reg_writel(isp, irqstatus,
-			CCIC_ISP_IOMEM_1, CCIC_IRQ_STATUS);
-	pxa_ccic_dma_isr_handler(&isp->mvisp_ccic1, irqstatus);
+	mod_setbit(ispdma, ISP_IRQSTAT, ~0);
+	mv_ispdma_ipc_isr_handler(ispdma);
 
 	return IRQ_HANDLED;
 }
 
-
-static irqreturn_t mvisp_dma_isr(int irq, void *_isp)
+static int mvisp_reset(struct mvisp_device *isp)
 {
-
-	struct mvisp_device *isp = _isp;
-	u32 irqstatus;
-
-	irqstatus = mvisp_reg_readl(isp,
-		ISP_IOMEM_ISPDMA, ISPDMA_IRQSTAT);
-
-	mvisp_reg_writel(isp, irqstatus,
-		ISP_IOMEM_ISPDMA, ISPDMA_IRQSTAT);
-	mv_ispdma_dma_isr_handler(&isp->mvisp_ispdma, irqstatus);
-
-	return IRQ_HANDLED;
-}
-
-static int mvisp_pipeline_pm_use_count(struct media_entity *entity)
-{
-	struct media_entity_graph graph;
-	int use = 0;
-
-	media_entity_graph_walk_start(&graph, entity);
-
-	while ((entity = media_entity_graph_walk_next(&graph))) {
-		if (media_entity_type(entity) == MEDIA_ENT_T_DEVNODE)
-			use += entity->use_count;
-	}
-
-	return use;
-}
-
-static int mvisp_pipeline_pm_power_one(struct media_entity *entity, int change)
-{
-	struct v4l2_subdev *subdev;
-	int ret;
-
-	subdev = media_entity_type(entity) == MEDIA_ENT_T_V4L2_SUBDEV
-	       ? media_entity_to_v4l2_subdev(entity) : NULL;
-
-	if (entity->use_count == 0 && change > 0 && subdev != NULL) {
-		ret = v4l2_subdev_call(subdev, core, s_power, 1);
-		if (ret < 0 && ret != -ENOIOCTLCMD)
-			return ret;
-	}
-
-	entity->use_count += change;
-	WARN_ON(entity->use_count < 0);
-
-	if (entity->use_count == 0 && change < 0 && subdev != NULL)
-		v4l2_subdev_call(subdev, core, s_power, 0);
-
 	return 0;
 }
 
-static int mvisp_pipeline_pm_power(struct media_entity *entity, int change)
+static void mvisp_save_context(struct mvisp_device *isp,
+	struct isp_reg_context *reg_list)
 {
-	struct media_entity_graph graph;
-	struct media_entity *first = entity;
-	int ret = 0;
+}
 
-	if (!change)
+static void mvisp_restore_context(struct mvisp_device *isp,
+	struct isp_reg_context *reg_list)
+{
+}
+
+unsigned long mvisp_get_avail_clk_rate(unsigned long *avail_clk_rate,
+		unsigned int num, unsigned long rate)
+{
+	int i;
+
+	if (!avail_clk_rate && !rate)
 		return 0;
 
-	media_entity_graph_walk_start(&graph, entity);
-	while (!ret && (entity = media_entity_graph_walk_next(&graph)))
-		if (media_entity_type(entity) != MEDIA_ENT_T_DEVNODE)
-			ret = mvisp_pipeline_pm_power_one(entity, change);
-
-	if (!ret)
-		return 0;
-
-	media_entity_graph_walk_start(&graph, first);
-	while ((first = media_entity_graph_walk_next(&graph))
-	       && first != entity)
-		if (media_entity_type(first) != MEDIA_ENT_T_DEVNODE)
-			mvisp_pipeline_pm_power_one(first, -change);
-
-	return ret;
-}
-
-int mvisp_pipeline_pm_use(struct media_entity *entity, int use)
-{
-	int change = use ? 1 : -1;
-	int ret;
-
-	mutex_lock(&entity->parent->graph_mutex);
-
-	/* Apply use count to node. */
-	entity->use_count += change;
-	WARN_ON(entity->use_count < 0);
-
-	/* Apply power change to connected non-nodes. */
-	ret = mvisp_pipeline_pm_power(entity, change);
-
-	mutex_unlock(&entity->parent->graph_mutex);
-
-	return ret;
-}
-
-static int mvisp_pipeline_link_notify(struct media_pad *source,
-				    struct media_pad *sink, u32 flags)
-{
-	int source_use = mvisp_pipeline_pm_use_count(source->entity);
-	int sink_use = mvisp_pipeline_pm_use_count(sink->entity);
-	int ret;
-
-	if (!(flags & MEDIA_LNK_FL_ENABLED)) {
-		/* Powering off entities is assumed to never fail. */
-		mvisp_pipeline_pm_power(source->entity, -sink_use);
-		mvisp_pipeline_pm_power(sink->entity, -source_use);
-		return 0;
+	for (i = 0; i < num; i++) {
+		if (rate <= avail_clk_rate[i])
+			break;
 	}
 
-	ret = mvisp_pipeline_pm_power(source->entity, sink_use);
-	if (ret < 0)
-		return ret;
+	if (i < num)
+		return avail_clk_rate[i];
 
-	ret = mvisp_pipeline_pm_power(sink->entity, source_use);
-	if (ret < 0)
-		mvisp_pipeline_pm_power(source->entity, -sink_use);
-
-	return ret;
-}
-
-static int mvisp_pipeline_enable(struct isp_pipeline *pipe,
-			       enum isp_pipeline_stream_state mode)
-{
-	struct media_entity *entity;
-	struct media_pad *pad;
-	struct v4l2_subdev *subdev;
-	int ret = 0, cnt;
-
-	for (cnt = 0; cnt < FAR_END_MAX_NUM; cnt++) {
-		if (pipe->output[cnt] == NULL)
-			continue;
-
-		if (pipe->video_state[cnt] == mode)
-			continue;
-		pipe->video_state[cnt] = mode;
-
-		entity = &pipe->output[cnt]->video.entity;
-		while (1) {
-			pad = &entity->pads[0];
-			if (!(pad->flags & MEDIA_PAD_FL_SINK))
-				break;
-
-			pad = media_entity_remote_source(pad);
-			if (pad == NULL ||
-			    media_entity_type(pad->entity)
-			    != MEDIA_ENT_T_V4L2_SUBDEV)
-				break;
-
-			entity = pad->entity;
-			subdev = media_entity_to_v4l2_subdev(entity);
-
-			ret = v4l2_subdev_call(subdev, video, s_stream, mode);
-			if (ret < 0 && ret != -ENOIOCTLCMD)
-				break;
-		}
-	}
-
-	return ret;
-}
-
-static int mvisp_pipeline_disable(struct isp_pipeline *pipe,
-			       enum isp_pipeline_stream_state mode)
-{
-	struct media_entity *entity;
-	struct media_pad *pad;
-	struct v4l2_subdev *subdev;
-	int failure = 0;
-	int cnt;
-
-	for (cnt = 0; cnt < FAR_END_MAX_NUM; cnt++) {
-		if (pipe->output[cnt] == NULL)
-			continue;
-
-		if (pipe->video_state[cnt] == mode)
-			continue;
-		pipe->video_state[cnt] = mode;
-
-		entity = &pipe->output[cnt]->video.entity;
-		while (1) {
-			pad = &entity->pads[0];
-			if (!(pad->flags & MEDIA_PAD_FL_SINK))
-				break;
-
-			pad = media_entity_remote_source(pad);
-			if (pad == NULL ||
-				media_entity_type(pad->entity)
-					!= MEDIA_ENT_T_V4L2_SUBDEV)
-				break;
-
-			entity = pad->entity;
-			subdev = media_entity_to_v4l2_subdev(entity);
-
-			if (failure == 0)
-				failure = v4l2_subdev_call(subdev, video,
-						s_stream, mode);
-			else
-				v4l2_subdev_call(subdev, video, s_stream, mode);
-		}
-	}
-
-	return failure;
-}
-
-int mvisp_pipeline_set_stream(struct isp_pipeline *pipe,
-				 enum isp_pipeline_stream_state state)
-{
-	int ret;
-
-	if (state == ISP_PIPELINE_STREAM_STOPPED)
-		ret = mvisp_pipeline_disable(pipe, state);
-	else
-		ret = mvisp_pipeline_enable(pipe, state);
-
-	pipe->stream_state = state;
-
-	return ret;
-}
-
-#if 0
-static void mvisp_pipeline_resume(struct isp_pipeline *pipe)
-{
-
-	int singleshot = (pipe->stream_state == ISP_PIPELINE_STREAM_SINGLESHOT);
-	int cnt;
-
-	mvisp_video_resume(pipe->output, !singleshot);
-	if (singleshot)
-		mvisp_video_resume(pipe->input, 0);
-		mvisp_pipeline_enable(pipe, pipe->stream_state);
-}
-
-static void mvisp_pipeline_suspend(struct isp_pipeline *pipe)
-{
-	mvisp_pipeline_disable(pipe);
-}
-
-static bool mvisp_pipeline_is_last(struct media_entity *me)
-{
-	struct isp_pipeline *pipe;
-	struct media_pad *pad;
-	int cnt;
-
-	if (!me->pipe)
-		return false;
-	pipe = to_isp_pipeline(me);
-	if (pipe->stream_state == ISP_PIPELINE_STREAM_STOPPED)
-		return false;
-
-	for (cnt = 0; cnt < FAR_END_MAX_NUM; cnt++) {
-		if (pipe->output[cnt] == NULL)
-			continue;
-		pad = media_entity_remote_source(&pipe->output[cnt]->pad);
-		if (pad->entity == me)
-			return true;
-	}
-
-	return false;
-}
-
-static void mvisp_suspend_module_pipeline(struct media_entity *me)
-{
-	if (mvisp_pipeline_is_last(me))
-		mvisp_pipeline_suspend(to_isp_pipeline(me));
-}
-
-static void mvisp_resume_module_pipeline(struct media_entity *me)
-{
-	if (mvisp_pipeline_is_last(me))
-		mvisp_pipeline_resume(to_isp_pipeline(me));
-}
-
-static int mvisp_suspend_modules(struct mvisp_device *isp)
-{
-	/*unsigned long timeout;*/
-
-	mvisp_suspend_module_pipeline(&isp->mvisp_ispdma.subdev.entity);
-	mvisp_suspend_module_pipeline(&isp->mvisp_ccic1.subdev.entity);
-
-#if 0
-	timeout = jiffies + mvisp_STOP_TIMEOUT;
-	while (isp_pipeline_wait(&isp->mvisp_ispdma) {
-		if (time_after(jiffies, timeout)) {
-			dev_info(isp->dev, "can't stop modules.\n");
-			return 1;
-		}
-		msleep(20);
-	}
-#endif
 	return 0;
 }
 
@@ -422,114 +131,232 @@ mvisp_restore_context(struct mvisp_device *isp,
 	struct isp_reg_context *reg_list)
 {
 }
+static int plat_get_slot(union agent_id id);
 
-static int mvisp_enable_clocks(struct mvisp_device *isp)
+unsigned long mvisp_get_avail_clk_rate(unsigned long *avail_clk_rate,
+		unsigned int num, unsigned long rate)
 {
-	int clk_i;
-	int ret = 0;
+	int i;
 
-	for (clk_i = 0; clk_i < isp->isp_clknum +
-			isp->ccic_clknum; clk_i++) {
-		if (isp->clock[clk_i] != NULL) {
-			ret = clk_enable(isp->clock[clk_i]);
-			if (ret) {
-				dev_err(isp->dev, "clk_enable failed\n");
-				goto out_clk_enable;
-			}
-		}
+	if (!avail_clk_rate && !rate)
+		return 0;
+
+	for (i = 0; i < num; i++) {
+		if (rate <= avail_clk_rate[i])
+			break;
 	}
 
-	pxa_ccic_ctrl_pixclk(isp, 1);
+	if (i < num)
+		return avail_clk_rate[i];
+
+	printk(KERN_ERR "ERROR:the requested clock rate %luMHz\n", rate);
 	return 0;
-
-out_clk_enable:
-	for (--clk_i; clk_i >= 0; clk_i--) {
-		if (isp->clock[clk_i] != NULL)
-			clk_disable(isp->clock[clk_i]);
-	}
-
-	return ret;
 }
 
-static void mvisp_disable_clocks(struct mvisp_device *isp)
+int mvisp_set_fclk_dphy(struct v4l2_subdev *sd,
+		struct v4l2_sensor_csi_dphy *sensor_dphy)
 {
-	int clk_i;
+	unsigned long min_clk_rate;
+	struct mvisp_device *isp =
+		(struct mvisp_device *) v4l2_get_subdev_hostdata(sd);
 
-	pxa_ccic_ctrl_pixclk(isp, 0);
+	union agent_id ccic_id = {
+		.dev_type	= PCAM_IP_CCIC,
+		.dev_id	= 0,
+		.mod_type	= MAP_AGENT_DMA_OUT,
+		.mod_id	= AGENT_CCIC_CORE,
+	};
+	struct ccic_device *ccic = container_of(
+					get_agent(isp->manager.hw, ccic_id),
+					struct ccic_device, agent.hw);
+	union agent_id dphy_id = {
+		.dev_type	= PCAM_IP_CCIC,
+		.dev_id	= 0,
+		.mod_type	= MAP_AGENT_NORMAL,
+		.mod_id	= AGENT_CCIC_DPHY,
+	};
+	struct ccic_dphy_t *dphy = container_of(
+					get_agent(isp->manager.hw, dphy_id),
+					struct ccic_dphy_t, agent.hw);
 
-	for (clk_i = 0; clk_i < isp->isp_clknum +
-			isp->ccic_clknum; clk_i++) {
-		if (isp->clock[clk_i] != NULL)
-			clk_disable(isp->clock[clk_i]);
-	}
+	if (!isp->sensor_connected || !sensor_dphy)
+		return 0;
+
+	dphy->dphy_set = sensor_dphy->sensor_set_dphy;
+	memcpy(&dphy->dphy_desc, &sensor_dphy->dphy_desc,
+			 sizeof(struct v4l2_sensor_csi_dphy));
+
+	min_clk_rate = dphy->dphy_desc.clk_freq *
+		 dphy->dphy_desc.nr_lane * MIPI_DDR_TO_BIT_CLK / BIT2BYTE / MHZ;
+
+	min_clk_rate = mvisp_get_avail_clk_rate(ccic->pdata.avail_fclk_rate,
+			ccic->pdata.avail_fclk_rate_num, min_clk_rate);
+	if (!min_clk_rate)
+		return -EINVAL;
+	ccic->pdata.fclk_mhz = min_clk_rate;
+
+/*isp func clock >= ccic func clok*/
+	min_clk_rate = mvisp_get_avail_clk_rate(isp->pdata->isp_clk_rate,
+			isp->pdata->isp_clk_rate_num, ccic->pdata.fclk_mhz);
+	if (!min_clk_rate)
+		return -EINVAL;
+	isp->min_fclk_mhz = min_clk_rate;
+
+	return 0;
+}
+
+
+	union agent_id ccic_id = {
+		.dev_type	= PCAM_IP_CCIC,
+		.dev_id	= 0,
+		.mod_type	= MAP_AGENT_DMA_OUT,
+		.mod_id	= AGENT_CCIC_CORE,
+	};
+	struct ccic_device *ccic = container_of(
+					get_agent(isp->manager.hw, ccic_id),
+					struct ccic_device, agent.hw);
+	union agent_id dphy_id = {
+		.dev_type	= PCAM_IP_CCIC,
+		.dev_id	= 0,
+		.mod_type	= MAP_AGENT_NORMAL,
+		.mod_id	= AGENT_CCIC_DPHY,
+	};
+	struct ccic_dphy_t *dphy = container_of(
+					get_agent(isp->manager.hw, dphy_id),
+					struct ccic_dphy_t, agent.hw);
+
+	if (!isp->sensor_connected || !sensor_dphy)
+		return 0;
+
+	dphy->dphy_set = sensor_dphy->sensor_set_dphy;
+	memcpy(&dphy->dphy_desc, &sensor_dphy->dphy_desc,
+			 sizeof(struct v4l2_sensor_csi_dphy));
+
+	min_clk_rate = dphy->dphy_desc.clk_freq *
+		 dphy->dphy_desc.nr_lane * MIPI_DDR_TO_BIT_CLK / BIT2BYTE / MHZ;
+
+	min_clk_rate = mvisp_get_avail_clk_rate(ccic->pdata.avail_fclk_rate,
+			ccic->pdata.avail_fclk_rate_num, min_clk_rate);
+	if (!min_clk_rate)
+		return -EINVAL;
+	ccic->pdata.fclk_mhz = min_clk_rate;
+
+/*isp func clock >= ccic func clok*/
+	min_clk_rate = mvisp_get_avail_clk_rate(isp->pdata->isp_clk_rate,
+			isp->pdata->isp_clk_rate_num, ccic->pdata.fclk_mhz);
+	if (!min_clk_rate)
+		return -EINVAL;
+	isp->min_fclk_mhz = min_clk_rate;
+
+>>>> ORIGINAL //JBP_DEV/Platform/System/Maple/JBP98x/kernel/kernel/drivers/media/video/mvisp/isp.c#1
+	ccic_set_mclk_rate(ccic, 0);
+	hw_tune_power(&dphy->agent.hw, 0);
+	hw_tune_power(&ccic->agent.hw, 0);
+	hw_tune_power(&ispdma->agent.hw, 0);
+==== THEIRS //JBP_DEV/Platform/System/Maple/JBP98x/kernel/kernel/drivers/media/video/mvisp/isp.c#2
+	return 0;
+==== YOURS //GWANGHUILEE_CHN_GSM_JELLYBEANPLUS_DELOS-3G-CMCC-LINUX/android/kernel/drivers/media/video/mvisp/isp.c
+	ccic_set_mclk_rate(ccic, 0);
+	hw_tune_power(&dphy->agent.hw, 0);
+	hw_tune_power(&ccic->agent.hw, 0);
+	hw_tune_power(&ispdma->agent.hw, 0);
+
+<<<<
 }
 
 static void mvisp_put_clocks(struct mvisp_device *isp)
 {
-	int clk_i;
-
-	for (clk_i = 0; clk_i < isp->isp_clknum +
-			isp->ccic_clknum; clk_i++) {
-		if (isp->clock[clk_i] != NULL) {
-			clk_put(isp->clock[clk_i]);
-			isp->clock[clk_i] = NULL;
-		}
-	}
 }
 
 static int mvisp_get_clocks(struct mvisp_device *isp,
 		struct mvisp_platform_data *pdata)
 {
-	struct clk *clk;
-	int clk_i;
-	int ret = 0;
-	unsigned int isp_clknum = isp->isp_clknum;
-	unsigned int ccic_clknum = isp->ccic_clknum;
+	union agent_id ccic_id = {
+		.dev_type	= PCAM_IP_CCIC,
+		.dev_id	= 0,
+		.mod_type	= MAP_AGENT_DMA_OUT,
+		.mod_id	= AGENT_CCIC_CORE,
+	};
+	struct ccic_device *ccic = container_of(
+					get_agent(isp->manager.hw, ccic_id),
+					struct ccic_device, agent.hw);
 
+	/* FIXME: actually, we should use get"CCIC_FUNC", and get_rate */
+	if (isp->cpu_type == MV_MMP3) {
+		ccic->pdata.fclk_mhz = 400;
+>>>> ORIGINAL //JBP_DEV/Platform/System/Maple/JBP98x/kernel/kernel/drivers/media/video/mvisp/isp.c#1
+	else
+		ccic->pdata.fclk_mhz = 312;
+==== THEIRS //JBP_DEV/Platform/System/Maple/JBP98x/kernel/kernel/drivers/media/video/mvisp/isp.c#2
+		ccic->pdata.mclk_mhz = 26;
+	} else {
+/* The new sensor dphy setting will not take effect
+ * immediately. Since the ccic function will affect the
+ * mclk, which we can not change the related register on
+ * the fly. So the setting is applied next time. The first
+ * time will set the clock to 416M.
+ * */
+		ccic->pdata.fclk_mhz = 416;
+		ccic->pdata.mclk_mhz = 24;
 
-	for (clk_i = 0; clk_i < isp_clknum + ccic_clknum; clk_i++)
-		isp->clock[clk_i] = NULL;
-
-	for (clk_i = 0; clk_i < isp_clknum + ccic_clknum; clk_i++) {
-		clk = clk_get(isp->dev, pdata->clkname[clk_i]);
-		if (IS_ERR(clk)) {
-			dev_err(isp->dev, "clk_get %s failed\n",
-					pdata->clkname[clk_i]);
-			ret = PTR_ERR(clk);
-			goto out_get_clk;
-		}
-		isp->clock[clk_i] = clk;
+	ccic->pdata.avail_fclk_rate_num  = pdata->ccic_clk_rate_num;
+	memcpy(ccic->pdata.avail_fclk_rate, pdata->ccic_clk_rate,
+			sizeof(unsigned long) * pdata->ccic_clk_rate_num);
 	}
+==== YOURS //GWANGHUILEE_CHN_GSM_JELLYBEANPLUS_DELOS-3G-CMCC-LINUX/android/kernel/drivers/media/video/mvisp/isp.c
+	else
+/* The new sensor dphy setting will not take effect
+ * immediately. Since the ccic function will affect the
+ * mclk, which we can not change the related register on
+ * the fly. So the setting is applied next time. The first
+ * time will set the clock to 416M.
+ * */
+		ccic->pdata.fclk_mhz = 416;
 
+	ccic->pdata.avail_fclk_rate_num  = pdata->ccic_clk_rate_num;
+	memcpy(ccic->pdata.avail_fclk_rate, pdata->ccic_clk_rate,
+			sizeof(unsigned long) * pdata->ccic_clk_rate_num);
+
+<<<<
 	return 0;
-
-out_get_clk:
-	for (--clk_i; clk_i >= 0; clk_i--) {
-		clk_put(isp->clock[clk_i]);
-		isp->clock[clk_i] = NULL;
-	}
-
-	return ret;
 }
 
 
 static void mvisp_put_sensor_resource(struct mvisp_device *isp)
 {
-	int i;
-
-	isp->mmio_base[CCIC_ISP_IOMEM_1] = NULL;
-
-	for (i = 0; i < isp->ccic_clknum; i++) {
-		if (isp->clock[isp->isp_clknum + i] != NULL) {
-			clk_put(isp->clock[isp->isp_clknum + i]);
-			isp->clock[isp->isp_clknum + i] = NULL;
-		}
-	}
 }
 
 struct mvisp_device *mvisp_get(struct mvisp_device *isp)
 {
 	struct mvisp_device *__isp = isp;
+	union agent_id ccic_id = {
+		.dev_type	= PCAM_IP_CCIC,
+		.dev_id	= 0,
+		.mod_type	= MAP_AGENT_DMA_OUT,
+		.mod_id	= AGENT_CCIC_CORE,
+	};
+	struct ccic_device *ccic = container_of(
+					get_agent(isp->manager.hw, ccic_id),
+					struct ccic_device, agent.hw);
+	union agent_id dphy_id = {
+		.dev_type	= PCAM_IP_CCIC,
+		.dev_id	= 0,
+		.mod_type	= MAP_AGENT_NORMAL,
+		.mod_id	= AGENT_CCIC_DPHY,
+	};
+	struct ccic_dphy_t *dphy = container_of(
+					get_agent(isp->manager.hw, dphy_id),
+					struct ccic_dphy_t, agent.hw);
+	union agent_id dxo_id = {
+		.dev_type	= PCAM_IP_DXO,
+		.dev_id	= 0,
+		.mod_type	= MAP_AGENT_DMA_OUT,
+		.mod_id	= AGENT_DXO_CORE,
+	};
+	struct isp_ispdma_device *ispdma = container_of(
+					get_agent(isp->manager.hw, dxo_id),
+					struct isp_ispdma_device, agent.hw);
+	int ret;
 
 	if (isp == NULL)
 		return NULL;
@@ -538,19 +365,24 @@ struct mvisp_device *mvisp_get(struct mvisp_device *isp)
 	if (isp->ref_count > 0)
 		goto out;
 
-#ifdef CONFIG_CPU_PXA988
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 	pm_qos_update_request(&mvisp_qos_idle,
 			PM_QOS_CPUIDLE_BLOCK_AXI_VALUE);
 #endif
-	if (isp->pdata->init_pin)
-		isp->pdata->init_pin(isp->dev, 1);
+	if (!isp->pdata->init_pin || isp->pdata->init_pin(isp->manager.dev, 1))
+		goto out;
 
 	if (isp->isp_pwr_ctrl == NULL || isp->isp_pwr_ctrl(1) < 0) {
 		__isp = NULL;
 		goto out;
 	}
 
-	if (mvisp_enable_clocks(isp) < 0) {
+	ret = hw_tune_power(&ispdma->agent.hw, ~0);
+	ret |= hw_tune_power(&ccic->agent.hw, ~0);
+	ret |= hw_tune_power(&dphy->agent.hw, ~0);
+	ccic_set_mclk_rate(ccic, 1);
+
+	if (ret < 0) {
 		__isp = NULL;
 		goto out_power_off;
 	}
@@ -560,8 +392,6 @@ struct mvisp_device *mvisp_get(struct mvisp_device *isp)
 		mvisp_restore_context(isp, NULL);
 	else
 		isp->has_context = true;
-
-	mvisp_enable_interrupts(isp);
 
 out_power_off:
 	if (__isp == NULL && isp->isp_pwr_ctrl != NULL)
@@ -577,21 +407,51 @@ out:
 
 void mvisp_put(struct mvisp_device *isp)
 {
+	union agent_id ccic_id = {
+		.dev_type	= PCAM_IP_CCIC,
+		.dev_id	= 0,
+		.mod_type	= MAP_AGENT_DMA_OUT,
+		.mod_id	= AGENT_CCIC_CORE,
+	};
+	struct ccic_device *ccic = container_of(
+					get_agent(isp->manager.hw, ccic_id),
+					struct ccic_device, agent.hw);
+	union agent_id dphy_id = {
+		.dev_type	= PCAM_IP_CCIC,
+		.dev_id	= 0,
+		.mod_type	= MAP_AGENT_NORMAL,
+		.mod_id	= AGENT_CCIC_DPHY,
+	};
+	struct ccic_dphy_t *dphy = container_of(
+					get_agent(isp->manager.hw, dphy_id),
+					struct ccic_dphy_t, agent.hw);
+	union agent_id dxo_id = {
+		.dev_type	= PCAM_IP_DXO,
+		.dev_id	= 0,
+		.mod_type	= MAP_AGENT_DMA_OUT,
+		.mod_id	= AGENT_DXO_CORE,
+	};
+	struct isp_ispdma_device *ispdma = container_of(
+					get_agent(isp->manager.hw, dxo_id),
+					struct isp_ispdma_device, agent.hw);
+
 	if (isp == NULL)
 		return;
 
 	mutex_lock(&isp->mvisp_mutex);
 	BUG_ON(isp->ref_count == 0);
 	if (--isp->ref_count == 0) {
-		mvisp_disable_interrupts(isp);
 		mvisp_save_context(isp, NULL);
-		mvisp_disable_clocks(isp);
+		ccic_set_mclk_rate(ccic, 0);
+		hw_tune_power(&dphy->agent.hw, 0);
+		hw_tune_power(&ccic->agent.hw, 0);
+		hw_tune_power(&ispdma->agent.hw, 0);
 		if (isp->isp_pwr_ctrl != NULL)
 			isp->isp_pwr_ctrl(0);
 
 		if (isp->pdata->init_pin)
-			isp->pdata->init_pin(isp->dev, 0);
-#ifdef CONFIG_CPU_PXA988
+			isp->pdata->init_pin(isp->manager.dev, 0);
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 		pm_qos_update_request(&mvisp_qos_idle,
 				PM_QOS_CPUIDLE_BLOCK_DEFAULT_VALUE);
 #endif
@@ -687,11 +547,8 @@ static void mvisp_pm_complete(struct device *dev)
 
 static void mvisp_unregister_entities(struct mvisp_device *isp)
 {
-	mv_ispdma_unregister_entities(&isp->mvisp_ispdma);
-	pxa_ccic_unregister_entities(&isp->mvisp_ccic1);
-
-	v4l2_device_unregister(&isp->v4l2_dev);
-	media_device_unregister(&isp->media_dev);
+	v4l2_device_unregister(&isp->manager.v4l2_dev);
+	media_device_unregister(&isp->manager.media_dev);
 }
 
 static struct v4l2_subdev *
@@ -709,7 +566,7 @@ mvisp_register_subdev_group(struct mvisp_device *isp,
 
 		adapter = i2c_get_adapter(board_info->i2c_adapter_id);
 		if (adapter == NULL) {
-			dev_err(isp->dev,
+			dev_err(isp->manager.dev,
 				"%s: Unable to get I2C adapter %d for"
 				"device %s\n", __func__,
 				board_info->i2c_adapter_id,
@@ -717,10 +574,10 @@ mvisp_register_subdev_group(struct mvisp_device *isp,
 			continue;
 		}
 
-		subdev = v4l2_i2c_new_subdev_board(&isp->v4l2_dev, adapter,
-				board_info->board_info, NULL);
+		subdev = v4l2_i2c_new_subdev_board(&isp->manager.v4l2_dev,
+				adapter, board_info->board_info, NULL);
 		if (subdev == NULL) {
-			dev_err(isp->dev, "%s: Unable to register subdev %s\n",
+			dev_err(isp->manager.dev, "%s: Unable to register subdev %s\n",
 				__func__, board_info->board_info->type);
 			continue;
 		} else {
@@ -732,71 +589,48 @@ mvisp_register_subdev_group(struct mvisp_device *isp,
 	return sd;
 }
 
-
-static int mvisp_register_ispdev(struct mvisp_device *isp)
-{
-	int ret = 0;
-	isp->media_dev.dev = isp->dev;
-
-	strlcpy(isp->media_dev.model, "DXO ISP",
-		sizeof(isp->media_dev.model));
-	isp->media_dev.link_notify = mvisp_pipeline_link_notify;
-	ret = media_device_register(&isp->media_dev);
-	if (ret < 0) {
-		dev_err(isp->dev, "%s: Media device registration failed (%d)\n",
-			__func__, ret);
-		return ret;
-	}
-
-	isp->v4l2_dev.mdev = &isp->media_dev;
-	ret = v4l2_device_register(isp->dev, &isp->v4l2_dev);
-	if (ret < 0) {
-		dev_err(isp->dev, "%s: V4L2 device registration failed (%d)\n",
-			__func__, ret);
-
-		media_device_unregister(&isp->media_dev);
-	}
-
-	return ret;
-}
-
-
 int mvisp_connect_sensor_entities(struct mvisp_device *isp)
 {
 	struct media_entity *input;
 	unsigned int flags;
 	unsigned int pad;
 	int ret = 0;
+	struct map_pipeline *pipeline;
 	struct mvisp_v4l2_subdevs_group *subdev_group;
+	union agent_id id = {
+		.dev_type	= PCAM_IP_CCIC,
+		.dev_id	= 0,
+		.mod_type	= MAP_AGENT_DMA_OUT,
+		.mod_id	= AGENT_CCIC_CORE,
+	};
+	struct ccic_device *ccic;
 
 	if ((isp->sensor == NULL) || isp->sensor->host_priv == NULL)
 		return -EINVAL;
 
 	subdev_group =
 		(struct mvisp_v4l2_subdevs_group *)isp->sensor->host_priv;
+	v4l2_set_subdev_hostdata(isp->sensor, isp);
 
 	switch (subdev_group->if_type) {
 	case ISP_INTERFACE_CCIC_1:
-		pxa_ccic_set_sensor_type(&isp->mvisp_ccic1,
-				isp->sensor_type);
-		input = &isp->mvisp_ccic1.subdev.entity;
-		pad = CCIC_PAD_SINK;
-		flags = 0;
+	case ISP_INTERFACE_PARALLEL_0:
+		id.dev_id = 0;
 		break;
 	case ISP_INTERFACE_CCIC_2:
-		pxa_ccic_set_sensor_type(&isp->mvisp_ccic2,
-				isp->sensor_type);
-		input = &isp->mvisp_ccic2.subdev.entity;
-		pad = CCIC_PAD_SINK;
-		flags = 0;
-		break;
-	case ISP_INTERFACE_PARALLEL_0:
 	case ISP_INTERFACE_PARALLEL_1:
+		id.dev_id = 1;
+		break;
 	default:
-		dev_err(isp->dev, "%s: invalid interface type %u\n",
+		dev_err(isp->manager.dev, "%s: invalid interface type %u\n",
 			   __func__, subdev_group->if_type);
 		return -EINVAL;
 	}
+	ccic = container_of(get_agent(isp->manager.hw, id),
+				struct ccic_device, agent.hw);
+	input = &ccic->agent.subdev.entity;
+	pad = CCIC_PADI_SNSR;
+	flags = 0;
 
 	ret = media_entity_create_link(&isp->sensor->entity, 0,
 		input, pad, flags);
@@ -808,9 +642,52 @@ int mvisp_connect_sensor_entities(struct mvisp_device *isp)
 	media_entity_call(input, link_setup,
 		&isp->sensor->entity.pads[0], &input->pads[pad], flags);
 
+	id.mod_type = MAP_AGENT_NORMAL;
+	id.mod_id = AGENT_CCIC_DPHY;
+	input = &(container_of(get_agent(isp->manager.hw, id),
+				struct map_agent, hw)->subdev.entity);
+	ret = media_entity_create_link(&isp->sensor->entity, 0,
+					input, DPHY_PADI, 0);
+	if (ret < 0)
+		return ret;
+
+	list_for_each_entry(pipeline, &isp->manager.pipeline_pool, hook) {
+		pipeline->def_src = &isp->sensor->entity;
+	}
+
 	return ret;
 }
 
+int sensor_set_clock(struct hw_agent *agent, int rate)
+{
+	/* FIXME: hard coding here, sensor mclk are not necessarily connected
+	 * to CCIC_0 */
+	union agent_id ccic_id = {
+		.dev_type	= PCAM_IP_CCIC,
+		.dev_id	= 0,
+		.mod_type	= MAP_AGENT_DMA_OUT,
+		.mod_id	= AGENT_CCIC_CORE,
+	};
+	union agent_id dphy_id = {
+		.dev_type	= PCAM_IP_CCIC,
+		.dev_id	= 0,
+		.mod_type	= MAP_AGENT_DMA_OUT,
+		.mod_id	= AGENT_CCIC_DPHY,
+	};
+	struct ccic_device *ccic = container_of(
+					get_agent(agent->mngr, ccic_id),
+					struct ccic_device, agent.hw);
+	struct ccic_dphy_t *dphy = container_of(
+					get_agent(agent->mngr, dphy_id),
+					struct ccic_dphy_t, agent.hw);
+	int ret;
+	/* Yes, it's hard to believe, sensor clock is actually provided by
+	 * ccic-core */
+	ret = hw_tune_power(&ccic->agent.hw, rate);
+	ret |= hw_tune_power(&dphy->agent.hw, rate);
+	return ret;
+}
+EXPORT_SYMBOL(sensor_set_clock);
 
 static int mvisp_detect_sensor(struct mvisp_device *isp)
 {
@@ -823,7 +700,7 @@ static int mvisp_detect_sensor(struct mvisp_device *isp)
 	for (subdev_group = pdata->subdev_group;
 			subdev_group->i2c_board_info; ++subdev_group) {
 		/* Register the sensor devices */
-#ifdef VIDEO_MVISP_SENSOR
+#ifdef CONFIG_VIDEO_MVISP_SENSOR
 		if (strcmp(subdev_group->name, "sensor group") == 0) {
 #endif
 			sensor = mvisp_register_subdev_group(isp,
@@ -832,24 +709,10 @@ static int mvisp_detect_sensor(struct mvisp_device *isp)
 				return ret;
 
 			sensor->host_priv = subdev_group;
-
-			/* For unsupported sensor, ignore it*/
-			if (strncmp(sensor->entity.name, "ov882", 5) == 0) {
-				isp->sensor_type = SENSOR_OV882X;
-				isp->sensor = sensor;
-				ret = 0;
-			} else if (strncmp(sensor->entity.name,
-						"ov5647", 6) == 0) {
-				isp->sensor_type = SENSOR_OV5647;
-				isp->sensor = sensor;
-				ret = 0;
-			}else if (strncmp(sensor->entity.name,
-						 "lsi3h5", 6) == 0) {
-				isp->sensor_type = SENSOR_LSI3H5;
-				isp->sensor = sensor;
-				ret = 0;
-			}
-#ifdef VIDEO_MVISP_SENSOR
+			isp->sensor = sensor;
+			isp->sensor_connected = true;
+			ret = 0;
+#ifdef CONFIG_VIDEO_MVISP_SENSOR
 		} else {/* Register the other devices */
 			mvisp_register_subdev_group(isp,
 					subdev_group->i2c_board_info);
@@ -862,98 +725,208 @@ static int mvisp_detect_sensor(struct mvisp_device *isp)
 static int mvisp_register_entities(struct mvisp_device *isp)
 {
 	int ret = 0;
+	union agent_id dxo_id = {
+		.dev_type	= PCAM_IP_DXO,
+		.dev_id	= 0,
+		.mod_type	= MAP_AGENT_DMA_OUT,
+		.mod_id	= AGENT_DXO_CORE,
+	};
+	struct isp_ispdma_device *ispdma = container_of(
+					get_agent(isp->manager.hw, dxo_id),
+					struct isp_ispdma_device, agent.hw);
 
 	/* Register internal entities */
-	ret = mv_ispdma_register_entities(&isp->mvisp_ispdma, &isp->v4l2_dev);
+	ret = mv_ispdma_register_entities(ispdma, &isp->manager.v4l2_dev);
 	if (ret < 0)
 		goto done;
 
-	if (isp->sensor_connected == true) {
-		ret = pxa_ccic_register_entities(
-			&isp->mvisp_ccic1, &isp->v4l2_dev);
-		if (ret < 0)
-			goto done;
-	}
-
-	ret = v4l2_device_register_subdev_nodes(&isp->v4l2_dev);
 done:
-	if (ret < 0) {
-		mv_ispdma_unregister_entities(&isp->mvisp_ispdma);
-		pxa_ccic_unregister_entities(&isp->mvisp_ccic1);
-	}
-
 	return ret;
 }
 
 static void mvisp_cleanup_modules(struct mvisp_device *isp)
 {
-	mv_ispdma_cleanup(isp);
+	union agent_id dxo_id = {
+		.dev_type	= PCAM_IP_DXO,
+		.dev_id	= 0,
+		.mod_type	= MAP_AGENT_DMA_OUT,
+		.mod_id	= AGENT_DXO_CORE,
+	};
+	struct isp_ispdma_device *ispdma = container_of(
+					get_agent(isp->manager.hw, dxo_id),
+					struct isp_ispdma_device, agent.hw);
+
+	mv_ispdma_cleanup(ispdma);
 }
 
 static int mvisp_initialize_modules(struct mvisp_device *isp)
 {
 	int ret = 0;
+	union agent_id dxo_id = {
+		.dev_type	= PCAM_IP_DXO,
+		.dev_id		= 0,
+		.mod_type	= MAP_AGENT_NORMAL,
+		.mod_id		= AGENT_DXO_CORE,
+	};
+	struct isp_ispdma_device *ispdma = container_of(
+					get_agent(isp->manager.hw, dxo_id),
+					struct isp_ispdma_device, agent.hw);
 
-	ret = mv_ispdma_init(isp);
-	if (ret < 0) {
-		dev_err(isp->dev, "DXO IPC initialization failed\n");
-		goto error_ispdma;
+	union agent_id dmac_id = {
+		.dev_type	= PCAM_IP_DXO,
+		.dev_id		= 0,
+		.mod_type	= MAP_AGENT_DMA_OUT,
+		.mod_id		= AGENT_DXO_DMAC,
+	};
+	struct isp_dma_mod *dmac = container_of(
+					get_agent(isp->manager.hw, dmac_id),
+					struct isp_dma_mod, agent.hw);
+
+	union agent_id dmad_id = {
+		.dev_type	= PCAM_IP_DXO,
+		.dev_id		= 0,
+		.mod_type	= MAP_AGENT_DMA_OUT,
+		.mod_id		= AGENT_DXO_DMAD,
+	};
+	struct isp_dma_mod *dmad = container_of(
+					get_agent(isp->manager.hw, dmad_id),
+					struct isp_dma_mod, agent.hw);
+
+	union agent_id dmai_id = {
+		.dev_type	= PCAM_IP_DXO,
+		.dev_id		= 0,
+		.mod_type	= MAP_AGENT_DMA_OUT,
+		.mod_id		= AGENT_DXO_DMAI,
+	};
+	struct isp_dma_mod *dmai = container_of(
+					get_agent(isp->manager.hw, dmai_id),
+					struct isp_dma_mod, agent.hw);
+
+	union agent_id ccic_id = {
+		.dev_type	= PCAM_IP_CCIC,
+		.dev_id	= 0,
+		.mod_type	= MAP_AGENT_DMA_OUT,
+		.mod_id	= AGENT_CCIC_CORE,
+	};
+	struct ccic_device *ccic = container_of(\
+					get_agent(isp->manager.hw, ccic_id),
+					struct ccic_device, agent.hw);
+
+	union agent_id dphy_id = {
+		.dev_type	= PCAM_IP_CCIC,
+		.dev_id		= 0,
+		.mod_type	= MAP_AGENT_NORMAL,
+		.mod_id		= AGENT_CCIC_DPHY,
+	};
+	struct ccic_dphy_t *dphy = container_of(
+					get_agent(isp->manager.hw, dphy_id),
+					struct ccic_dphy_t, agent.hw);
+	struct map_link_dscr pxa988_links[] = {
+		{
+			.src_id		= &dphy_id,
+			.src_pad	= DPHY_PADO_CCIC,
+			.dst_id		= &ccic_id,
+			.dst_pad	= CCIC_PADI_DPHY,
+			.flags		= 0,
+		},
+		{
+			.src_id		= &ccic_id,
+			.src_pad	= CCIC_PADO_DXO,
+			.dst_id		= &dxo_id,
+			.dst_pad	= ISPDMA_PAD_SINK,
+			.flags		= 0,
+		},
+	};
+	struct map_pipeline *pipeline;
+
+	/* establish the liasion between agents, suppose don't need this in the
+	 * final version */
+	ispdma->isp = ccic->isp = dphy->isp = isp;
+	dmac->core = dmad->core = dmai->core = ispdma;
+
+	/* Finally, create all the file nodes for each subdev */
+	ret = map_manager_attach_agents(&isp->manager);
+	if (ret < 0)
+		return ret;
+	list_for_each_entry(pipeline, &isp->manager.pipeline_pool, hook) {
+		struct map_vnode *vnode = agent_get_video(&dmai->agent);
+		pipeline->def_src = &vnode->vdev.entity;
 	}
-
-	if (isp->sensor_connected == true) {
-		ret = pxa_ccic_init(isp);
-		if (ret < 0) {
-			dev_err(isp->dev, "PXA CCIC initialization failed\n");
-			goto error_ispccic;
-		}
-
-		/* Connect the submodules. */
-		ret = media_entity_create_link(
-				&isp->mvisp_ccic1.subdev.entity,
-				CCIC_PAD_ISP_SRC,
-				&isp->mvisp_ispdma.subdev.entity,
-				ISPDMA_PAD_SINK, 0);
-		if (ret < 0)
-			goto error_link;
-	}
-
-	return 0;
-
-error_link:
-	pxa_ccic_cleanup(isp);
-error_ispccic:
-	mv_ispdma_cleanup(isp);
-error_ispdma:
-	return ret;
+	return map_create_links(&isp->manager,
+				pxa988_links, ARRAY_SIZE(pxa988_links));
 }
+
+static inline int __plat_get_slot(union agent_id id)
+{
+	switch (id.dev_type) {
+	case PCAM_IP_DXO:
+		switch (id.mod_id) {
+		case AGENT_DXO_CORE:
+			return 0;
+		case AGENT_DXO_DMAI:
+			return 1;
+		case AGENT_DXO_DMAD:
+			return 2;
+		case AGENT_DXO_DMAC:
+			return 3;
+		}
+		break;
+	case PCAM_IP_CCIC:
+		switch (id.mod_id) {
+		case AGENT_CCIC_CORE:
+			return AGENT_DXO_END * PCAM_DEV_DXO_END
+				+ id.dev_id * AGENT_CCIC_END + 0;
+		case AGENT_CCIC_DPHY:
+			return AGENT_DXO_END * PCAM_DEV_DXO_END
+				+ id.dev_id * AGENT_CCIC_END + 1;
+		}
+		break;
+	case PCAM_IP_SENSOR:
+		return AGENT_DXO_END * PCAM_DEV_DXO_END
+			+ AGENT_CCIC_END * PCAM_DEV_CCIC_END
+			+ id.mod_id;
+	}
+	return -EINVAL;
+}
+
+static int plat_get_slot(union agent_id id)
+{
+	return __plat_get_slot(id);
+}
+
+static struct hw_manager	pcam_manager = {
+	.resrc_pool	= LIST_HEAD_INIT(pcam_manager.resrc_pool),
+	.get_slot	= &plat_get_slot,
+};
+
+int plat_agent_register(struct hw_agent *agent)
+{
+	return hw_agent_register(agent, &pcam_manager);
+}
+EXPORT_SYMBOL(plat_agent_register);
+
+int plat_resrc_register(struct device *dev, struct resource *res,
+	const char *name, union agent_id mask,
+	int res_id, void *handle, void *priv)
+{
+	if (hw_res_register(dev, res, &pcam_manager, name, mask, res_id,
+				handle, priv) == NULL)
+		return -ENOMEM;
+	else
+		return 0;
+}
+EXPORT_SYMBOL(plat_resrc_register);
 
 static int mvisp_remove(struct platform_device *pdev)
 {
 	struct mvisp_device *isp = platform_get_drvdata(pdev);
-	int i;
 
 	mvisp_unregister_entities(isp);
 	mvisp_cleanup_modules(isp);
 
 	free_irq(isp->irq_ipc, isp);
-	free_irq(isp->irq_dma, isp);
-	if (isp->sensor_connected == true)
-		free_irq(isp->irq_ccic1, isp);
 
 	mvisp_put_clocks(isp);
-
-	for (i = 0; i < CCIC_ISP_IOMEM_1; i++) {
-		if (isp->mmio_base[i]) {
-			iounmap(isp->mmio_base[i]);
-			isp->mmio_base[i] = NULL;
-		}
-
-		if (isp->mmio_base_phys[i]) {
-			release_mem_region(isp->mmio_base_phys[i],
-					   isp->mmio_size[i]);
-			isp->mmio_base_phys[i] = 0;
-		}
-	}
 
 	if (isp->dummy_pages != NULL) {
 		__free_pages(isp->dummy_pages, isp->dummy_order);
@@ -961,71 +934,7 @@ static int mvisp_remove(struct platform_device *pdev)
 	}
 
 	kfree(isp);
-
-	return 0;
-}
-
-static int mvisp_map_mem_resource(struct platform_device *pdev,
-				struct mvisp_device *isp)
-{
-	struct resource *mem;
-	int cnt;
-
-	for (cnt = 0; cnt < CCIC_ISP_IOMEM_1; cnt++) {
-		/* request the mem region for the camera registers */
-		mem = platform_get_resource(pdev, IORESOURCE_MEM, cnt);
-		if (!mem) {
-			dev_err(isp->dev, "no mem resource? cnt %d\n", cnt);
-			return -ENODEV;
-		}
-		if (!request_mem_region(mem->start,
-				resource_size(mem), pdev->name)) {
-			dev_err(isp->dev,
-				"cannot reserve camera register I/O region\n");
-			return -ENODEV;
-		}
-		isp->mmio_base_phys[cnt] = mem->start;
-		isp->mmio_size[cnt] = resource_size(mem);
-		/* map the region */
-		isp->mmio_base[cnt] =
-			ioremap_nocache(isp->mmio_base_phys[cnt],
-							isp->mmio_size[cnt]);
-		if (!isp->mmio_base[cnt]) {
-			dev_err(isp->dev,
-				"cannot map camera register I/O region %d\n"
-				, cnt);
-			return -ENODEV;
-		}
-	}
-
-	/* ccic address are statically mapped. */
-	isp->mmio_base_phys[CCIC_ISP_IOMEM_1] = 0;
-	isp->mmio_size[CCIC_ISP_IOMEM_1] = 0;
-	/* map the region */
-	isp->mmio_base[CCIC_ISP_IOMEM_1] =
-		(void __iomem *)CCIC1_VIRT_BASE;
-
-	return 0;
-}
-
-static int mvisp_prepare_dummy(struct mvisp_device *isp)
-{
-	isp->dummy_vaddr = NULL;
-	isp->dummy_paddr = 0;
-	isp->dummy_pages = NULL;
-	isp->dummy_order = 0;
-
-	if (isp->ccic_dummy_ena || isp->ispdma_dummy_ena) {
-		isp->dummy_order = get_order(PAGE_ALIGN(MVISP_DUMMY_BUF_SIZE));
-		isp->dummy_pages = alloc_pages(
-				GFP_KERNEL, isp->dummy_order);
-		if (isp->dummy_pages != NULL) {
-			isp->dummy_vaddr =
-				(void *)page_address(isp->dummy_pages);
-			if (isp->dummy_vaddr != NULL)
-				isp->dummy_paddr = __pa(isp->dummy_vaddr);
-		}
-	}
+	hw_manager_clean(&pcam_manager);
 
 	return 0;
 }
@@ -1036,7 +945,8 @@ static int mvisp_probe(struct platform_device *pdev)
 	const struct platform_device_id *pid = platform_get_device_id(pdev);
 	struct mvisp_device *isp;
 	int ret;
-	int i;
+
+	/* by this time, suppose all agents are registered */
 
 	if (pdata == NULL)
 		return -EINVAL;
@@ -1047,6 +957,10 @@ static int mvisp_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "could not allocate memory\n");
 		return -ENOMEM;
 	}
+
+	isp->manager.hw = &pcam_manager;
+	isp->manager.hw->drv_priv = &isp->manager;
+
 #ifdef CONFIG_VIDEO_MRVL_CAM_DEBUG
 	strcpy(isp->mcd_root_codec.mcd.name, "dxo_codec");
 	isp->mcd_root_codec.mcd.nr_entity = MCD_ENTITY_END;
@@ -1068,28 +982,25 @@ static int mvisp_probe(struct platform_device *pdev)
 #endif
 	mutex_init(&isp->mvisp_mutex);
 
-	isp->dev = &pdev->dev;
+	isp->manager.dev = &pdev->dev;
 	isp->pdata = pdata;
 	isp->ref_count = 0;
 	isp->has_context = false;
 	isp->ccic_dummy_ena = pdata->ccic_dummy_ena;
 	isp->ispdma_dummy_ena = pdata->ispdma_dummy_ena;
 	isp->isp_pwr_ctrl = pdata->isp_pwr_ctrl;
-	isp->isp_clknum = pdata->isp_clknum;
-	isp->ccic_clknum = pdata->ccic_clknum;
 	isp->cpu_type = pid->driver_data;
 
 	platform_set_drvdata(pdev, isp);
 
-	ret = mvisp_register_ispdev(isp);
+	isp->manager.name = "MrvlCamMngr";
+	isp->manager.dev = &pdev->dev;
+	isp->manager.plat_priv = isp;
+	ret = map_manager_init(&isp->manager);
 	if (ret < 0)
 		return ret;
 
 	/* Clocks */
-	ret = mvisp_map_mem_resource(pdev, isp);
-	if (ret < 0)
-		goto error;
-
 	ret = mvisp_get_clocks(isp, pdata);
 	if (ret < 0)
 		goto error;
@@ -1097,66 +1008,31 @@ static int mvisp_probe(struct platform_device *pdev)
 	if (mvisp_get(isp) == NULL)
 		goto error;
 
-	ret = mvisp_detect_sensor(isp);
-	if (ret < 0)
-		isp->sensor_connected = false;
-	else
-		isp->sensor_connected = true;
+	mvisp_detect_sensor(isp);
 
 	ret = mvisp_reset(isp);
 	if (ret < 0)
 		goto error_isp;
 
-
 	/* Interrupt */
-	isp->irq_dma = platform_get_irq(pdev, 0);
-	if (isp->irq_dma <= 0) {
-		dev_err(isp->dev, "No DMA IRQ resource\n");
-		ret = -ENODEV;
-		goto error_isp;
-	}
-	if (request_irq(isp->irq_dma,
-			mvisp_dma_isr, IRQF_DISABLED,
-			"mv_ispdmairq", isp)) {
-		dev_err(isp->dev, "Unable to request DMA IRQ\n");
-		ret = -EINVAL;
-		goto error_isp;
-	}
-
-	isp->irq_ipc = platform_get_irq(pdev, 1);
+	isp->irq_ipc = platform_get_irq(pdev, 0);
 	if (isp->irq_ipc <= 0) {
-		dev_err(isp->dev, "No IPC IRQ resource\n");
+		dev_err(isp->manager.dev, "No IPC IRQ resource\n");
 		ret = -ENODEV;
 		goto error_irq_dma;
 	}
 	if (request_irq(isp->irq_ipc,
 			mvisp_ipc_isr, IRQF_DISABLED,
 			"mv_ispirq", isp)) {
-		dev_err(isp->dev, "Unable to request IPC IRQ\n");
+		dev_err(isp->manager.dev, "Unable to request IPC IRQ\n");
 		ret = -EINVAL;
 		goto error_irq_dma;
-	}
-
-	if (isp->sensor_connected == true) {
-		isp->irq_ccic1 = platform_get_irq(pdev, 2);
-		if (isp->irq_ccic1 <= 0) {
-			dev_err(isp->dev, "No CCIC IRQ resource\n");
-			ret = -ENODEV;
-			goto error_irq_ipc;
-		}
-		if (request_irq(isp->irq_ccic1,
-				pxa_ccic_isr_1, IRQF_DISABLED|IRQF_SHARED,
-				"pxa_ccicirq", isp)) {
-			dev_err(isp->dev, "Unable to request CCIC IRQ\n");
-			ret = -EINVAL;
-			goto error_irq_ipc;
-		}
 	}
 
 	/* Entities */
 	ret = mvisp_initialize_modules(isp);
 	if (ret < 0)
-		goto error_irq_ccic;
+		goto error_irq_dma;
 
 	ret = mvisp_register_entities(isp);
 	if (ret < 0)
@@ -1166,11 +1042,8 @@ static int mvisp_probe(struct platform_device *pdev)
 		ret = mvisp_connect_sensor_entities(isp);
 		if (ret < 0)
 			goto error_modules;
-
-		mvisp_prepare_dummy(isp);
 	}
 
-	mvisp_power_settings(isp, 1);
 	mvisp_put(isp);
 
 	if (isp->sensor_connected == false)
@@ -1180,30 +1053,12 @@ static int mvisp_probe(struct platform_device *pdev)
 
 error_modules:
 	mvisp_cleanup_modules(isp);
-error_irq_ccic:
-	if (isp->sensor_connected == true)
-		free_irq(isp->irq_ccic1, isp);
-error_irq_ipc:
-	free_irq(isp->irq_ipc, isp);
 error_irq_dma:
-	free_irq(isp->irq_dma, isp);
+	free_irq(isp->irq_ipc, isp);
 error_isp:
 	mvisp_put(isp);
 error:
 	mvisp_put_clocks(isp);
-
-	for (i = 0; i < CCIC_ISP_IOMEM_1; i++) {
-		if (isp->mmio_base[i]) {
-			iounmap(isp->mmio_base[i]);
-			isp->mmio_base[i] = NULL;
-		}
-
-		if (isp->mmio_base_phys[i]) {
-			release_mem_region(isp->mmio_base_phys[i],
-					   isp->mmio_size[i]);
-			isp->mmio_base_phys[i] = 0;
-		}
-	}
 
 	platform_set_drvdata(pdev, NULL);
 	kfree(isp);
@@ -1240,7 +1095,7 @@ static struct platform_driver mvisp_driver = {
  */
 static int __init mvisp_init(void)
 {
-#ifdef CONFIG_CPU_PXA988
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 	mvisp_qos_idle.name = "DxOISP";
 	pm_qos_add_request(&mvisp_qos_idle, PM_QOS_CPUIDLE_BLOCK,
 			PM_QOS_CPUIDLE_BLOCK_DEFAULT_VALUE);
@@ -1254,7 +1109,7 @@ static int __init mvisp_init(void)
 static void __exit mvisp_cleanup(void)
 {
 	platform_driver_unregister(&mvisp_driver);
-#ifdef CONFIG_CPU_PXA988
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 	pm_qos_remove_request(&mvisp_qos_idle);
 #endif
 }

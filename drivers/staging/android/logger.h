@@ -67,4 +67,10 @@ struct logger_entry {
 #define LOGGER_GET_VERSION		_IO(__LOGGERIO, 5) /* abi version */
 #define LOGGER_SET_VERSION		_IO(__LOGGERIO, 6) /* abi version */
 
+#ifdef CONFIG_KERNEL_DEBUG_SEC
+void dump_one_task_info(struct task_struct *tsk, bool isMain);
+void dump_all_task_info(void);
+void dump_cpu_stat(void);
+#endif
+
 #endif /* _LINUX_LOGGER_H */

@@ -73,7 +73,7 @@
 
 #define GEU_MODE_DMA
 
-#define GEU_DRIVER_VERSION	"GEU drvier 0.0.6"
+#define GEU_DRIVER_VERSION	"GEU drvier 0.0.7"
 
 #define PXA_GEU_IOMEM		0xD4201000
 #define PXA_GEU_IOMEM_SIZE	0x00001000
@@ -296,7 +296,10 @@ static int GEU_AES_direct(unsigned char *in, unsigned char *out, unsigned int le
 	conf = GEUReadReg(GEU_CONFIG);
 	while (length > 0) {
 		unsigned int len = length>GEU_DMA_THRESHOLD?GEU_DMA_THRESHOLD:length;
-		memcpy(dma_buf_base, in, len);
+		if (copy_from_user(dma_buf_base, in, len)) {
+			ret = -EFAULT;
+			break;
+		}
 		/* setup in/out DMA */
 		DCSR(geu_dma_in) = DCSR_NODESC;
 		DSADR(geu_dma_in) = dma_phy_base;
@@ -317,7 +320,10 @@ static int GEU_AES_direct(unsigned char *in, unsigned char *out, unsigned int le
 			ret = -ETIME;
 			break;
 		}
-		memcpy(out, dma_buf_base, len);
+		if (copy_to_user(out, dma_buf_base, len)) {
+			ret = -EFAULT;
+			break;
+		}
 		in += len;
 		out += len;
 		length -= len;
@@ -422,56 +428,40 @@ static int GEU_AES_chain(unsigned char *in, unsigned char *out, unsigned int len
 static int GEU_AES_pio(unsigned char *in, unsigned char *out, unsigned int length)
 {
 	int ret = 0;
-	unsigned int *inData = (unsigned int *)in;
-	unsigned int *outData = (unsigned int *)out;
 	unsigned int i;
 	unsigned int conf;
+	unsigned int blkbuf[4];
 
 	conf = GEUReadReg(GEU_CONFIG);
 	GEUWriteReg(GEU_CONFIG, conf|GEU_CONFIG_DATAIMR);
 
 	/* setup transfer info */
-	if ((unsigned long)inData & 3 || (unsigned long)outData & 3) {
-		unsigned int blkbuf[4];
-		for (i=0; i<length/16; i++) {
-			memcpy(blkbuf, inData, sizeof(blkbuf));
-			GEUWriteReg(GEU_INPUT_DATA_ENC_DEC, blkbuf[0]);
-			GEUWriteReg(GEU_INPUT_DATA_ENC_DEC + 4, blkbuf[1]);
-			GEUWriteReg(GEU_INPUT_DATA_ENC_DEC + 8, blkbuf[2]);
-			GEUWriteReg(GEU_INPUT_DATA_ENC_DEC + 12, blkbuf[3]);
-			if (0 == wait_for_completion_timeout(&cmd_complete, GEU_DMA_TIMEOUT)) {
-				printk("GEU timeout status(%x) config(%x)\n", GEUReadReg(GEU_STATUS), GEUReadReg(GEU_CONFIG));
-				ret = -ETIME;
-				break;
-			}
-			/* read output data */
-			blkbuf[0] = GEUReadReg(GEU_OUT_DATA_AFTER_ENC_DEC);
-			blkbuf[1] = GEUReadReg(GEU_OUT_DATA_AFTER_ENC_DEC + 4);
-			blkbuf[2] = GEUReadReg(GEU_OUT_DATA_AFTER_ENC_DEC + 8);
-			blkbuf[3] = GEUReadReg(GEU_OUT_DATA_AFTER_ENC_DEC + 12);
-			memcpy(outData, blkbuf, sizeof(blkbuf));
-			inData += 4;
-			outData += 4;
+	for (i=0; i<length/16; i++) {
+		if(copy_from_user(blkbuf, in, sizeof(blkbuf))) {
+			ret = -EFAULT;
+			break;
 		}
-	} else {
-		for (i=0; i<length/16; i++) {
-			GEUWriteReg(GEU_INPUT_DATA_ENC_DEC, *inData++);
-			GEUWriteReg(GEU_INPUT_DATA_ENC_DEC + 4, *inData++);
-			GEUWriteReg(GEU_INPUT_DATA_ENC_DEC + 8, *inData++);
-			GEUWriteReg(GEU_INPUT_DATA_ENC_DEC + 12, *inData++);
-			GEUWriteReg(GEU_STATUS, GEU_STATUS_DINREADY);
-			/* wait for complete, timeout = 1s */
-			if (0 == wait_for_completion_timeout(&cmd_complete, GEU_DMA_TIMEOUT)) {
-				printk("GEU timeout status(%x) config(%x)\n", GEUReadReg(GEU_STATUS), GEUReadReg(GEU_CONFIG));
-				ret = -ETIME;
-				break;
-			}
-			/* read output data */
-			*outData++ = GEUReadReg(GEU_OUT_DATA_AFTER_ENC_DEC);
-			*outData++ = GEUReadReg(GEU_OUT_DATA_AFTER_ENC_DEC + 4);
-			*outData++ = GEUReadReg(GEU_OUT_DATA_AFTER_ENC_DEC + 8);
-			*outData++ = GEUReadReg(GEU_OUT_DATA_AFTER_ENC_DEC + 12);
+		GEUWriteReg(GEU_INPUT_DATA_ENC_DEC, blkbuf[0]);
+		GEUWriteReg(GEU_INPUT_DATA_ENC_DEC + 4, blkbuf[1]);
+		GEUWriteReg(GEU_INPUT_DATA_ENC_DEC + 8, blkbuf[2]);
+		GEUWriteReg(GEU_INPUT_DATA_ENC_DEC + 12, blkbuf[3]);
+		GEUWriteReg(GEU_STATUS, GEU_STATUS_DINREADY);
+		if (0 == wait_for_completion_timeout(&cmd_complete, GEU_DMA_TIMEOUT)) {
+			printk("GEU timeout status(%x) config(%x)\n", GEUReadReg(GEU_STATUS), GEUReadReg(GEU_CONFIG));
+			ret = -ETIME;
+			break;
 		}
+		/* read output data */
+		blkbuf[0] = GEUReadReg(GEU_OUT_DATA_AFTER_ENC_DEC);
+		blkbuf[1] = GEUReadReg(GEU_OUT_DATA_AFTER_ENC_DEC + 4);
+		blkbuf[2] = GEUReadReg(GEU_OUT_DATA_AFTER_ENC_DEC + 8);
+		blkbuf[3] = GEUReadReg(GEU_OUT_DATA_AFTER_ENC_DEC + 12);
+		if (copy_to_user(out, blkbuf, sizeof(blkbuf))) {
+			ret = -EFAULT;
+			break;
+		}
+		in += 4;
+		out += 4;
 	}
 	/* restore configure */
 	GEUWriteReg(GEU_CONFIG, conf);
@@ -643,7 +633,9 @@ static int GEU_gen_rand(unsigned char *rnd, unsigned int len)
 			new = GEUReadReg(GEU_HW_RANDOM_NUM_GEN);
 		}
 		copy = len>sizeof(unsigned int)?sizeof(unsigned int):len;
-		memcpy(rnd, &new, copy);
+		if (copy_to_user(rnd, &new, copy)) {
+			break;
+		}
 		rnd += copy;
 		len -= copy;
 	}

@@ -115,6 +115,9 @@ extern int sysctl_nr_trim_pages;
 #ifdef CONFIG_BLOCK
 extern int blk_iopoll_enabled;
 #endif
+#ifdef CONFIG_CMA
+extern int cma_balance_ratio;
+#endif
 
 /* Constants used for minimum and  maximum */
 #ifdef CONFIG_LOCKUP_DETECTOR
@@ -769,6 +772,17 @@ static struct ctl_table kern_table[] = {
 		.extra1		= &zero,
 		.extra2		= &one,
 	},
+#if defined(CONFIG_SMP_HARDLOCKUP_DETECTOR)
+	{
+		.procname	= "hardlockup_enable",
+		.data		= &hardlockup_enable,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_hardlockup,
+		.extra1		= &zero,
+		.extra2		= &one,
+	},
+#endif
 #endif
 #if defined(CONFIG_X86_LOCAL_APIC) && defined(CONFIG_X86)
 	{
@@ -1368,6 +1382,17 @@ static struct ctl_table vm_table[] = {
 		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &zero,
 		.extra2		= &one,
+	},
+#endif
+#ifdef CONFIG_CMA
+	{
+		.procname	= "cma_balance_ratio",
+		.data		= &cma_balance_ratio,
+		.maxlen		= sizeof(cma_balance_ratio),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &one_hundred,
 	},
 #endif
 	{ }

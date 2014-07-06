@@ -174,8 +174,6 @@ static struct usb_configuration android_config_driver = {
 	.label		= "android",
 	.unbind		= android_unbind_config,
 	.bConfigurationValue = 1,
-	.bmAttributes	= USB_CONFIG_ATT_ONE | USB_CONFIG_ATT_SELFPOWER,
-	.bMaxPower	= 0xFA, /* 500ma */
 };
 
 static void android_work(struct work_struct *data)
@@ -191,6 +189,9 @@ static void android_work(struct work_struct *data)
 	if (!cdev)
 		return;
 
+	printk(KERN_DEBUG "usb: %s config=%p,connected=%d,sw_connected=%d\n",
+			__func__, cdev->config, dev->connected,
+			dev->sw_connected);
 	spin_lock_irqsave(&cdev->lock, flags);
 	if (cdev->config)
 		uevent_envp = configured;
@@ -201,10 +202,11 @@ static void android_work(struct work_struct *data)
 
 	if (uevent_envp) {
 		kobject_uevent_env(&dev->dev->kobj, KOBJ_CHANGE, uevent_envp);
-		pr_debug("%s: sent uevent %s\n", __func__, uevent_envp[0]);
+		printk(KERN_DEBUG "usb: %s sent uevent %s\n",
+			 __func__, uevent_envp[0]);
 	} else {
-		pr_debug("%s: did not send uevent (%d %d %p)\n", __func__,
-			 dev->connected, dev->sw_connected, cdev->config);
+		printk(KERN_DEBUG "usb: %s did not send uevent (%d %d %p)\n",
+		 __func__, dev->connected, dev->sw_connected, cdev->config);
 	}
 }
 
@@ -1399,7 +1401,7 @@ functions_store(struct device *pdev, struct device_attribute *attr,
 		mutex_unlock(&dev->mutex);
 		return -EBUSY;
 	}
-
+   
 	INIT_LIST_HEAD(&dev->enabled_functions);
 
 	printk(KERN_DEBUG "usb: %s buff=%s\n", __func__, buff);
@@ -1435,15 +1437,15 @@ functions_store(struct device *pdev, struct device_attribute *attr,
 				ffs_enabled = 1;
 			continue;
 		}
-			err = android_enable_function(dev, name);
-			if (err)
-				pr_err("android_usb: Cannot enable '%s'", name);
+		err = android_enable_function(dev, name);
+		if (err)
+			pr_err("android_usb: Cannot enable '%s' (%d)", name, err);
 #ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
 
 			/* Enable ACM function, if MTP is enabled. */
 			if (!strcmp(name, "mtp")) {
 				err = android_enable_function(dev, "acm");
-		if (err)
+				if (err)
 					pr_err(
 					"android_usb: Cannot enable '%s'",
 					name);
@@ -1519,12 +1521,18 @@ static ssize_t enable_store(struct device *pdev, struct device_attribute *attr,
 				cdev->desc.bDeviceProtocol);
 		printk(KERN_DEBUG "usb: %s next cmd : usb_add_config\n",
 				__func__);
-
+		list_for_each_entry(f, &dev->enabled_functions, enabled_list) {
+			if (f->enable)
+				f->enable(f);
+		}
 		android_enable(dev);
 		dev->enabled = true;
 	} else if (!enabled && dev->enabled) {
 		android_disable(dev);
-		usb_ep_autoconfig_reset(cdev->gadget);
+		list_for_each_entry(f, &dev->enabled_functions, enabled_list) {
+			if (f->disable)
+				f->disable(f);
+		}
 		dev->enabled = false;
 	} else {
 		pr_err("android_usb: already %s\n",
@@ -1701,7 +1709,6 @@ static int android_bind(struct usb_composite_dev *cdev)
 		device_desc.bcdDevice = __constant_cpu_to_le16(0x9999);
 	}
 
-	usb_gadget_set_selfpowered(gadget);
 	dev->cdev = cdev;
 
 	return 0;

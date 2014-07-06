@@ -17,7 +17,7 @@
 
 enum {
 	ID_SR130PC10	= 0,
-	ID_SR352		= 1,
+	ID_SR200PC20M	= 1,
 };
 
 enum cam_power {

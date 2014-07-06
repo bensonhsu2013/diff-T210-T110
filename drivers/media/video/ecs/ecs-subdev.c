@@ -19,9 +19,72 @@ static __attribute__((unused)) void ecs_dump_subdev_map(struct x_subdev *xsd)
 
 }
 
+static int xsd_set_profile(struct x_subdev *xsd, const char *profile, \
+			const struct xsd_spec_item *spec_list, int list_len)
+{
+	int i, ret;
+
+	if (xsd == NULL || xsd->ecs == NULL || spec_list == NULL || \
+		profile == NULL || strlen(profile) == 0)
+		return -EINVAL;
+
+	for (i = 0; i < list_len; i++) {
+		if (spec_list[i].name && !strcmp(profile, spec_list[i].name))
+			goto profile_found;
+	}
+	return -ENOENT;
+profile_found:
+	if (i == xsd->profile) {
+		x_inf(2, "profile name: %s\n", profile);
+		goto done;
+	}
+
+	ret = ecs_sensor_merge(xsd->ecs, spec_list[i].ecs);
+	if (ret < 0)
+		return ret;
+	xsd->state_list	= spec_list[i].state_list;
+	xsd->state_cnt	= spec_list[i].state_cnt;
+done:
+	xsd->profile	= i;
+	ecs_sensor_reset(xsd->ecs);
+	return 0;
+}
+
+static inline void merge_fp_table(void *dst_ops, void *def_ops, int size)
+{
+	/* dst_ops and def_ops are all pointers for a funtion pointer list */
+	void (***dst)(void) = dst_ops, (***def)(void) = def_ops;
+	int i;
+
+	/* if dst list is empty, let dst_ops pointing at default list */
+	if (*dst == NULL) {
+		*dst = *def;
+		return;
+	}
+
+	/* if dst list allocated, check list item one by one */
+	for (i = 0; i < size; i++)
+		(*dst)[i] = ((*dst)[i]) ? (*dst)[i] : (*def)[i];
+}
+#define merge_ops(a, b, item) merge_fp_table(&(a->item), &(b->item), \
+	sizeof(struct v4l2_subdev_##item##_ops) / sizeof(void (*)(void)))
+
+static inline int xsd_merge_ops(struct v4l2_subdev_ops *dst_ops, \
+				struct v4l2_subdev_ops *def_ops)
+{
+	if (dst_ops == NULL || def_ops == NULL)
+		return -EINVAL;
+
+	merge_ops(dst_ops, def_ops, core);
+	merge_ops(dst_ops, def_ops, video);
+	return 0;
+}
+
 static int xsd_reg_cid(struct x_subdev *xsd);
+static struct v4l2_subdev_ops xsd_ops;
 /* subdev interface */
-int ecs_subdev_init(struct x_subdev *xsd)
+static int xsd_dev_setup(struct x_subdev *xsd, const char *profile, \
+			const struct xsd_spec_item *spec_list, int list_len)
 {
 	struct ecs_property *prop_fmt = NULL, *prop_res = NULL;
 	struct ecs_sensor *snsr;
@@ -36,6 +99,14 @@ int ecs_subdev_init(struct x_subdev *xsd)
 		|| (xsd->get_res_desc == NULL)))
 		return -EINVAL;
 
+	xsd->profile = UNSET;
+	/* handle specialized setting and states */
+	if (profile != NULL) {
+		int ret = xsd_set_profile(xsd, profile, spec_list, list_len);
+		if (ret < 0)
+			return ret;
+	}
+
 	/* setup ECS core */
 	snsr = xsd->ecs;
 	if (snsr != NULL) {
@@ -47,6 +118,8 @@ int ecs_subdev_init(struct x_subdev *xsd)
 		return -EINVAL;
 	ecs_sensor_init(snsr);
 
+	xsd_merge_ops(xsd->ops, &xsd_ops);
+
 	/* Setup format-resolution to state mapping table */
 	prop_fmt = snsr->prop_tab + xsd->fmt_id;
 	prop_res = snsr->prop_tab + xsd->res_id;
@@ -54,6 +127,10 @@ int ecs_subdev_init(struct x_subdev *xsd)
 	tab_sz = prop_fmt->stn_num * line_sz;
 	state_map = xsd->state_map;
 	enum_map = xsd->enum_map;
+	/* For ECS subdev, states must be defined because they are used setup
+	 * enumerate table*/
+	if (WARN_ON(xsd->state_cnt == 0) || WARN_ON(xsd->state_list == NULL))
+		return -EPERM;
 
 	{
 	int temp[tab_sz];
@@ -131,23 +208,20 @@ int ecs_subdev_init(struct x_subdev *xsd)
 	enum_map[idx_ft] = 0;
 	/*ecs_dump_subdev_map(xsd);*/
 
-	xsd_reg_cid(xsd);
 	return 0;
 }
-EXPORT_SYMBOL(ecs_subdev_init);
 
-int ecs_subdev_remove(struct x_subdev *xsd)
+int xsd_dev_clean(struct x_subdev *xsd)
 {
 	v4l2_ctrl_handler_free(&(xsd->ctrl_handler));
 	return 0;
 }
-EXPORT_SYMBOL(ecs_subdev_remove);
 
-int ecs_subdev_enum_fmt(struct v4l2_subdev *sd, unsigned int idx, \
+static int xsd_enum_fmt(struct v4l2_subdev *sd, unsigned int idx, \
 			enum v4l2_mbus_pixelcode *code)
 {
 	struct ecs_property *prop_fmt = NULL;
-	struct x_subdev *xsd = get_subdev(sd);
+	struct x_subdev *xsd = to_xsd(sd);
 	struct ecs_sensor *snsr = xsd->ecs;
 	int *enum_map;
 
@@ -163,12 +237,11 @@ int ecs_subdev_enum_fmt(struct v4l2_subdev *sd, unsigned int idx, \
 	*code = enum_map[idx*2];
 	return 0;
 }
-EXPORT_SYMBOL(ecs_subdev_enum_fmt);
 
-int ecs_subdev_enum_fsize(struct v4l2_subdev *sd, \
+static int xsd_enum_fsize(struct v4l2_subdev *sd, \
 				struct v4l2_frmsizeenum *fsize)
 {
-	struct x_subdev *xsd = get_subdev(sd);
+	struct x_subdev *xsd = to_xsd(sd);
 	struct ecs_sensor *snsr = xsd->ecs;
 	int *enum_map;
 	struct v4l2_mbus_framefmt *state_map = NULL;
@@ -197,11 +270,10 @@ code_found:
 	fsize->discrete.height = state_map->height;
 	return 0;
 }
-EXPORT_SYMBOL(ecs_subdev_enum_fsize);
 
-int ecs_subdev_try_fmt(struct v4l2_subdev *sd, struct v4l2_mbus_framefmt *mf)
+static int xsd_try_fmt(struct v4l2_subdev *sd, struct v4l2_mbus_framefmt *mf)
 {
-	struct x_subdev *xsd = get_subdev(sd);
+	struct x_subdev *xsd = to_xsd(sd);
 	struct ecs_sensor *snsr;
 	int *enum_map;
 	struct v4l2_mbus_framefmt *state_map = NULL;
@@ -228,13 +300,12 @@ code_found:
 	}
 	return -EPERM;
 }
-EXPORT_SYMBOL(ecs_subdev_try_fmt);
 
-int ecs_subdev_set_fmt(struct v4l2_subdev *sd, struct v4l2_mbus_framefmt *mf)
+static int xsd_set_fmt(struct v4l2_subdev *sd, struct v4l2_mbus_framefmt *mf)
 {
-	struct x_subdev *xsd = get_subdev(sd);
+	struct x_subdev *xsd = to_xsd(sd);
 	struct ecs_sensor *snsr;
-	int state = ecs_subdev_try_fmt(sd, mf);
+	int state = xsd_try_fmt(sd, mf);
 
 	if (state < 0)
 		return state;
@@ -244,12 +315,11 @@ int ecs_subdev_set_fmt(struct v4l2_subdev *sd, struct v4l2_mbus_framefmt *mf)
 
 	return ecs_set_state(snsr, state);
 }
-EXPORT_SYMBOL(ecs_subdev_set_fmt);
 
-int ecs_subdev_get_fmt(struct v4l2_subdev *sd, struct v4l2_mbus_framefmt *mf)
+static int xsd_get_fmt(struct v4l2_subdev *sd, struct v4l2_mbus_framefmt *mf)
 {
 	const struct ecs_property *prop;
-	struct x_subdev *xsd = get_subdev(sd);
+	struct x_subdev *xsd = to_xsd(sd);
 	struct ecs_sensor *snsr;
 
 	if ((xsd == NULL) || (xsd->ecs == NULL))
@@ -268,11 +338,10 @@ int ecs_subdev_get_fmt(struct v4l2_subdev *sd, struct v4l2_mbus_framefmt *mf)
 	(*xsd->get_res_desc)(xsd, prop->value_now, mf);
 	return 0;
 }
-EXPORT_SYMBOL(ecs_subdev_get_fmt);
 
-int ecs_subdev_set_stream(struct v4l2_subdev *sd, int enable)
+static int xsd_set_stream(struct v4l2_subdev *sd, int enable)
 {
-	struct x_subdev *xsd = get_subdev(sd);
+	struct x_subdev *xsd = to_xsd(sd);
 	struct ecs_sensor *snsr;
 	struct ecs_state_cfg cfg;
 
@@ -285,9 +354,8 @@ int ecs_subdev_set_stream(struct v4l2_subdev *sd, int enable)
 
 	return ecs_set_list(snsr, &cfg, 1);
 }
-EXPORT_SYMBOL(ecs_subdev_set_stream);
 
-void ecs_subdev_default_get_fmt_code(const struct x_subdev *xsd, \
+void xsd_default_get_fmt_code(const struct x_subdev *xsd, \
 				int fmt_value, struct v4l2_mbus_framefmt *mf)
 {
 	struct ecs_sensor *snsr = xsd->ecs;
@@ -298,9 +366,9 @@ void ecs_subdev_default_get_fmt_code(const struct x_subdev *xsd, \
 	mf->colorspace = info->clrspc;
 	mf->field = info->field;
 }
-EXPORT_SYMBOL(ecs_subdev_default_get_fmt_code);
+EXPORT_SYMBOL(xsd_default_get_fmt_code);
 
-void ecs_subdev_default_get_res_desc(const struct x_subdev *xsd, \
+void xsd_default_get_res_desc(const struct x_subdev *xsd, \
 				int res_value, struct v4l2_mbus_framefmt *mf)
 {
 	struct ecs_sensor *snsr = xsd->ecs;
@@ -310,95 +378,17 @@ void ecs_subdev_default_get_res_desc(const struct x_subdev *xsd, \
 	mf->width = info->h_act;
 	mf->height = info->v_act;
 }
-EXPORT_SYMBOL(ecs_subdev_default_get_res_desc);
+EXPORT_SYMBOL(xsd_default_get_res_desc);
 
-int xsd_s_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
-{
-	struct x_subdev *xsd = get_subdev(sd);
-	int i, ret = 0;
-
-	if (ctrl->id < V4L2_CID_PRIVATE_BASE) {
-		/* predefined CID*/
-		return v4l2_subdev_s_ctrl(sd, ctrl);
-	} else {/* handle private controls */
-		struct ecs_state_cfg list;
-		struct ecs_property *prop = NULL;
-
-		/* find prop*/
-		for (i = 0; i < xsd->cid_cnt; i++) {
-			struct xsd_cid *xlate = xsd->cid_list + i;
-			if (ctrl->id == xlate->cid) {
-				if (xlate->prop.prop_id >= xsd->ecs->prop_num)
-					return -ENXIO;
-				prop = xsd->ecs->prop_tab + xlate->prop.prop_id;
-				break;
-			}
-		}
-		x_log(2, "set CID 0x%08X => set %s", ctrl->id, prop->name);
-		list.prop_id = prop->id;
-		list.prop_val = ctrl->value;
-		ret = ecs_set_list(xsd->ecs, &list, 1);
-		ret = (ret > 0) ? 0 : ret;
-	}
-	return ret;
-}
-EXPORT_SYMBOL(xsd_s_ctrl);
-
-int xsd_g_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
-{
-	struct x_subdev *xsd = get_subdev(sd);
-	int i, ret = 0;
-
-	if (ctrl->id < V4L2_CID_PRIVATE_BASE) {
-		/* predefined CID*/
-		return v4l2_subdev_g_ctrl(sd, ctrl);
-	} else {/* handle private controls */
-		struct ecs_property *prop = NULL;
-		void *ptr;
-
-		/* find prop*/
-		for (i = 0; i < xsd->cid_cnt; i++) {
-			struct xsd_cid *xlate = xsd->cid_list + i;
-			if (ctrl->id == xlate->cid) {
-				if (xlate->prop.prop_id >= xsd->ecs->prop_num)
-					return -ENXIO;
-				prop = xsd->ecs->prop_tab + xlate->prop.prop_id;
-				break;
-			}
-		}
-		x_log(2, "get CID 0x%08X => get %s", ctrl->id, prop->name);
-		ret = ecs_get_info(xsd->ecs, prop->id, &ptr);
-		if (ret < 0)
-			return ret;
-
-		if (ptr == NULL)
-			/* no info for this property, return value instead */
-			ctrl->value = prop->value_now;
-		else
-			ctrl->value = (__s32)ptr;
-	}
-	return 0;
-}
-EXPORT_SYMBOL(xsd_g_ctrl);
-
-static int xsd_pub_s_ctrl(struct v4l2_ctrl *ctrl)
+static int xsd_s_ctrl(struct v4l2_ctrl *ctrl)
 {
 	struct x_subdev *xsd = container_of(ctrl->handler, struct x_subdev, \
 								ctrl_handler);
 	struct ecs_property *prop = NULL;
 	struct ecs_state_cfg list;
-	int i, ret;
+	int ret;
 
-	/* find prop*/
-	for (i = 0; i < xsd->cid_cnt; i++) {
-		struct xsd_cid *xlate = xsd->cid_list + i;
-		if (ctrl->id == xlate->cid) {
-			if (xlate->prop.prop_id >= xsd->ecs->prop_num)
-				return -ENXIO;
-			prop = xsd->ecs->prop_tab + xlate->prop.prop_id;
-			break;
-		}
-	}
+	prop = ctrl->priv;
 	x_log(2, "set %s => set %s", v4l2_ctrl_get_name(ctrl->id), prop->name);
 	list.prop_id = prop->id;
 	list.prop_val = ctrl->val;
@@ -409,70 +399,87 @@ static int xsd_pub_s_ctrl(struct v4l2_ctrl *ctrl)
 }
 
 static const struct v4l2_ctrl_ops xsd_ctrl_ops = {
-	.s_ctrl = xsd_pub_s_ctrl,
+	.s_ctrl = xsd_s_ctrl,
 };
 
 static int xsd_reg_cid(struct x_subdev *xsd)
 {
-	int i, ret = 0;
+	int ret, i;
 
 	/* setup v4l2 controls */
-	v4l2_ctrl_handler_init(&xsd->ctrl_handler, 0);
+	v4l2_ctrl_handler_init(&xsd->ctrl_handler, xsd->cid_cnt);
 	xsd->subdev.ctrl_handler = &xsd->ctrl_handler;
 
 	/* Only register public CID, using CID proceed routine */
 	for (i = 0; i < xsd->cid_cnt; i++) {
 		struct xsd_cid *xlate = xsd->cid_list + i;
 		struct ecs_property *prop = NULL;
+		struct v4l2_ctrl_config *cfg = xlate->cfg;
 
-		if (xlate->cid >= V4L2_CID_PRIVATE_BASE)
-			continue;
-		if (xlate->prop.prop_id >= xsd->ecs->prop_num)
-			return -ENXIO;
+		if (xlate->prop.prop_id >= xsd->ecs->prop_num) {
+			ret = -ENXIO;
+			goto err;
+		}
 		prop = xsd->ecs->prop_tab + xlate->prop.prop_id;
-		x_inf(2, "CID<%s> link to prop %s", \
+		if (cfg == NULL) {
+			struct v4l2_ctrl *ctrl;
+			x_inf(2, "link CID<%s> to property %s",
 				v4l2_ctrl_get_name(xlate->cid), prop->name);
-		v4l2_ctrl_new_std(&xsd->ctrl_handler, &xsd_ctrl_ops, xlate->cid,
-				0, prop->stn_num, 1, xlate->prop.prop_val);
+			ctrl = v4l2_ctrl_new_std(&xsd->ctrl_handler,
+				&xsd_ctrl_ops, xlate->cid, 0, prop->stn_num,
+				1, xlate->prop.prop_val);
+			ctrl->priv = prop;
+		} else {
+			x_inf(2, "link CID<%08X> to property %s", \
+				cfg->id, prop->name);
+			if (cfg->ops == NULL)
+				cfg->ops = &xsd_ctrl_ops;
+			v4l2_ctrl_new_custom(&xsd->ctrl_handler, cfg, prop);
+		}
 	}
 
 	if (xsd->ctrl_handler.error) {
 		ret = xsd->ctrl_handler.error;
-		x_inf(2, "register failed with err: %d", ret);
-		v4l2_ctrl_handler_free(&xsd->ctrl_handler);
+		x_inf(2, "failed to register one or more CID: %d", ret);
+		goto err;
 	}
+
+	return 0;
+err:
+	v4l2_ctrl_handler_free(&xsd->ctrl_handler);
 	return ret;
 }
 
-int xsd_init(struct v4l2_subdev *sd, u32 val)
+static int xsd_init(struct v4l2_subdev *sd, u32 val)
 {
-	struct x_subdev *xsd = get_subdev(sd);
+	struct x_subdev *xsd = to_xsd(sd);
 	struct ecs_sensor *snsr = xsd->ecs;
 	struct ecs_state_cfg cfg = {xsd->init_id, 1};
+	int ret = 0;
 
-	/* Initialize: global init */
 	ecs_sensor_reset(snsr);
-	return ecs_set_list(snsr, &cfg, 1);
-	return 0;
+	/* Initialize: global init */
+	ret = ecs_set_list(snsr, &cfg, 1);
+	if (ret < 0)
+		return ret;
+	return v4l2_ctrl_handler_setup(&xsd->ctrl_handler);
 }
-EXPORT_SYMBOL(xsd_init);
 
-int xsd_g_chip_ident(struct v4l2_subdev *sd,
+static int xsd_g_chip_ident(struct v4l2_subdev *sd,
 				   struct v4l2_dbg_chip_ident *id)
 {
-	struct x_subdev *xsd = get_subdev(sd);
+	struct x_subdev *xsd = to_xsd(sd);
 
 	id->ident = xsd->model;
 	id->revision = 0;
 	return 0;
 }
-EXPORT_SYMBOL(xsd_g_chip_ident);
 
 #ifdef CONFIG_VIDEO_ADV_DEBUG
 static int xsd_g_register(struct v4l2_subdev *sd,
 				 struct v4l2_dbg_register *reg)
 {
-	struct x_subdev *xsd = get_subdev(sd);
+	struct x_subdev *xsd = to_xsd(sd);
 	struct x_i2c *xic = xsd->ecs->hw_ctx;
 	return (*xic->read)(xic, (u16) reg->reg, (unsigned char *)&(reg->val));
 }
@@ -480,7 +487,7 @@ static int xsd_g_register(struct v4l2_subdev *sd,
 static int xsd_s_register(struct v4l2_subdev *sd,
 				 struct v4l2_dbg_register *reg)
 {
-	struct x_subdev *xsd = get_subdev(sd);
+	struct x_subdev *xsd = to_xsd(sd);
 	struct x_i2c *xic = xsd->ecs->hw_ctx;
 	return (*xic->write)(xic, (u16) reg->reg, (unsigned char)reg->val);
 }
@@ -490,18 +497,28 @@ static int xsd_s_register(struct v4l2_subdev *sd,
 static int ecs_g_mbus_config(struct v4l2_subdev *sd,
 				struct v4l2_mbus_config *cfg)
 {
-	cfg->type = V4L2_MBUS_CSI2;
+	struct x_subdev *xsd = to_xsd(sd);
+	struct ecs_sensor *snsr = xsd->ecs;
+	void *pdsc;
+	int ret;
+
+	if (xsd->ifc_id != UNSET) {
+		ret = ecs_get_info(snsr, xsd->ifc_id, (void **)(&pdsc));
+		if (ret)
+			return ret;
+	}
+	if (*xsd->get_mbus_cfg) {
+		return (*xsd->get_mbus_cfg)(pdsc, cfg);
+	} else {
+		x_inf(2, "mbus config function not defined here, assume DVP\n");
+		cfg->type = V4L2_MBUS_PARALLEL;
+		cfg->flags = 0;
+	}
+
 	return 0;
 }
 
-struct v4l2_subdev_core_ops ecs_subdev_core_ops = {
-	.queryctrl		= v4l2_subdev_queryctrl,
-	.querymenu		= v4l2_subdev_querymenu,
-	.g_ext_ctrls		= v4l2_subdev_g_ext_ctrls,
-	.s_ext_ctrls		= v4l2_subdev_s_ext_ctrls,
-	.try_ext_ctrls		= v4l2_subdev_try_ext_ctrls,
-	.g_ctrl			= xsd_g_ctrl,
-	.s_ctrl			= xsd_s_ctrl,
+static struct v4l2_subdev_core_ops xsd_core_ops = {
 	.init			= xsd_init,
 	.g_chip_ident		= xsd_g_chip_ident,
 #ifdef CONFIG_VIDEO_ADV_DEBUG
@@ -510,17 +527,177 @@ struct v4l2_subdev_core_ops ecs_subdev_core_ops = {
 #endif
 };
 
-struct v4l2_subdev_video_ops ecs_subdev_video_ops = {
-	.s_stream		= &ecs_subdev_set_stream,
-	.g_mbus_fmt		= &ecs_subdev_get_fmt,
-	.s_mbus_fmt		= &ecs_subdev_set_fmt,
-	.try_mbus_fmt		= &ecs_subdev_try_fmt,
-	.enum_mbus_fmt		= &ecs_subdev_enum_fmt,
-	.enum_mbus_fsizes	= &ecs_subdev_enum_fsize,
+static struct v4l2_subdev_video_ops xsd_video_ops = {
+	.s_stream		= &xsd_set_stream,
+	.g_mbus_fmt		= &xsd_get_fmt,
+	.s_mbus_fmt		= &xsd_set_fmt,
+	.try_mbus_fmt		= &xsd_try_fmt,
+	.enum_mbus_fmt		= &xsd_enum_fmt,
+	.enum_mbus_fsizes	= &xsd_enum_fsize,
 	.g_mbus_config		= ecs_g_mbus_config,
 };
 
-struct v4l2_subdev_ops ecs_subdev_ops = {
-	.core	= &ecs_subdev_core_ops,
-	.video	= &ecs_subdev_video_ops,
+static struct v4l2_subdev_ops xsd_ops = {
+	.core	= &xsd_core_ops,
+	.video	= &xsd_video_ops,
 };
+
+static struct i2c_device_id ecs_subdev_idtable[XSD_DRV_COUNT] = {
+	[0] = {"ecs-subdev", 0},
+	/* more to add by sensor driver */
+};
+MODULE_DEVICE_TABLE(i2c, ecs_subdev_idtable);
+static struct xsd_driver_id xsd_driver_table[XSD_DRV_COUNT];
+/* Used to index xsd driver table AND xsd idtable */
+static int xsd_drv_cnt = 1;	/* the [0] slot is reserved for "ecs-subdev" */
+
+int xsd_add_driver(const struct xsd_driver_id *ecs_drv)
+{
+	int i = 0;
+
+	while (ecs_drv[i].prototype != NULL) {
+		const struct xsd_driver_id *xid = ecs_drv + i;
+		strncpy(ecs_subdev_idtable[xsd_drv_cnt].name, \
+			xid->name, I2C_NAME_SIZE);
+		ecs_subdev_idtable[xsd_drv_cnt].driver_data = xid->driver_data;
+		xsd_driver_table[xsd_drv_cnt].prototype = xid->prototype;
+		xsd_driver_table[xsd_drv_cnt].spec_list = xid->spec_list;
+		xsd_driver_table[xsd_drv_cnt].spec_cnt = xid->spec_cnt;
+
+		x_inf(2, "add driver<%d> '%s'", xsd_drv_cnt, \
+			ecs_subdev_idtable[xsd_drv_cnt].name);
+		xsd_drv_cnt++;
+		if (xsd_drv_cnt >= XSD_DRV_COUNT) {
+			x_inf(0, "xsd: driver slot full");
+			break;
+		}
+		i++;
+	}
+	return i;
+}
+EXPORT_SYMBOL(xsd_add_driver);
+
+int xsd_del_driver(const struct xsd_driver_id *ecs_drv)
+{
+	int i;
+	const char *name = ecs_drv->name;
+
+	if (name == NULL || strlen(name) == 0)
+		return -EINVAL;
+	for (i = 1; i < xsd_drv_cnt; i++) {
+		if (!strcmp(ecs_subdev_idtable[i].name, name))
+			break;
+	}
+	if (i <= 1 || i >= xsd_drv_cnt)
+		return -ENXIO;
+
+	/* driver found, move the last driver to the slot which is taken by the
+	 * removed driver */
+	memcpy(ecs_subdev_idtable + i, ecs_subdev_idtable + xsd_drv_cnt - 1,
+		sizeof(struct i2c_device_id));
+	memcpy(xsd_driver_table + i, xsd_driver_table + xsd_drv_cnt - 1,
+		sizeof(struct xsd_driver_id));
+	xsd_drv_cnt--;
+	return 0;
+}
+EXPORT_SYMBOL(xsd_del_driver);
+
+static struct list_head xsd_dev_list = LIST_HEAD_INIT(xsd_dev_list);
+
+static int ecs_subdev_probe(struct i2c_client *client,
+			const struct i2c_device_id *did)
+{
+	struct x_subdev *xsd, *prototype;
+	struct x_i2c *xic;
+	struct i2c_adapter *adapter = to_i2c_adapter(client->dev.parent);
+	char *prof_name;
+	int drv_id = did - ecs_subdev_idtable;
+	int ret;
+
+	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_WORD_DATA)) {
+		dev_warn(&adapter->dev,
+			 "I2C-Adapter doesn't support I2C_FUNC_SMBUS_WORD\n");
+		return -EIO;
+	}
+
+	if (drv_id <= 0 || drv_id >= xsd_drv_cnt) {
+		x_inf(1, "sensor driver not found in xsd driver list");
+		return -ENOENT;
+	}
+	prototype = xsd_driver_table[drv_id].prototype;
+
+	/* attach i2c_client to xic */
+	xic = prototype->ecs->hw_ctx;
+	xic->client = client;
+	ret = (*xic->detect)(xic);
+	if (ret) {
+		dev_err(&client->dev, "%s sensor NOT detected\n", did->name);
+		return ret;
+	}
+	dev_err(&client->dev, "sensor %s detected\n", did->name);
+
+	xsd = devm_kzalloc(&client->dev, sizeof(struct x_subdev), GFP_KERNEL);
+	if (!xsd) {
+		dev_err(&client->dev, "Failed to allocate ecs_subdev data!\n");
+		return -ENOMEM;
+	}
+
+	/* setup generic driver based on prototype */
+	memcpy(xsd, prototype, sizeof(*xsd));
+	/* initialize ecs_subdev, and maybe customize it by profile name */
+	prof_name = (xsd->get_profile) ? \
+		(*xsd->get_profile)(client) : NULL;
+	ret = xsd_dev_setup(xsd, prof_name, \
+				xsd_driver_table[drv_id].spec_list, \
+				xsd_driver_table[drv_id].spec_cnt);
+	if (ret < 0)
+		return ret;
+	/* link xsd to i2c_client */
+	v4l2_i2c_subdev_init(&xsd->subdev, client, xsd->ops);
+	ret = xsd_reg_cid(xsd);
+	if (ret < 0) {
+		x_inf(1, "v4l2_controls setup error: %d", ret);
+		return ret;
+	}
+
+	if (prof_name == NULL)
+		prof_name = "generic";
+	sprintf(xsd->name, "%s-%s", did->name, prof_name);
+	x_inf(2, "'%s' is created", xsd->name);
+
+	list_add(&xsd->hook, &xsd_dev_list);	/* accept this device */
+	return ret;
+}
+
+static int ecs_subdev_remove(struct i2c_client *client)
+{
+	struct x_subdev *xsd = container_of(i2c_get_clientdata(client), \
+					struct x_subdev, subdev);
+	struct x_subdev *xsd_ptr;
+
+	/* clear xsd in xsd dev list */
+	list_for_each_entry(xsd_ptr, &xsd_dev_list, hook) {
+		if (xsd_ptr == xsd) {
+			list_del_init(&xsd_ptr->hook);
+			break;
+		}
+	}
+	xsd_dev_clean(xsd);
+	devm_kfree(&client->dev, xsd);
+	return 0;
+}
+
+static struct i2c_driver ecs_subdev_driver = {
+	.driver = {
+		.name = "ecs-subdev",
+	},
+	.probe		= ecs_subdev_probe,
+	.remove		= ecs_subdev_remove,
+	.id_table	= ecs_subdev_idtable,
+};
+
+module_i2c_driver(ecs_subdev_driver);
+
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Jiaquan Su <jqsu@marvell.com>");
+MODULE_DESCRIPTION("ECS V4L2_subdev-style Camera Sensor Driver");

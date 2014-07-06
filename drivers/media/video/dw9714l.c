@@ -21,6 +21,7 @@
 #include <media/v4l2-device.h>
 #include <linux/regulator/machine.h>
 #include <linux/gpio.h>
+#include <linux/delay.h>
 struct dw9714l {
 	struct v4l2_subdev subdev;
 	/* Controls */
@@ -116,7 +117,8 @@ static int dw9714l_subdev_open(struct v4l2_subdev *sd,
 		return -EBUSY;
 	core->openflag = 1;
 	vcm_power(core, 1);
-
+	usleep_range(12000, 12000);
+	v4l2_ctrl_handler_setup(&core->ctrls);
 	return 0;
 }
 static const struct v4l2_ctrl_ops dw9714l_ctrl_ops = {
@@ -130,7 +132,7 @@ static int dw9714l_init_controls(struct dw9714l *vcm)
 	v4l2_ctrl_handler_init(&vcm->ctrls, 1);
 	/* V4L2_CID_FOCUS_ABSOLUTE */
 	ctrl = v4l2_ctrl_new_std(&vcm->ctrls, &dw9714l_ctrl_ops,
-				 V4L2_CID_FOCUS_ABSOLUTE, 0, (1<<16)-1, 1, 0);
+			 V4L2_CID_FOCUS_ABSOLUTE, 0, (1<<16)-1, 1, 0x8000);
 	if (ctrl != NULL)
 		ctrl->flags |= V4L2_CTRL_FLAG_VOLATILE;
 	vcm->subdev.ctrl_handler = &vcm->ctrls;
@@ -191,6 +193,7 @@ static int __devinit dw9714l_probe(struct i2c_client *client,
 		pwdn = gpio_get_value(vcm->pwdn_gpio);
 		gpio_direction_output(vcm->pwdn_gpio, pdata->pwdn_en);
 	}
+	usleep_range(12000, 12000);
 	if (dw9714l_read(client, &vcmid)) {
 		printk(KERN_ERR "VCM: DW9714L vcm detect failure!\n");
 		goto out_pwdn;
@@ -210,7 +213,6 @@ static int __devinit dw9714l_probe(struct i2c_client *client,
 	ret = media_entity_init(&vcm->subdev.entity, 0, NULL, 0);
 	if (ret < 0)
 		goto out;
-	v4l2_ctrl_handler_setup(&vcm->ctrls);
 	printk(KERN_INFO "dw9714l detected!\n");
 	return 0;
 

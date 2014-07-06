@@ -69,8 +69,13 @@
 #define MMS_TS_PROC_FILE	"driver/mms_ts"
 #define TS_MAX_Z_TOUCH			255
 #define TS_MAX_W_TOUCH		100
+#if defined(CONFIG_MACH_HARRISON)
+#define TS_MAX_X_COORD		1024
+#define TS_MAX_Y_COORD		600
+#else
 #define TS_MAX_X_COORD		480
 #define TS_MAX_Y_COORD		800
+#endif
 #ifdef SEC_TSP
 #define P5_THRESHOLD			0x05
 //#define TS_READ_REGS_LEN		5
@@ -83,13 +88,18 @@ static int FW_VERSION;
 #define PRESS_KEY					1
 #define RELEASE_KEY					0
 #define SET_DOWNLOAD_BY_GPIO	1
-#if defined(CONFIG_MACH_ARUBA_DUOS_CTC) || defined(CONFIG_MACH_ARUBA_OPEN) || defined(CONFIG_MACH_ARUBA_TD)
+#if defined(CONFIG_MACH_ARUBA_DUOS_CTC) || defined(CONFIG_MACH_ARUBA_OPEN) || defined(CONFIG_MACH_ARUBA_TD) \
+	|| defined(CONFIG_MACH_WARUBA) || defined(CONFIG_MACH_HARRISON) || defined(CONFIG_MACH_HELANDELOS) || defined(CONFIG_MACH_CS02) || defined(CONFIG_MACH_CS05)
 #define SET_DOWNLOAD_CONFIG		1
 //#define SET_DOWNLOAD_ISP   
 #endif
 
 #define TS_READ_VERSION_ADDR		0x1B
+#if defined(CONFIG_MACH_HARRISON)
+#define DOWNLOAD_RETRY_CNT		0
+#else
 #define DOWNLOAD_RETRY_CNT		1
+#endif
 #define MIP_CONTACT_ON_EVENT_THRES	0x05
 #define MIP_MOVING_EVENT_THRES		0x06
 #define MIP_ACTIVE_REPORT_RATE		0x07
@@ -104,7 +114,8 @@ static int FW_VERSION;
 #define MIP_PUBLICCUSTOM_VERSION		0xF5
 #define MIP_PRODUCT_CODE				0xF6
 #ifdef SEC_TSP_FACTORY_TEST
-#if defined(CONFIG_MACH_ARUBA_DUOS_CTC) || defined(CONFIG_MACH_ARUBA_OPEN) || defined(CONFIG_MACH_ARUBA_TD)
+#if defined(CONFIG_MACH_ARUBA_DUOS_CTC) || defined(CONFIG_MACH_ARUBA_OPEN) || defined(CONFIG_MACH_ARUBA_TD) \
+	|| defined(CONFIG_MACH_WARUBA) || defined(CONFIG_MACH_HARRISON) || defined(CONFIG_MACH_HELANDELOS) || defined(CONFIG_MACH_CS02) || defined(CONFIG_MACH_CS05)
 #define TX_NUM		20
 #define RX_NUM		12
 #define NODE_NUM	240 /* 20x12 */
@@ -161,12 +172,17 @@ int touch_is_pressed;
 static int tsp_testmode;
 static int index;
 static int gMenuKey_Intensity, gBackKey_Intensity;
+#if defined(CONFIG_MACH_HELANDELOS) ||defined(CONFIG_MACH_CS05)
+static int before_gMenuKey_Intensity, before_gBackKey_Intensity;
+static int gMenuKey_state=0,gBackKey_state=0,gMenuKey_show=1,gBackKey_show=1;
+#endif
 extern unsigned int board_hw_revision;
 extern unsigned char TSP_PanelVersion;
 extern unsigned char TSP_PhoneVersion;
-extern unsigned char TSP_CorePanelVersion, TSP_CorePhoneVersion,TSP_type;
+extern unsigned char TSP_CorePanelVersion, TSP_CorePhoneVersion,TSP_type,TSP_force_update;
 
-#if defined(CONFIG_MACH_ARUBA_DUOS_CTC) || defined(CONFIG_MACH_ARUBA_OPEN) || defined(CONFIG_MACH_KYLE_DUOS_CTC) || defined(CONFIG_MACH_ARUBA_TD)
+#if defined(CONFIG_MACH_ARUBA_DUOS_CTC) || defined(CONFIG_MACH_ARUBA_OPEN) || defined(CONFIG_MACH_KYLE_DUOS_CTC) || defined(CONFIG_MACH_ARUBA_TD) || defined(CONFIG_MACH_WARUBA) \
+	|| defined(CONFIG_MACH_HARRISON) || defined(CONFIG_MACH_HELANDELOS) || defined(CONFIG_MACH_CS02) || defined(CONFIG_MACH_CS05)
 #define MAX_RX_	12
 #define MAX_TX_	20
 static const uint16_t SCR_ABS_UPPER_SPEC[MAX_RX_][MAX_TX_] = {
@@ -405,6 +421,14 @@ static struct muti_touch_info g_Mtouch_info[MELFAS_MAX_TOUCH];
 #define TOUCH_ON  1
 #define TOUCH_OFF 0
 static struct regulator *touch_regulator_3v0 =  NULL;
+#if defined(CONFIG_MACH_HARRISON)
+static struct regulator *touch_regulator_1v8 =  NULL;
+#endif
+#if defined(CONFIG_MACH_HELANDELOS) || defined(CONFIG_SPA) || defined(CONFIG_SPA_LPM_MODE)
+extern int spa_lpm_charging_mode_get();
+#else
+extern unsigned int lpcharge;
+#endif
 static void ts_power_enable(int en)
 {
 #if 0//defined(CONFIG_MACH_ARUBA_DUOS_CTC) || ( defined(CONFIG_MACH_ARUBA_CTC) && !defined(CONFIG_MACH_ARUBA_OPEN))|| defined(CONFIG_MACH_KYLE_DUOS_CTC)		
@@ -441,16 +465,44 @@ static void ts_power_enable(int en)
 			printk(KERN_ERR "%s: TSP disable success (%d)\n", __func__, rc);
 		}
 	}
-#else
-/*	gpio_request(TSP_PWR_LDO_GPIO, "tsp-power");
-	if (en) {
-		gpio_direction_output(TSP_PWR_LDO_GPIO, 1);
-	} else {
-		gpio_direction_output(TSP_PWR_LDO_GPIO, 0);
+#elif defined(CONFIG_MACH_CS02)
+	int ret=0;
+	static u8 is_power_on = 0;
+	printk("[TSP] %s, %d\n", __func__, en );
+
+	if(touch_regulator_3v0 == NULL) {
+		touch_regulator_3v0 = regulator_get(NULL,"v_tsp_3v3");
+		if (IS_ERR(touch_regulator_3v0)) {
+			touch_regulator_3v0 = NULL;
+			printk("get touch_regulator_3v0 regulator error\n");
+			return;
+		}
 	}
-	gpio_free(TSP_PWR_LDO_GPIO);
-#endif
-*/
+	if(en == TOUCH_ON) {
+		if (!is_power_on) {
+			is_power_on = 1;
+			regulator_set_voltage(touch_regulator_3v0, 3300000, 3300000);
+			ret = regulator_enable(touch_regulator_3v0);
+			if (ret) {
+				is_power_on = 0;
+				printk(KERN_ERR "%s: touch_regulator_3v3 enable failed (%d)\n",__func__, ret);
+			}
+		}
+	}
+	else
+	{
+		if (is_power_on) {
+			is_power_on = 0;
+			ret = regulator_disable(touch_regulator_3v0);
+			if (ret) {
+				is_power_on = 1;
+				printk(KERN_ERR "%s: touch_regulator_3v3 disable failed (%d)\n",__func__, ret);
+			}
+		}
+	}
+	pr_info("[TSP] %s, expected power[%d], actural power[%d]\n", __func__, en, is_power_on);
+
+#else
 	int ret=0;
 	static u8 is_power_on = 0;
 	printk("[TSP] %s, %d\n", __func__, en );
@@ -463,28 +515,56 @@ static void ts_power_enable(int en)
 			return;
 		}
 	}
-
+#if defined(CONFIG_MACH_HARRISON)
+	if(touch_regulator_1v8 == NULL) {
+		touch_regulator_1v8 = regulator_get(NULL,"v_tsp_1v8");
+		if (IS_ERR(touch_regulator_1v8)) {
+			touch_regulator_1v8 = NULL;
+			printk("get touch_regulator_1v8 regulator error\n");
+			return;
+		}
+	}
+#endif
 	if(en == TOUCH_ON) {
 		if (!is_power_on) {
 			is_power_on = 1;
-		regulator_set_voltage(touch_regulator_3v0, 3000000, 3000000);
-		ret = regulator_enable(touch_regulator_3v0);
-		if (ret) {
+#if defined(CONFIG_MACH_HARRISON)
+			regulator_set_voltage(touch_regulator_3v0, 2800000, 2800000);
+#else
+			regulator_set_voltage(touch_regulator_3v0, 3000000, 3000000);
+#endif
+			ret = regulator_enable(touch_regulator_3v0);
+			if (ret) {
 				is_power_on = 0;
-			printk(KERN_ERR "%s: touch_regulator_3v0 enable failed (%d)\n",__func__, ret);
+				printk(KERN_ERR "%s: touch_regulator_3v0 enable failed (%d)\n",__func__, ret);
+			}
+#if defined(CONFIG_MACH_HARRISON)
+			regulator_set_voltage(touch_regulator_1v8, 1800000, 1800000);
+			ret = regulator_enable(touch_regulator_1v8);
+			if (ret) {
+				is_power_on = 0;
+				printk(KERN_ERR "%s: touch_regulator_1v8 enable failed (%d)\n",__func__, ret);
+			}
+#endif
 		}
-	}
 	}
 	else
 	{
 		if (is_power_on) {
 			is_power_on = 0;
-		ret = regulator_disable(touch_regulator_3v0);
-		if (ret) {
+#if defined(CONFIG_MACH_HARRISON)
+			ret = regulator_disable(touch_regulator_1v8);
+			if (ret) {
 				is_power_on = 1;
-			printk(KERN_ERR "%s: touch_regulator_3v0 disable failed (%d)\n",__func__, ret);
-		}  
-	}
+				printk(KERN_ERR "%s: touch_regulator_1v8 disable failed (%d)\n",__func__, ret);
+			}
+#endif
+			ret = regulator_disable(touch_regulator_3v0);
+			if (ret) {
+				is_power_on = 1;
+				printk(KERN_ERR "%s: touch_regulator_3v0 disable failed (%d)\n",__func__, ret);
+			}
+		}
 	}
 	pr_info("[TSP] %s, expected power[%d], actural power[%d]\n", __func__, en, is_power_on);
 #endif
@@ -697,28 +777,37 @@ static void mms_ts_get_data(struct work_struct *work)
 				#if DEBUG_PRINT
 				printk("FingerID = %d\n",FingerID);
 				#endif
-				if(FingerID > MELFAS_MAX_TOUCH-1)
-					FingerID = MELFAS_MAX_TOUCH-1;
-				g_Mtouch_info[FingerID].posX = (uint16_t)(buf[i+1] & 0x0F) << 8 | buf[i+2];
-				g_Mtouch_info[FingerID].posY = (uint16_t)(buf[i+1] & 0xF0) << 4 | buf[i+3];
-				if ((buf[i] & 0x80) == 0)
-					g_Mtouch_info[FingerID].strength = 0;
+				if(FingerID < MELFAS_MAX_TOUCH){
+					g_Mtouch_info[FingerID].posX = (uint16_t)(buf[i+1] & 0x0F) << 8 | buf[i+2];
+					g_Mtouch_info[FingerID].posY = (uint16_t)(buf[i+1] & 0xF0) << 4 | buf[i+3];
+					if ((buf[i] & 0x80) == 0)
+						g_Mtouch_info[FingerID].strength = 0;
+					else
+						g_Mtouch_info[FingerID].strength = buf[i+4];
+					g_Mtouch_info[FingerID].width = buf[i+5];
+				}
 				else
-					g_Mtouch_info[FingerID].strength = buf[i+4];
-				g_Mtouch_info[FingerID].width = buf[i+5];
+				{
+					printk(KERN_ERR "%s : Finger Over Max:%d, Id:%d!!!\n", __func__,MELFAS_MAX_TOUCH, FingerID );
+				}
 			}
 			else if (touchType == TOUCH_KEY) {
 				keyID = (buf[i] & 0x0F);
 				touchState = (buf[i] & 0x80);
 				gMenuKey_Intensity = 0;
 				gBackKey_Intensity = 0;
-				#if DEBUG_PRINT
+				//#if DEBUG_PRINT
 				printk(KERN_ERR "[TSP] keyID : %d, touchstate : %d\n"
 							, keyID, touchState);
-				#endif
+				//#endif
 				if (keyID == 0x1) {
-					if (touchState)
+					if (touchState){
 						menu_pressed = 1;
+#if defined(CONFIG_MACH_HELANDELOS) || defined(CONFIG_MACH_CS05)
+						before_gMenuKey_Intensity = buf[i + 5];
+						gMenuKey_show=0;
+#endif
+					}
 					else
 						menu_pressed = 0;
 					gMenuKey_Intensity = buf[i + 5];
@@ -728,8 +817,13 @@ static void mms_ts_get_data(struct work_struct *work)
 					PRESS_KEY : RELEASE_KEY);
 				}
 				if (keyID == 0x2) {
-					if (touchState)
+					if (touchState){
 						back_pressed = 1;
+#if defined(CONFIG_MACH_HELANDELOS) || defined(CONFIG_MACH_CS05)
+						before_gBackKey_Intensity = buf[i + 5];
+						gBackKey_show=0;
+#endif
+					}
 					else
 						back_pressed = 0;
 					gBackKey_Intensity = buf[i + 5];
@@ -760,12 +854,12 @@ static void mms_ts_get_data(struct work_struct *work)
 			input_mt_slot(ts->input_dev, i);
 			input_mt_report_slot_state(ts->input_dev, MT_TOOL_FINGER, false);
 		}
-#if DEBUG_PRINT
+//#if DEBUG_PRINT
 		printk(KERN_ERR "[TSP] ID: %d, State : %d, x: %d, y: %d, z: %d w: %d\n",
 		i, (g_Mtouch_info[i].strength > 0),
 		g_Mtouch_info[i].posX, g_Mtouch_info[i].posY,
 		g_Mtouch_info[i].strength, g_Mtouch_info[i].width);
-#endif
+//#endif
 		if (g_Mtouch_info[i].strength == 0)
 			g_Mtouch_info[i].strength = -1;
 		if (g_Mtouch_info[i].strength > 0)
@@ -1020,9 +1114,9 @@ static struct attribute_group sec_touch_attr_group = {
 #ifdef TSP_FACTORY_TEST
 //static bool debug_print = true;
 //static u16 inspection_data[180] = { 0, };
-static u16 lntensity_data[180] = { 0, };
-static u16 CmDelta_data[228] = { 0, }; /* inspection */
-static u16 CmABS_data[228] = { 0, }; /* reference */
+static u16 lntensity_data[240] = { 0, };
+static u16 CmDelta_data[240] = { 0, }; /* inspection */
+static u16 CmABS_data[240] = { 0, }; /* reference */
 static ssize_t set_tsp_module_on_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	int ret;
@@ -1052,11 +1146,10 @@ static int check_debug_data(struct mms_ts_data *ts)
 //	u16 read_data_buf1[50] = {0,};
 	int sensing_ch, exciting_ch;
 	int ret, i, j, status=0;
-	int size;//,gpio;
+	int size;
 	tsp_testmode = 1;
 	printk(KERN_ERR "[TSP] %s entered. line : %d\n", __func__, __LINE__);
 	printk(KERN_ERR "[TSP] %s disable IRQ( %d)\n", __func__, __LINE__);
-//	gpio = irq_to_gpio(ts->client->irq);
 	disable_irq(ts->client->irq);
 	exciting_ch = TX_NUM;
 	sensing_ch = RX_NUM;
@@ -1136,12 +1229,10 @@ static int check_delta_data(struct mms_ts_data *ts)
 //	u16 read_data_buf1[50] = {0,};
 	int sensing_ch, exciting_ch;
 	int ret, i, j, status=0;
-//	int gpio;
 	int size;
 	printk(KERN_ERR "[TSP] %s entered. line : %d,\n", __func__, __LINE__);
 
 	printk(KERN_ERR "[TSP] %s disable IRQ( %d)\n", __func__, __LINE__);
-//	gpio = irq_to_gpio(ts->client->irq);
 	disable_irq(ts->client->irq);
 	exciting_ch = TX_NUM;
 	sensing_ch	 = RX_NUM;
@@ -1165,6 +1256,7 @@ static int check_delta_data(struct mms_ts_data *ts)
 	ret = mms_i2c_write(ts->client, setLowLevelData, 2);
 	while (gpio_get_value(TSP_INT))
 		;
+
 	ret = mms_i2c_read(ts->client, 0xAE, 1, read_data_buf);
 	for (i = 0; i < sensing_ch; i++) {
 		for (j = 0; j < exciting_ch; j++) {
@@ -1175,6 +1267,7 @@ static int check_delta_data(struct mms_ts_data *ts)
 			ret = mms_i2c_write(ts->client, setLowLevelData, 4);
 			while (gpio_get_value(TSP_INT))
 				;
+
 			ret = mms_i2c_read(ts->client, 0xAE,
 				1, read_data_buf);
 			size = read_data_buf[0];
@@ -1467,7 +1560,6 @@ static void TSP_reboot(void)
 	release_all_fingers(ts);
 
 	msleep(60);
-	
 	ts_power_enable(1);
 	msleep(60);
 
@@ -1599,13 +1691,12 @@ static ssize_t firmware_phone_show(struct device *dev,
 			struct device_attribute *attr, char *buf)
 {
 //	extern unsigned char TSP_PhoneVersion;
-//	int NEW_FIRMWARE_VERSION = TSP_PhoneVersion;
 	return sprintf(buf, "ME%02x%04x\n", TSP_type,TSP_CorePhoneVersion);
 }
 static ssize_t threshold_show(struct device *dev,
 			struct device_attribute *attr, char *buf)
 {
-	int threshold = 21; /*temp*/
+	int threshold = 23; /*temp*/
 	return snprintf(buf, sizeof(buf), "%d\n", threshold);
 }
 static ssize_t firmware_show(struct device *dev, struct device_attribute *attr, char *buf)
@@ -1672,7 +1763,7 @@ static ssize_t firmware_store(struct device *dev, struct device_attribute *attr,
 static ssize_t tsp_threshold_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
-	u8 threshold = 21;
+	u8 threshold = 30;
 	return snprintf(buf, sizeof(buf), "%d\n", threshold);
 }
 static ssize_t tsp_firm_update_status_show(struct device *dev,
@@ -1684,11 +1775,21 @@ static ssize_t tsp_firm_update_status_show(struct device *dev,
 static ssize_t touchkey_back_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
+#if defined(CONFIG_MACH_HELANDELOS)
+	gBackKey_show++;
+	if((gBackKey_state==0)&&(gBackKey_show==1))
+		return snprintf(buf, 10, "%d\n", before_gBackKey_Intensity);
+#endif
 	return snprintf(buf, 10, "%d\n", gBackKey_Intensity);
 }
 static ssize_t touchkey_menu_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
+#if defined(CONFIG_MACH_HELANDELOS)
+	gMenuKey_show++;
+	if((gMenuKey_state==0)&&(gMenuKey_show==1))
+		return snprintf(buf, 10, "%d\n", before_gMenuKey_Intensity);
+#endif	
 	return snprintf(buf, 10, "%d\n", gMenuKey_Intensity);
 }
 #if 0
@@ -1902,7 +2003,7 @@ static ssize_t touch_led_control(struct device *dev,
 		printk("touch_led_control Error\n");
 
 	return size;
-#elif defined(CONFIG_MACH_ARUBA_TD)
+#elif defined(CONFIG_MACH_ARUBA_TD) || defined(CONFIG_MACH_HELANDELOS)
 	unsigned char data;
 //	printk("touch_led_control start\n");
 //	printk( "touch_led_control data: %d\n", gpio_get_value(KEY_LED_GPIO));
@@ -2120,7 +2221,7 @@ static u32 get_raw_data_one(struct mms_ts_data *ts, u16 rx_idx, u16 tx_idx,
 		cmd != VSC_RAW_TK) {
 		dev_err(&ts->client->dev, "%s: not profer command(cmd=%d)\n",
 				__func__, cmd);
-		return FAIL;
+		return -1;
 	}
 	w_buf[2] = tx_idx;	/* tx */
 	w_buf[3] = rx_idx;	/* rx */
@@ -2140,7 +2241,7 @@ static u32 get_raw_data_one(struct mms_ts_data *ts, u16 rx_idx, u16 tx_idx,
 err_i2c:
 	dev_err(&ts->client->dev, "%s: fail to i2c (cmd=%d)\n",
 			__func__, cmd);
-	return FAIL;
+	return -1;
 }
 #endif
 static ssize_t show_close_tsp_test(struct device *dev,
@@ -2193,8 +2294,13 @@ static void fw_update(void *device_data)
 	struct mms_ts_data *ts = (struct mms_ts_data *)device_data;
 	struct i2c_client *client = ts->client;
 	int ret, i;
+	char buff[16] = {0};
 	
 	set_default_result(ts);
+	if (ts->cmd_param[0] == 1)
+	{
+		TSP_force_update = 1;
+	}
 	for (i = 0; i < DOWNLOAD_RETRY_CNT; i++) {
 #ifdef SET_DOWNLOAD_CONFIG
 #ifndef SET_DOWNLOAD_ISP
@@ -2205,6 +2311,8 @@ static void fw_update(void *device_data)
 		}
 		else{
 			printk(KERN_ERR "firmware up ok \n");
+			snprintf(buff, sizeof(buff), "%s", "OK");
+			set_cmd_result(ts, buff, strnlen(buff, sizeof(buff)));
 			ts->cmd_state = 2;
 			break;
 		}
@@ -2251,7 +2359,6 @@ static void get_fw_ver_bin(void *device_data)
 {
 //	extern unsigned char TSP_PhoneVersion;
 	struct mms_ts_data *ts = (struct mms_ts_data *)device_data;
-//	int NEW_FIRMWARE_VERSION = TSP_PhoneVersion;
 	char buff[16] = {0};
 	set_default_result(ts);
 	snprintf(buff, sizeof(buff), "ME%02x%04x", TSP_type,TSP_CorePhoneVersion);
@@ -2290,7 +2397,7 @@ static void get_threshold(void *device_data)
 {
 	struct mms_ts_data *ts = (struct mms_ts_data *)device_data;
 	char buff[16] = {0};
-	int threshold = 21;
+	int threshold = 30;
 	set_default_result(ts);
 	/*
 	mms_i2c_read(ts->client, P5_THRESHOLD, 1, &threshold);
@@ -2529,14 +2636,12 @@ static int check_delta_value(struct mms_ts_data *ts)
 	char buff[TSP_CMD_STR_LEN] = {0};
 	int sensing_ch, exciting_ch;
 	int ret, i, j, status=0;
-	int gpio;
 	int size;
 	u32 max_value, min_value;
 	u32 raw_data;
 	printk(KERN_ERR "[TSP] %s entered. line : %d,\n", __func__, __LINE__);
 
 	printk(KERN_ERR "[TSP] %s disable IRQ( %d)\n", __func__, __LINE__);
-//	gpio = irq_to_gpio(ts->client->irq);
 	disable_irq(ts->client->irq);
 	exciting_ch = TX_NUM;
 	sensing_ch = RX_NUM;
@@ -2560,6 +2665,7 @@ static int check_delta_value(struct mms_ts_data *ts)
 	ret = mms_i2c_write(ts->client, setLowLevelData, 2);
 	while (gpio_get_value(TSP_INT))
 		;
+
 	ret = mms_i2c_read(ts->client, 0xAE, 1, read_data_buf);
 	max_value = 0;
 	min_value = 0;
@@ -2572,6 +2678,7 @@ static int check_delta_value(struct mms_ts_data *ts)
 			ret = mms_i2c_write(ts->client, setLowLevelData, 4);
 			while (gpio_get_value(TSP_INT))
 				;
+
 			ret = mms_i2c_read(ts->client, 0xAE,
 				1, read_data_buf);
 			size = read_data_buf[0];
@@ -2633,12 +2740,10 @@ static void get_x_num(void *device_data)
 	struct mms_ts_data *ts = (struct mms_ts_data *)device_data;
 	char buff[16] = {0};
 	int val;
-	int exciting_ch;
 	set_default_result(ts);
 /*
 	val = i2c_smbus_read_byte_data(ts->client, 0xEF);
 */
-//	exciting_ch = g_exciting_ch;
 	val = TX_NUM;
 	if (val < 0) {
 		snprintf(buff, sizeof(buff), "%s", "NG");
@@ -2664,7 +2769,6 @@ static void get_y_num(void *device_data)
 /*
 	val = i2c_smbus_read_byte_data(ts->client, 0xEE);
 */
-//	sensing_ch = g_sensing_ch;
 	val = RX_NUM;
 	if (val < 0) {
 		snprintf(buff, sizeof(buff), "%s", "NG");
@@ -2869,21 +2973,21 @@ static ssize_t show_intensity_logging_on(struct device *dev,
 			nwrite = vfs_write(fp, (const char __user *)log_data,
 					strnlen(log_data, 160), &fp->f_pos);
 		}
-		usleep_range(5000);
+		usleep_range(5000,5000);
 	} while (intensity_log_flag);
 	filp_close(fp, current->files);
 	set_fs(old_fs);
 	return 0;
  open_err:
 	set_fs(old_fs);
-	return FAIL;
+	return -1;
 }
 static ssize_t show_intensity_logging_off(struct device *dev,
 		struct device_attribute *devattr, char *buf)
 {
 	struct mms_ts_data *ts = dev_get_drvdata(dev);
 	intensity_log_flag = 0;
-	usleep_range(10000);
+	usleep_range(10000,10000);
 	get_raw_data_all(ts, MMS_VSC_CMD_EXIT);
 	return 0;
 }
@@ -3203,10 +3307,13 @@ static ssize_t mms_ts_proc_write(struct file *filp,
 
 	return len;
 }
+
 //static int tsp_reboot_count;
+#if defined(CONFIG_MACH_ARUBA_TD) || defined(CONFIG_MACH_HELANDELOS) || defined(CONFIG_MACH_CS02)
 extern char* saved_command_line;
 static char* productionMode = "androidboot.bsp=2";
 static char* checkMode = NULL;
+#endif
 static int mms_ts_probe(struct i2c_client *client, const struct i2c_device_id *id)
 {
 #if 0
@@ -3226,11 +3333,19 @@ static int mms_ts_probe(struct i2c_client *client, const struct i2c_device_id *i
 
 	ts_power_enable(1);
 	msleep(60);
+#if defined(CONFIG_MACH_HELANDELOS) || defined(CONFIG_SPA) || defined(CONFIG_SPA_LPM_MODE)
+	if(spa_lpm_charging_mode_get())
+#else
+	if (lpcharge)
+#endif
+		goto err_check_functionality_failed;
 
+#if defined(CONFIG_MACH_ARUBA_TD) || defined(CONFIG_MACH_HELANDELOS) || defined(CONFIG_MACH_CS02)
 	checkMode = strstr(saved_command_line, productionMode);	
 
 	if(checkMode != NULL)
 		goto err_check_functionality_failed;
+#endif
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
 		printk(KERN_ERR "%s: need I2C_FUNC_I2C\n", __func__);
 		ret = -ENODEV;
@@ -3264,6 +3379,7 @@ static int mms_ts_probe(struct i2c_client *client, const struct i2c_device_id *i
 	if(!ret)
 	{
 		gpio_direction_input(TSP_INT);
+		gpio_set_value(TSP_INT, 1);
 	}
 	else
 	{
@@ -3271,9 +3387,11 @@ static int mms_ts_probe(struct i2c_client *client, const struct i2c_device_id *i
 	}	
 	gpio_request(TSP_SDA,"tsp_sda");
 	gpio_request(TSP_SCL,"tsp_scl");
+#if defined(CONFIG_MACH_ARUBA_TD)	
 	gpio_request(TSP_TYPE1,"tsp_type1");
 	gpio_request(TSP_TYPE2,"tsp_type2");
 	gpio_request(TSP_TYPE3,"tsp_type3");
+#endif
 #if 1
 	printk(KERN_ERR "%s: i2c_master_send() [%d], Add[%d]\n", __func__,
 		ret, ts->client->addr);
@@ -3297,7 +3415,7 @@ static int mms_ts_probe(struct i2c_client *client, const struct i2c_device_id *i
 		mdelay(30);
 		ts_power_enable(1);
 		mdelay(200);
-			
+		
 #ifdef SET_DOWNLOAD_ISP
 		ret = 	mms_flash_fw(client);//, mms_pdata);
 #else
@@ -3311,13 +3429,14 @@ static int mms_ts_probe(struct i2c_client *client, const struct i2c_device_id *i
 #else
 			ret = MFS_ISC_update();
 #endif
+
 		printk(KERN_ERR "mcsdl_download_binary_data : [%d]\n", ret);
 		if (ret != 0)
 			printk(KERN_ERR "SET Download Fail - error code [%d]\n", ret);
 		else
 			break;
 	}
-#endif
+#endif	
 	ts->input_dev = input_allocate_device();
 	if (!ts->input_dev) {
 		printk(KERN_ERR "%s: Not enough memory\n", __func__);
@@ -3326,6 +3445,8 @@ static int mms_ts_probe(struct i2c_client *client, const struct i2c_device_id *i
 	}
 	ts->input_dev->name = "sec_touchscreen" ;
 	ts->input_dev->evbit[0] = BIT_MASK(EV_ABS) | BIT_MASK(EV_KEY);
+	ts->input_dev->id.bustype = BUS_I2C;
+	ts->input_dev->dev.parent = &client->dev;
 
 	set_bit(INPUT_PROP_DIRECT, ts->input_dev->propbit);	//JB touch mode setting
 
@@ -3362,13 +3483,14 @@ static int mms_ts_probe(struct i2c_client *client, const struct i2c_device_id *i
 #endif
 		ret = request_threaded_irq(client->irq, NULL, mms_ts_irq_handler,
 						IRQF_TRIGGER_FALLING | IRQF_ONESHOT, ts->client->name, ts);
-	if (ret < 0) {
+	if (ret > 0) {
 		printk(KERN_ERR "%s: Can't allocate irq %d, ret %d\n",
 			__func__, ts->client->irq, ret);
 		ret = -EBUSY;
 		goto err_request_irq;
 	}
     }
+	ts->irq = client->irq;
 	for (i = 0; i < MELFAS_MAX_TOUCH ; i++)  /* _SUPPORT_MULTITOUCH_ */
 		g_Mtouch_info[i].strength = -1;
 
@@ -3423,7 +3545,13 @@ static int mms_ts_probe(struct i2c_client *client, const struct i2c_device_id *i
 	mutex_init(&ts->cmd_lock);
 	ts->cmd_is_running = false;
 	ts->cmd_state = 0;
+#if defined(CONFIG_MACH_ARUBA_TD)
 	ts->config_fw_version = "I8268_Me_";
+#elif defined(CONFIG_MACH_HELANDELOS)
+	ts->config_fw_version = "I8558_Me_";
+#elif defined(CONFIG_MACH_CS02)
+	ts->config_fw_version = "CS02_Me_";
+#endif
 	g_config_fw_version = ts->config_fw_version;
 	fac_dev_ts = device_create(sec_class,
 			NULL, 0, ts, "tsp");
@@ -3558,7 +3686,10 @@ static int mms_ts_probe(struct i2c_client *client, const struct i2c_device_id *i
 		pr_err("Failed to create device file(%s)!\n",
 				dev_attr_brightness.attr.name);
 	tsp_enabled = true;
-	pm_runtime_enable(&client->dev);
+	pm_runtime_enable(&client->dev);	
+	ret = pm_runtime_get_sync(&client->dev);
+	pm_runtime_put_sync_suspend(&client->dev);
+	pm_runtime_forbid(&client->dev);
 	return 0;
 #if 0
 	TSP_boost(ts, is_boost);
@@ -3608,9 +3739,7 @@ static int mms_ts_remove(struct i2c_client *client)
 }
 static int mms_ts_suspend(struct device *dev)
 {
-//	struct i2c_client *client = to_i2c_client(dev);
-//	struct mms_ts_data *ts = i2c_get_clientdata(client);
-//	int ret;
+
 	tsp_enabled = false;
 	printk(KERN_ERR "[TSP] %s disable IRQ( %d)\n", __func__, __LINE__);
 //	disable_irq(client->irq);
@@ -3621,8 +3750,6 @@ static int mms_ts_suspend(struct device *dev)
 }
 static int mms_ts_resume(struct device *dev)
 {
-	struct i2c_client *client = to_i2c_client(dev);
-	struct mms_ts_data *ts = i2c_get_clientdata(client);
 #if 0
 	bool ta_status = 0;
 #endif
@@ -3631,7 +3758,7 @@ static int mms_ts_resume(struct device *dev)
 	TSP_boost(ts, is_boost);
 #endif
 	ts_power_enable(1);
-
+	
 	msleep(50);
 	tsp_enabled = true;
 	printk(KERN_ERR "[TSP] %s enable IRQ( %d)\n", __func__, __LINE__);

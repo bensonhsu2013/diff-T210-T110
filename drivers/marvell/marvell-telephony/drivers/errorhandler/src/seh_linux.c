@@ -58,6 +58,8 @@
 
 #include <mach/regs-apmu.h>
 #include <mach/regs-mpmu.h>
+#include <mach/regs-apbc.h>
+#include <mach/pxa988.h>
 
 #include "seh_linux.h"
 #include "linux_driver_types.h"
@@ -69,7 +71,7 @@
 #include <mach/ramdump.h>
 #include <mach/ramdump_defs.h>
 #ifdef RAMDUMP_PHASE_1_1 /* comes from ramdump h-files above: backwards compatibility with older kernel */
-#define SEH_RAMDUMP_ENABLED 
+#define SEH_RAMDUMP_ENABLED
 #endif
 #endif
 unsigned short seh_open_count = 0;
@@ -172,6 +174,27 @@ static struct miscdevice ramfile_miscdev = {
 
 #define APMU_DEBUG_CP_HALT        (1 << 0)
 #define APMU_DEBUG_CP_CLK_OFF_ACK (1 << 3)
+
+void reset_ripc_lock(void)
+{
+	unsigned long flags;
+	int value;
+
+	printk("%s\n", __func__);
+	spin_lock_irqsave(&ripc_lock, flags);
+	if (!pxa988_ripc_status()) {
+		printk("%s: reset RIPC lock.\n", __func__);
+		/* reset RIPC lock */
+		value = __raw_readl(APBC_PXA988_RIPC);
+		value |= APBC_RST;
+		__raw_writel(value, APBC_PXA988_RIPC);
+		udelay(10);
+		value &= ~APBC_RST;
+		__raw_writel(value, APBC_PXA988_RIPC);
+	}
+	spin_unlock_irqrestore(&ripc_lock, flags);
+}
+
 /*
  * The top part for SEH interrupt handler.
  */
@@ -191,6 +214,7 @@ irqreturn_t seh_int_handler_low(int irq, void *dev_id)
 
 	wake_lock_timeout(&seh_wakeup, HZ * 10);
 	watchDogDeactive();
+	reset_ripc_lock();
 	printk("%s: APMU_DEBUG 0x%08x\n", __func__, __raw_readl(APMU_DEBUG));
 	printk("%s: APMU_CORE_STATUS 0x%08x\n", __func__, __raw_readl(APMU_CORE_STATUS));
 	printk("%s: MPMU_CPSR 0x%08x\n", __func__, __raw_readl(MPMU_CPSR));
@@ -268,7 +292,7 @@ int seh_api_ioctl_handler(unsigned long arg)
 			}
 		}
 		cp_holdcp();
-
+		reset_ripc_lock();
 		if (copy_to_user(&( (EehApiParams*)arg)->status, &status, sizeof(unsigned int)))
 			return -EFAULT;
 
@@ -339,6 +363,8 @@ int seh_api_ioctl_handler(unsigned long arg)
 			param.modemChipType = EEH_MODEM_CHIP_TYPE_PXA988;
 		else if(cpu_is_pxa986())
 			param.modemChipType = EEH_MODEM_CHIP_TYPE_PXA986;
+		else if(cpu_is_pxa1088()) /* FIXME: add 1088 support */
+			param.modemChipType = EEH_MODEM_CHIP_TYPE_PXA1T88;
 		else
 			param.modemChipType = EEH_MODEM_CHIP_TYPE_UNKNOWN;
 
@@ -615,9 +641,9 @@ static int seh_ioctl(struct inode *inode, struct file *filp,
 			}
 			bCpResetOnReq = true;
 			disable_irq(IRQ_COMM_WDT_ID);
-			cp_holdcp();
 			seh_dev->msg.msgId = EEH_CP_SILENT_RESET_MSG;
 			strcpy(seh_dev->msg.msgDesc, param.msgDesc);
+			seh_dev->msg.force = param.force;
 			up(&seh_dev->read_sem);
 			wake_up_interruptible(&seh_dev->readq);
 
@@ -719,7 +745,7 @@ static int seh_release(struct inode *inode, struct file *filp)
 	--seh_open_count;
 	spin_unlock(&seh_init_lock);
 	DPRINT("seh is closed by process id: %d(\"%s\")\n", current->tgid,current->comm);
-		
+
 	return 0;
 }
 
@@ -762,22 +788,22 @@ static int ramfile_mmap(struct file *file, struct vm_area_struct *vma)
 
 	/* Check we don't exhaust all system memory to prevent crash before EEH
 		is done with saving logs. Use the total free for now */
-	
+
 	unsigned int avail_mem = global_page_state(NR_FREE_PAGES)*PAGE_SIZE;
 	printk(KERN_ERR "ramfile_mmap(0x%x), available 0x%x\n", usize, avail_mem);
 	if (avail_mem < RAMFILE_LOW_WATERMARK) {
 		printk(KERN_ERR "Rejected\n");
 		return -ENOMEM;
-	}	
-	
+	}
+
 	/* Note: kmalloc allocates physically continous memory.
 	vmalloc would allocate potentially physically discontinuous memory.
-	The advantage of vmalloc is that it would be able to allocate more 
+	The advantage of vmalloc is that it would be able to allocate more
 	memory when physical memory available is fragmented */
 	pbuf = kmalloc(usize, GFP_KERNEL);
-#ifdef RAMFILE_DEBUG	
+#ifdef RAMFILE_DEBUG
 	printk(KERN_ERR "ramfile_mmap(0x%x): ka=%.8x ua=%.8x\n", usize, pbuf, (unsigned int)vma->vm_start);
-#endif	
+#endif
 	if (!pbuf)
 		return -ENOMEM;
 
@@ -789,7 +815,7 @@ static int ramfile_mmap(struct file *file, struct vm_area_struct *vma)
 		space is done and calls unmap. This way user mistake corrupting
 		the header will not compromise the kernel operation.*/
 	vma->vm_pgoff = __phys_to_pfn(__virt_to_phys((unsigned)pbuf)); /* needed during unmap/close */
-		
+
 	vma->vm_flags |= (VM_RESERVED|VM_IO);
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 
@@ -806,14 +832,14 @@ static void ramfile_vma_close(struct vm_area_struct *vma)
 {
 	struct ramfile_desc *prf;
 	unsigned long usize = vma->vm_end - vma->vm_start;
-					
+
 	/* Fill in the ramfile desc (header) */
 	prf = (struct ramfile_desc *)__phys_to_virt(__pfn_to_phys(vma->vm_pgoff));
 	prf->payload_size = usize;
 	prf->flags = RAMFILE_PHYCONT;
 	memset((void*)&prf->reserved[0], 0, sizeof(prf->reserved));
 	ramdump_attach_ramfile(prf);
-#ifdef RAMFILE_DEBUG	
+#ifdef RAMFILE_DEBUG
 	printk(KERN_ERR "ramfile close 0x%x - linked into RDC\n", (unsigned)prf);
 #endif
 }

@@ -15,9 +15,23 @@ config ECS_DRIVER_SUBDEV
 	  V4L2 subdev helper functions to implement subdev-like sensor
 	  driver
 
+config SOC_CAMERA_GC0328_ECS
+	tristate "gc0328 support based on ECS driver"
+	depends on ECS_DRIVER_SUBDEV
+	default n
+	help
+	  Support for the GalaxyCore GC0328 VGA camera sensor.
+
 config SOC_CAMERA_OV5640_ECS
 	tristate "ov5640 support based on ECS"
 	depends on ECS_DRIVER_SUBDEV && !SOC_CAMERA_OV5640
 	default n
 	help
 	  Support for the OmniVision OV5640 5M camera sensor.
+
+config SOC_CAMERA_GC2035_ECS
+	tristate "gc2035 support based on ECS"
+	depends on ECS_DRIVER_SUBDEV
+	default n
+	help
+	  Support for the GC2035 3M camera sensor.

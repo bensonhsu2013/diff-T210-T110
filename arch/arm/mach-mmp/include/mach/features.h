@@ -99,13 +99,14 @@ static inline int has_feat_debugreg_in_d1p(void)
 
 static inline int has_feat_dll_bypass_opti(void)
 {
-	return cpu_is_pxa988() || cpu_is_pxa986();
+	return cpu_is_pxa988() || cpu_is_pxa986() ||
+		cpu_is_pxa1088();
 }
 
 /* PMU DVC feature to ignore core volt request in M2 */
 static inline int has_feat_dvc_M2D1Pignorecore(void)
 {
-	return !(cpu_is_pxa988() || cpu_is_pxa986());
+	return !(cpu_is_pxa988() || cpu_is_pxa986() || cpu_is_pxa1088());
 }
 
 /* default peri_clk = div_value *4, for Zx, peri_clk = div_value *2  */
@@ -127,9 +128,22 @@ static inline int has_feat_disable_d1P_vpu_on(void)
 	return cpu_is_pxa988() || cpu_is_pxa986();
 }
 
+/* enable hardware v-blank DFC feature in pxa1088 */
+static inline int has_feat_enable_hw_vblank_DFC(void)
+{
+	return cpu_is_pxa1088();
+}
+
+/* Higher Vmin of DDR feature on 1088 */
+static inline int has_feat_higher_ddr_vmin(void)
+{
+	return cpu_is_pxa1088_a0();
+}
+
 static inline int has_feat_pmu_support(void)
 {
-	return cpu_is_pxa988() || cpu_is_pxa986();
+	return cpu_is_pxa988() || cpu_is_pxa986() ||
+		cpu_is_pxa1088_a0();
 }
 static inline int has_feat_panic_freqscaling(void)
 {
@@ -138,6 +152,6 @@ static inline int has_feat_panic_freqscaling(void)
 
 static inline int has_feat_thermal_only_support_polling(void)
 {
-	return cpu_is_pxa988() || cpu_is_pxa986();
+	return cpu_is_pxa988() || cpu_is_pxa986() || cpu_is_pxa1088();
 }
 #endif

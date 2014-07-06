@@ -29,13 +29,14 @@
 #include <asm/irq.h>
 #include <mach/gpio.h>
 #include <asm/uaccess.h>
-#include <linux/power/spa.h>
+#include <mach/spa.h>
 
 #include <mach/hardware.h>
 #include <mach/irqs.h>
 #include <plat/mfp.h>
 
 #include <linux/wakelock.h>
+#include <linux/pm_runtime.h>
 
 #if defined(CONFIG_SPA)
 #if defined(CONFIG_SPA_LPM_MODE)
@@ -44,14 +45,13 @@ int spa_lpm_charging_mode_get(void);
 #include <linux/d1982/d1980_reg.h>
 #elif defined(CONFIG_MFD_88PM800)
 #include <linux/mfd/88pm80x.h>
+#elif defined(CONFIG_MFD_D2199)
+#include <linux/d2199/d2199_reg.h> 
 #endif
 #endif
 #endif
 
-#ifdef CONFIG_MACH_ARUBA_TD
-int spa_call_status = 0;
-#endif
-
+//#define AT_FUELGAUGE_TEST
 
 #define TEMP_TEST_BIN	0	
 #if TEMP_TEST_BIN 
@@ -112,7 +112,6 @@ static struct spa_driver_data *ginfo = NULL;
 #define PRECHARGE_STOP_CURRENT_MIN	50
 static int pre_charging_stop = 0;
 int spa_fuelgauge_current = 0;
-
 
 static unsigned char spa_bat_get_status(struct spa_driver_data *info);
 
@@ -214,16 +213,160 @@ static int spa_bat_get_average_temperature(struct spa_driver_data *info)
 	return average_temperature; 
 }
 
-static int spa_bat_calculate_temperature_from_adc(struct spa_driver_data *info, int adc)
+int spa_bat_get_average_temperature_ex(void)
 {
-        unsigned char i;
-        int vl_A1, vl_A2, vl_A3;
+	return spa_bat_get_average_temperature(ginfo);
+}
+
+static int spa_bat_calculate_temperature_from_adc(int adc)
+{
+        u8      i;
+        s32 vl_A1, vl_A2, vl_A3;
 	int temperature = 0;
 
-	unsigned int *a_TempAdcTable = info->temp_adc_table;
-        int *a_TempDegreeTable = info->temp_degree_table;
+#if defined(CONFIG_MACH_WILCOX) || defined(CONFIG_MACH_CT01)
+     static s16 a_TempAdcTable[] = {
+            1511,
+            1152,
+            1112,
+            1046,
+            837,
+            774,
+            684,
+            554,
+            462,
+            385,
+            315,
+            256,
+            216,
+            182,
+            152,
+            130,
+            111,
+            95,
+            81,
+            75,
+            65,
+            55,
+        }; //a_TempAdcTable
 
+        static s8 a_TempDegreeTable[] ={
+                -20,
+                -15,
+                -12,
+               -10,
+                -5,
+                -3,
+                0,
+                5,
+                10,
+                15,
+                20,
+                25,
+                30,
+                35,
+                40,
+                45,
+                50,
+                55,
+                60,
+                62,
+                65,
+                67,
+        }; //a_TempDegreeTable
+#elif defined(CONFIG_MACH_CS02)
+     static s16 a_TempAdcTable[] = {
+		1601,
+		1246,
+		1012,
+		855,
+		661,
+		543,
+		444,
+		370,
+		347,
+		337,
+		327,
+		317,
+		257,
+		221,
+		183,
+		155,
+		135,
+		113,
+		99,
+		85,
+        }; //a_TempAdcTable
+        static s8 a_TempDegreeTable[] ={
+		-15,
+		-10,
+		-5,
+		0,
+		5,
+		10,
+		15,
+		20,
+		22,
+		23,
+		24,
+		25,
+		30,
+		35,
+		40,
+		45,
+		50,
+		55,
+		60,
+		65,
+        }; //a_TempDegreeTable
+#else
+     static s16 a_TempAdcTable[] = {
+		1053,
+		970,
+		934,
+		887,
+		835,
+		788,
+		764,
+            642,
+            583,
+            440,
+            368,
+            300,
+            240,
+            200,
+            162,
+            147,
+            124,
+            107,
+            92,
+            79,
+        }; //a_TempAdcTable
 
+        static s8 a_TempDegreeTable[] ={
+		-7,
+                -5,
+		-3,			
+		-1,			
+                0,
+		1,
+		3,
+                5,
+                10,
+                15,
+                20,
+                25,
+                30,
+                35,
+                40,
+                45,
+                50,
+                55,
+                60,
+                65,
+        }; //a_TempDegreeTable
+
+#endif
         for(i=0; i<SPA_NB_TEMP_TABLE; i++){
                 if(adc >= a_TempAdcTable[i])
                         break;
@@ -457,34 +600,6 @@ static int spa_chg_get_current_charger(struct spa_driver_data *info)
 	return current_charger;
 }
 
-static void spa_bat_fuelgauge_reset(struct spa_driver_data *info)
-{
-	if(info->use_fuelgauge)
-	{
-		printk(" %s  \n", __func__);
-		mutex_lock(&info->api_lock);
-		if(info->battery.fuelgauge_reset!=NULL)
-		{
-			if(info->battery.fuelgauge_reset() != 0)
-				{
-				printk(" %s   fuelgauge reset fail!\n", __func__);
-				}
-			else
-				{
-				printk(" %s   fuelgauge reset success!\n", __func__);
-				}
-		}
-		else
-		{
-			printk(" %s   info->battery.fuelgauge_reset is NULL\n", __func__);
-		}
-		mutex_unlock(&info->api_lock);
-	}
-	else
-	{
-		printk(" %s   info->use_fuelgauge is 0\n", __func__);
-	}
-}
 static int spa_bat_get_property(struct power_supply *bat_ps,
 				enum power_supply_property psp,
 				union power_supply_propval *val)
@@ -511,6 +626,9 @@ static int spa_bat_get_property(struct power_supply *bat_ps,
 			break;
 		case POWER_SUPPLY_PROP_CURRENT_NOW:
 			break;
+		case POWER_SUPPLY_PROP_CURRENT_AVG:
+			val->intval = spa_fuelgauge_current;
+			break;
 		case POWER_SUPPLY_PROP_VOLTAGE_NOW:
 			val->intval = spa_bat_get_current_voltage(info) * 1000;
 			break;
@@ -522,26 +640,26 @@ static int spa_bat_get_property(struct power_supply *bat_ps,
 			break;
 		case POWER_SUPPLY_PROP_TEMP:
 		case POWER_SUPPLY_PROP_BATT_TEMP:
-			val->intval = spa_bat_get_current_temperature(info)/100000;
+			val->intval = spa_bat_get_current_temperature(info)/100000; 
 			break;
 		case POWER_SUPPLY_PROP_TEMP_ADC:
 		case POWER_SUPPLY_PROP_BATT_TEMP_ADC:
-			val->intval = 1400 - spa_bat_get_current_temp_adc(info);
+			val->intval = spa_bat_get_current_temp_adc(info);
 			break;
 		case POWER_SUPPLY_PROP_BATT_TEMP_AVER:
 			val->intval = spa_bat_get_average_temperature(info)/100000;
 			break;
 		case POWER_SUPPLY_PROP_BATT_TEMP_ADC_AVER:
-			val->intval = 1400 - spa_bat_get_average_temp_adc(info);
+			val->intval = spa_bat_get_average_temp_adc(info);
 			break;
 		case POWER_SUPPLY_PROP_BATT_CHARGING_SOURCE:
 			if(spa_chg_get_current_charger(ginfo) == SPA_CHARGER_TYPE_NONE)
-				val->intval = POWER_SUPPLY_TYPE_BATTERY;
+				val->intval = SPA_CHARGER_TYPE_NONE;
 			else
-				val->intval = POWER_SUPPLY_TYPE_MAINS;
+				val->intval = SPA_CHARGER_TYPE_TA;
 			break;	
 		case POWER_SUPPLY_PROP_BATT_READ_RAW_SOC:
-				val->intval = spa_bat_get_capacity(info);;
+			val->intval = spa_bat_get_capacity(info);;
 			break;
 		default:
 			return -EINVAL;
@@ -557,6 +675,7 @@ static enum power_supply_property spa_bat_main_props[] = {
 	POWER_SUPPLY_PROP_TECHNOLOGY,
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
 	POWER_SUPPLY_PROP_CURRENT_NOW,
+	POWER_SUPPLY_PROP_CURRENT_AVG,
 	POWER_SUPPLY_PROP_TEMP,
 	POWER_SUPPLY_PROP_TEMP_ADC,
 
@@ -701,6 +820,11 @@ static unsigned char spa_bat_get_status(struct spa_driver_data *info)
 	return status;
 }
 
+unsigned char spa_bat_get_status_ex (void)
+{
+	return spa_bat_get_status(ginfo);
+}
+
 static void spa_bat_set_status(struct spa_driver_data *info, unsigned int status)
 {
 	mutex_lock(&info->lock);
@@ -724,12 +848,6 @@ static int spa_chg_enable_charge(struct spa_driver_data *info)
 	}
 	else if(spa_chg_get_current_charger(info) == SPA_CHARGER_TYPE_USB)
 		current_charger = POWER_SUPPLY_TYPE_USB;
-
-
-#ifdef CONFIG_MACH_ARUBA_TD
-	if (spa_call_status)
-		current_charger = POWER_SUPPLY_TYPE_UPS;
-#endif	
 
 	mutex_lock(&info->api_lock);
 	if(info->charger.enable_charge)
@@ -791,27 +909,24 @@ static void spa_chg_start_charge(struct spa_driver_data *info, unsigned int time
 	}
 
 	if(timer_type == SPA_CHARGE_START_TIMER)
-#ifdef CONFIG_MACH_HENDRIX
-		time = info->battery.charge_timer*HZ;
-#else
 	{
 		if(info->battery.capacity < SPA_BATTERY_CAPACITY_1500MA)
-			time = 5*60*60*HZ;
+			time = SPA_CHARGE_TIMER_5HOUR;
 		else if(info->battery.capacity < SPA_BATTERY_CAPACITY_2000MA)
-			time = 6*60*60*HZ;
+			time = SPA_CHARGE_TIMER_6HOUR;
 		else if(info->battery.capacity < SPA_BATTERY_CAPACITY_4500MA)
-			time = 8*60*60*HZ;
+			time = SPA_CHARGE_TIMER_8HOUR;
 		else if(info->battery.capacity < SPA_BATTERY_CAPACITY_7000MA)
-			time = 10*60*60*HZ;
+			time = SPA_CHARGE_TIMER_10HOUR;
 		else
 		{
-			time =5*60*60*HZ;
+			time = SPA_CHARGE_TIMER_5HOUR;
 			printk(" %s   wrong battery capacity %d\n", __func__, info->battery.capacity);
-		}		
+		}
+			
 	}
-#endif
 	else if(timer_type == SPA_CHARGE_RESTART_TIMER)
-		time = info->battery.recharge_timer*HZ;
+		time = SPA_CHARGE_TIMER_90MIN;
 
 	info->Charge_timer.expires = jiffies + time; 
 	add_timer(&info->Charge_timer);	
@@ -871,6 +986,8 @@ static void spa_chg_TA_detached(struct spa_driver_data *info)
 	}
 }
 
+#include <linux/platform_data/mv_usb.h>
+
 static void spa_chg_USB_attached(struct spa_driver_data *info)
 {
 	if(spa_chg_get_current_charger(info)== SPA_CHARGER_TYPE_NONE)
@@ -881,6 +998,8 @@ static void spa_chg_USB_attached(struct spa_driver_data *info)
 		spa_chg_start_charge(info, SPA_CHARGE_START_TIMER);
 		spa_bat_set_status(info, POWER_SUPPLY_STATUS_CHARGING);
 		power_supply_changed(&spa_psy_usb);
+		
+		pxa_usb_notify(PXA_USB_DEV_OTG, EVENT_VBUS, 0);
 	}
 }
 
@@ -895,6 +1014,7 @@ static void spa_chg_USB_detached(struct spa_driver_data *info)
 		spa_bat_set_health(info, POWER_SUPPLY_HEALTH_GOOD);
 		power_supply_changed(&spa_psy_usb);
 		spa_chg_stop_charge(info, SPA_END_OF_CHARGE_NONE);
+		pxa_usb_notify(PXA_USB_DEV_OTG, EVENT_VBUS, 0);
 		wake_unlock(&info->charger.charger_wakeup);
 	}
 }
@@ -903,12 +1023,21 @@ static void spa_chg_JIG_attached(struct spa_driver_data *info)
 {
 	printk(" %s  \n", __func__);
 	spa_chg_set_jig_connected(info, 1);
+
+#ifdef AT_FUELGAUGE_TEST
+	spa_chg_TA_attached(info);
+#endif
 }
 
 static void spa_chg_JIG_detached(struct spa_driver_data *info)
 {
 	printk(" %s  \n", __func__);
 	spa_chg_set_jig_connected(info, 0);
+
+#ifdef AT_FUELGAUGE_TEST
+	spa_chg_TA_detached(info);
+#endif
+
 #if defined(CONFIG_SPA_FUEL_GAUGE_TEST)
 	if(spa_chg_get_current_charger(info)==SPA_CHARGER_TYPE_TA)
 	{
@@ -995,6 +1124,35 @@ static void spa_chg_fuel_end_quickstart(struct spa_driver_data *info)
 	}
 }
 
+static void spa_bat_fuelgauge_reset(struct spa_driver_data *info)
+{
+	if(info->use_fuelgauge)
+	{
+		printk(" %s  \n", __func__);
+		mutex_lock(&info->api_lock);
+		if(info->battery.fuelgauge_reset!=NULL)
+		{
+			if(info->battery.fuelgauge_reset() != 0)
+				{
+				printk(" %s   fuelgauge reset fail!\n", __func__);
+				}
+			else
+				{
+				printk(" %s   fuelgauge reset success!\n", __func__);
+				}
+		}
+		else
+		{
+			printk(" %s   info->battery.fuelgauge_reset is NULL\n", __func__);
+		}
+		mutex_unlock(&info->api_lock);
+	}
+	else
+	{
+		printk(" %s   info->use_fuelgauge is 0\n", __func__);
+	}
+}
+
 static void spa_bat_charge_full(struct spa_driver_data *info)
 {
 	int soc = 0;
@@ -1009,7 +1167,7 @@ static void spa_bat_charge_full(struct spa_driver_data *info)
 			{
 				spa_bat_fuelgauge_reset(info);
 #if defined(CONFIG_STC3115_FUELGAUGE)
-				mdelay(1000);
+				msleep(1000);
 #endif
 				if(spa_bat_read_soc(info, &soc) < 0)
 				{
@@ -1172,7 +1330,6 @@ static void spa_monitor_voltage_work(struct work_struct *work)
 		{
 			soc = 100;
 		}
-#if defined(CONFIG_SPA_POWER_OFF_BY_LOW_VOLTAGE)
 		else
 		{
 			if(vBatValueIndex == SPA_BAT_VOLTAGE_SAMPLE)
@@ -1184,7 +1341,6 @@ static void spa_monitor_voltage_work(struct work_struct *work)
 				}
 			}
 		}
-#endif
 
 		mutex_lock(&info->lock);
 		info->battery.soc = soc;
@@ -1220,7 +1376,9 @@ static void spa_monitor_voltage_work(struct work_struct *work)
 
 	if ((spa_chg_get_current_charger(info) != SPA_CHARGER_TYPE_NONE) && (spa_bat_get_status(info) == POWER_SUPPLY_STATUS_CHARGING) && (pre_charging_stop == 0))
 	{
+#ifndef CONFIG_MFD_D2199
 		if ((PRECHARGE_STOP_CURRENT_MIN < spa_fuelgauge_current) && (spa_fuelgauge_current < PRECHARGE_STOP_CURRENT_MAX))
+#endif
 		{
 			if (soc == 100)
 			{
@@ -1269,7 +1427,7 @@ static void spa_monitor_voltage_work(struct work_struct *work)
 	}
 
 // check recharge condition 
-	if((spa_bat_get_status(info) == POWER_SUPPLY_STATUS_FULL) && (spa_bat_get_average_voltage(info) < info->battery.charging_restart_voltage) && (spa_bat_check_end_of_charge(info, SPA_END_OF_CHARGE_BY_FULL)==0))
+	if((spa_bat_get_status(info) == POWER_SUPPLY_STATUS_FULL) && (spa_bat_get_average_voltage(info) < SPA_CHARGING_RESTART_VOLTAGE) && (spa_bat_check_end_of_charge(info, SPA_END_OF_CHARGE_BY_FULL)==0))
 	{
 
 		end_of_charge = spa_bat_clear_end_of_charge(info, SPA_END_OF_CHARGE_BY_FULL);
@@ -1277,7 +1435,7 @@ static void spa_monitor_voltage_work(struct work_struct *work)
 		if(end_of_charge == SPA_END_OF_CHARGE_NONE)
 		{
 		      
-			printk(" %s   restart charge because voltage is lower than %dmv\n", __func__, info->battery.charging_restart_voltage);
+			printk(" %s   restart charge because voltage is lower than %dmv\n", __func__, SPA_CHARGING_RESTART_VOLTAGE);
 			spa_chg_start_charge(info, SPA_CHARGE_RESTART_TIMER);
 			
 		}
@@ -1310,7 +1468,7 @@ static void spa_monitor_temperature_work(struct work_struct *work)
 	temp_adc += spa_temp_adc_test;
 #endif
 
-	tbat =  spa_bat_calculate_temperature_from_adc(info, temp_adc);
+	tbat =  spa_bat_calculate_temperature_from_adc(temp_adc);
 
 	mutex_lock(&info->lock);
 	info->battery.current_temp_adc = temp_adc; //ѹֵ
@@ -1338,8 +1496,8 @@ static void spa_monitor_temperature_work(struct work_struct *work)
 
 	if((spa_bat_get_health(info) == POWER_SUPPLY_HEALTH_COLD) || (spa_bat_get_health(info) == POWER_SUPPLY_HEALTH_OVERHEAT))
 	{
-		if((spa_bat_get_average_temperature(info) <= info->battery.charging_restart_high_temp)
-			 && (spa_bat_get_average_temperature(info) >= info->battery.charging_restart_low_temp))
+		if((spa_bat_get_average_temperature(info) <= SPA_CHARGING_RESTART_HIGH_TEMPERATURE)
+			 && (spa_bat_get_average_temperature(info) >= SPA_CHARGING_RESTART_LOW_TEMPERATURE))
 		{
 			spa_bat_set_health(info, POWER_SUPPLY_HEALTH_GOOD);
 			if(spa_bat_check_end_of_charge(info, SPA_END_OF_CHARGE_BY_TEMPERATURE)==0)	
@@ -1375,12 +1533,12 @@ static void spa_monitor_temperature_work(struct work_struct *work)
 	else
 	{
 		if((spa_chg_get_current_charger(info) != SPA_CHARGER_TYPE_NONE)  
-			 && ((spa_bat_get_average_temperature(info) >= info->battery.charging_stop_high_temp) || 
-			     (spa_bat_get_average_temperature(info) <= info->battery.charging_stop_low_temp)))
+			 && ((spa_bat_get_average_temperature(info) >= SPA_CHARGING_STOP_HIGH_TEMPERATURE) || 
+			     (spa_bat_get_average_temperature(info) <= SPA_CHARGING_STOP_LOW_TEMPERATURE)))
 		{
-			if(spa_bat_get_average_temperature(info) >= info->battery.charging_stop_high_temp)
+			if(spa_bat_get_average_temperature(info) >= SPA_CHARGING_STOP_HIGH_TEMPERATURE)
 				spa_bat_set_health(info, POWER_SUPPLY_HEALTH_OVERHEAT);
-			else if(spa_bat_get_average_temperature(info) <= info->battery.charging_stop_low_temp)
+			else if(spa_bat_get_average_temperature(info) <= SPA_CHARGING_STOP_LOW_TEMPERATURE)
 				spa_bat_set_health(info, POWER_SUPPLY_HEALTH_COLD);
 
 			if(spa_bat_get_status(info) == POWER_SUPPLY_STATUS_CHARGING)
@@ -1487,9 +1645,6 @@ void (*spa_get_external_event_handler(void))(int, int)
 
 int spa_bat_register_read_voltage(int (*read_voltage)(int *))
 {
-	struct spa_driver_data *info;	
-	int soc;
-	
 	printk(" %s  \n", __func__);
 	if(ginfo)
 	{
@@ -1511,20 +1666,7 @@ int spa_bat_register_read_voltage(int (*read_voltage)(int *))
 	mutex_lock(&ginfo->api_lock);
 	ginfo->battery.read_voltage = read_voltage;
 	mutex_unlock(&ginfo->api_lock);
-
-	if (spa_lpm_charging_mode_get())
-	{
-		info = ginfo;
-		spa_bat_read_soc(info, &soc);
-		info->battery.soc = soc;
-
-	        power_supply_changed(&spa_psy_bat);	
-		schedule_delayed_work(&ginfo->monitor_VOLT_work, SPA_VOLTAGE_MONITOR_START*0.05);
-	}
-	else
-        {
 	schedule_delayed_work(&ginfo->monitor_VOLT_work, SPA_VOLTAGE_MONITOR_START);
-	}
 	return 0; 
 
 register_read_voltage_fail:
@@ -1914,7 +2056,9 @@ static void spa_bat_charge_timer_work(struct work_struct *work)
 	printk(" %s  \n", __func__);
 
 	spa_bat_set_end_of_charge(info, SPA_END_OF_CHARGE_BY_TIMER);
+#if 0	
 	spa_bat_set_status(info, POWER_SUPPLY_STATUS_FULL);
+#endif
 	spa_chg_stop_charge(info, SPA_END_OF_CHARGE_BY_TIMER);
 
 	info->reCharge_start_timer.expires = jiffies + SPA_RECHARGE_CHECK_TIMER_30SEC;
@@ -1944,14 +2088,14 @@ static void spa_bat_recharge_start_timer_work(struct work_struct *work)
 		end_of_charge = spa_bat_clear_end_of_charge(info, SPA_END_OF_CHARGE_BY_TIMER);
 		if(end_of_charge == SPA_END_OF_CHARGE_NONE)
 		{
-			if((spa_bat_get_status(info) == POWER_SUPPLY_STATUS_FULL) && (spa_bat_get_average_voltage(info) < info->battery.charging_restart_voltage))
+			if(/*(spa_bat_get_status(info) == POWER_SUPPLY_STATUS_FULL) && */(spa_bat_get_average_voltage(info) < SPA_CHARGING_RESTART_VOLTAGE))
 			{
-				printk(" %s   restart charge because voltage is lower than %dmv\n", __func__, info->battery.charging_restart_voltage);
+				printk(" %s   restart charge because voltage is lower than %dmv\n", __func__, SPA_CHARGING_RESTART_VOLTAGE);
 				spa_chg_start_charge(info, SPA_CHARGE_RESTART_TIMER);
 			}
 			else
 			{
-				printk(" %s   set SPA_END_OF_CHARGE_BY_FULL because voltage is higher than %dmv\n", __func__, info->battery.charging_restart_voltage);
+				printk(" %s   set SPA_END_OF_CHARGE_BY_FULL because voltage is higher than %dmv\n", __func__, SPA_CHARGING_RESTART_VOLTAGE);
 				spa_bat_set_end_of_charge(info, SPA_END_OF_CHARGE_BY_FULL);	
 			}
 		}
@@ -2125,102 +2269,6 @@ static ssize_t fuelgaic_store_attrs(struct device *dev,
         return 1;
 }
 
-#ifdef CONFIG_MACH_ARUBA_TD
-static ssize_t call_status_store_attrs(struct device *dev,
-                                              struct device_attribute *attr,
-                                              const char *buf, size_t count)
-{
-	struct spa_driver_data *info = dev_get_drvdata(dev);
-	int value, ret;
-		
-	sscanf(buf, "%d", &value);
-
-	printk("%s status [%d]\n", __func__, value);
-
-	if (value == 1)
-	{
-		spa_call_status = 1;
-		
-		if((spa_chg_get_current_charger(info) == SPA_CHARGER_TYPE_TA) || (spa_chg_get_current_charger(info) == SPA_CHARGER_TYPE_USB))
-		{
-			printk("%s call start\n", __func__);
-
-			mutex_lock(&info->api_lock);
-			if(info->charger.enable_charge)
-			{
-				info->charger.enable_charge(POWER_SUPPLY_TYPE_UPS);
-			}
-			else
-			{
-				ret = -1;
-				printk(" %s   info->charger.enable_charge is NULL\n", __func__);
-			}
-			mutex_unlock(&info->api_lock);			
-		}
-	}
-	else
-	{
-		spa_call_status = 0;		
-
-		mutex_lock(&info->api_lock);
-		if(info->charger.enable_charge)
-		{
-			if (spa_chg_get_current_charger(info) == SPA_CHARGER_TYPE_TA)
-				info->charger.enable_charge(POWER_SUPPLY_TYPE_MAINS);
-			else
-				info->charger.enable_charge(POWER_SUPPLY_TYPE_USB);
-		}
-		else
-		{
-			ret = -1;
-			printk(" %s   info->charger.enable_charge is NULL\n", __func__);
-		}
-		mutex_unlock(&info->api_lock);	
-	}
-	
-#if 0	
-	if((spa_chg_get_current_charger(info) == SPA_CHARGER_TYPE_TA) || (spa_chg_get_current_charger(info) == SPA_CHARGER_TYPE_USB))
-	{
-		if (value)
-		{
-			printk("%s call start\n", __func__);
-
-			mutex_lock(&info->api_lock);
-			if(info->charger.enable_charge)
-			{
-				info->charger.enable_charge(POWER_SUPPLY_TYPE_UPS);
-			}
-			else
-			{
-				ret = -1;
-				printk(" %s   info->charger.enable_charge is NULL\n", __func__);
-			}
-			mutex_unlock(&info->api_lock);			
-		}
-		else
-		{
-			mutex_lock(&info->api_lock);
-			if(info->charger.enable_charge)
-			{
-				if (spa_chg_get_current_charger(info) == SPA_CHARGER_TYPE_TA)
-					info->charger.enable_charge(POWER_SUPPLY_TYPE_MAINS);
-				else
-					info->charger.enable_charge(POWER_SUPPLY_TYPE_USB);
-			}
-			else
-			{
-				ret = -1;
-				printk(" %s   info->charger.enable_charge is NULL\n", __func__);
-			}
-			mutex_unlock(&info->api_lock);	
-		}
-	}
-#endif
-	
-	return 1;
-}
-#endif
-
 ssize_t usb_state_show_attrs(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	if(spa_chg_get_current_charger(ginfo) == SPA_CHARGER_TYPE_USB)
@@ -2231,18 +2279,12 @@ ssize_t usb_state_show_attrs(struct device *dev, struct device_attribute *attr, 
 
 static DEVICE_ATTR(batttest, S_IRUGO, batttest_show_attrs, NULL);
 static DEVICE_ATTR(batgetlevel, S_IRUSR, batgetlevel_show_attrs, NULL);
-static DEVICE_ATTR(fuelgaic, S_IRUGO | S_IWUGO, fuelgaic_show_attrs, fuelgaic_store_attrs);
-#ifdef CONFIG_MACH_ARUBA_TD
-static DEVICE_ATTR(call_status, S_IRUGO | S_IWUSR | S_IWGRP, NULL, call_status_store_attrs);
-#endif
+static DEVICE_ATTR(fuelgaic, S_IRUGO | S_IWUSR | S_IWGRP, fuelgaic_show_attrs, fuelgaic_store_attrs);
 
 static struct attribute *battery_attributes[] = {
         &dev_attr_fuelgaic.attr,
 	&dev_attr_batttest.attr,
 	&dev_attr_batgetlevel.attr,
-#ifdef CONFIG_MACH_ARUBA_TD
-	&dev_attr_call_status.attr,
-#endif
 	NULL,
 };
 
@@ -2288,6 +2330,17 @@ int spa_lpm_charging_mode_get(void)
 		lpm_charging_mode = 1; 
 	else
 		lpm_charging_mode = 0;
+#elif defined(CONFIG_MFD_D2199)	
+	if(d2199_get_power_on_reason() == PMIC_GENERAL_USE_BOOT_BY_CHG)
+	{
+		printk(" %s   lpm charging mode\n",__func__);
+		lpm_charging_mode = 1; 
+	}
+	else
+	{
+		printk(" %s   normal mode\n",__func__);
+	lpm_charging_mode = 0; 
+	}
 #else
 	if(pm80x_get_power_on_reason() == PMIC_GENERAL_USE_BOOT_BY_CHG)
 	{
@@ -2299,8 +2352,7 @@ int spa_lpm_charging_mode_get(void)
 		printk(" %s   normal mode\n",__func__);
 		lpm_charging_mode = 0; 
 	}
-	
-#endif
+#endif	// DLG
 	return lpm_charging_mode;
 }
 
@@ -2366,7 +2418,7 @@ succeed:
 }
 #endif
 
-static ssize_t reset_soc_store_attrs(struct device *dev,
+static ssize_t batt_reset_soc_store_attrs(struct device *dev,
                                               struct device_attribute *attr,
                                               const char *buf, size_t count)
 {
@@ -2385,11 +2437,20 @@ static ssize_t reset_soc_store_attrs(struct device *dev,
 		spa_bat_read_voltage(info, &voltage);
 #endif
 	}
-		
+
         return 1;
 }
 
-static DEVICE_ATTR(reset_soc, S_IRUGO | S_IWUGO, NULL, reset_soc_store_attrs);
+static DEVICE_ATTR(batt_reset_soc, S_IRUGO | S_IWUSR | S_IWGRP, NULL, batt_reset_soc_store_attrs);
+
+static int spa_get_usb_vbus(unsigned int *level )
+{
+	if(spa_chg_get_current_charger(ginfo) == SPA_CHARGER_TYPE_USB)
+		*level = VBUS_HIGH;
+	else
+		*level = VBUS_LOW;
+	return 0;
+}
 
 static ssize_t spa_fuelgauge_show_property(struct device *dev, struct device_attribute *attr, char *buf);
 
@@ -2454,11 +2515,8 @@ succeed:
 
 }
 
-
 static void spa_init_data(struct spa_driver_data *info, struct spa_platform_data *pdata)
 {
-	int i = 0;
-	
 	info->battery.health= POWER_SUPPLY_HEALTH_GOOD;
 	info->battery.status = POWER_SUPPLY_STATUS_DISCHARGING;
 	info->charger.current_charger = SPA_CHARGER_TYPE_NONE;
@@ -2476,14 +2534,6 @@ static void spa_init_data(struct spa_driver_data *info, struct spa_platform_data
 
 	info->use_fuelgauge = pdata->use_fuelgauge;
 	info->battery.capacity = pdata->battery_capacity;
-	info->battery.charging_stop_high_temp = pdata->charging_stop_high_temp*1000000;
-	info->battery.charging_restart_high_temp = pdata->charging_restart_high_temp*1000000;
-	info->battery.charging_restart_low_temp = pdata->charging_restart_low_temp*1000000;
-	info->battery.charging_stop_low_temp = pdata->charging_stop_low_temp*1000000;
-	info->battery.charging_restart_voltage = pdata->charging_restart_voltage;
-	info->battery.charge_timer = pdata->charge_timer;
-	info->battery.recharge_timer = pdata->recharge_timer;
-
 	if(pdata->VF_low >= pdata->VF_high)
 	{
 		printk(" %s   please check VF_low %d, VF_high %d in spa_platform_data\n", __func__, pdata->VF_low, pdata->VF_high);
@@ -2493,27 +2543,8 @@ static void spa_init_data(struct spa_driver_data *info, struct spa_platform_data
 		info->battery.VF_low = pdata->VF_low;
 		info->battery.VF_high = pdata->VF_high;
 	}
-
-	memcpy(info->temp_adc_table, pdata->temp_adc_table, sizeof(pdata->temp_adc_table));
-	memcpy(info->temp_degree_table, pdata->temp_degree_table, sizeof(pdata->temp_degree_table));
-
-	for(i=0; i<SPA_NB_TEMP_TABLE-1; i++)
-	{
-		if(info->temp_adc_table[i] <= info->temp_adc_table[i+1])
-		{
-			printk("%s please check temp_adc_table[%d]:%d and temp_adc_table[%d]:%d\n", __func__, i, info->temp_adc_table[i],
-				i+1, info->temp_adc_table[i+1]);
-		}
-	}
-
-	for(i=0; i<SPA_NB_TEMP_TABLE-1; i++)
-	{
-		if(info->temp_degree_table[i] >= info->temp_degree_table[i+1])
-		{
-			printk("%s please check temp_degree_table[%d]:%d and temp_degree_table[%d]:%d\n", __func__, i, info->temp_degree_table[i], 
-				i+1, info->temp_degree_table[i+1]);
-		}
-	}
+	pxa_usb_set_extern_call(PXA_USB_DEV_OTG, vbus, get_vbus,
+				spa_get_usb_vbus);
 }
 
 static __devinit int spa_probe(struct platform_device *pdev)
@@ -2533,9 +2564,8 @@ static __devinit int spa_probe(struct platform_device *pdev)
 	mutex_init(&info->lock);
 	mutex_init(&info->api_lock);
 	platform_set_drvdata(pdev, info);	
-
 	spa_init_data(info, pdata);
-      
+      pm_runtime_enable(&pdev->dev);
 	 ret = power_supply_register(&pdev->dev, &spa_psy_ac);
 	 
         if (ret)
@@ -2556,8 +2586,8 @@ static __devinit int spa_probe(struct platform_device *pdev)
        {
                 printk(KERN_ALERT " %s power_supply_register failed\n", __func__);
 		goto err_power_supply_register_fuelgauge;
-        }	   
-	 
+        }		   
+
         ret = power_supply_register(&pdev->dev, &spa_psy_bat);
         if (ret) 
         {
@@ -2570,12 +2600,11 @@ static __devinit int spa_probe(struct platform_device *pdev)
 		printk(KERN_ALERT " %s sysfs_create_group failed\n", __func__);
                 goto err_sysfs_create_group;
         }
-    
-	ret = device_create_file(spa_psy_bat.dev, &dev_attr_reset_soc);
+    	ret = device_create_file(spa_psy_bat.dev, &dev_attr_batt_reset_soc);
 	if (ret)
 		goto err_sysfs_create_group; 
-                
-	ret = spa_fuelgauge_create_attrs(spa_psy_fuelgauge.dev);
+    
+    	ret = spa_fuelgauge_create_attrs(spa_psy_fuelgauge.dev);
 	if(ret)
 		goto err_sysfs_create_group; 
 	
@@ -2606,7 +2635,7 @@ err_lpm_create_attrs:
 err_sysfs_create_group: 
 	power_supply_unregister(&spa_psy_bat);
 err_power_supply_register_bat:
-		power_supply_unregister(&spa_psy_fuelgauge);
+        power_supply_unregister(&spa_psy_fuelgauge);
 err_power_supply_register_fuelgauge:
 	power_supply_unregister(&spa_psy_usb);
 err_power_supply_register_usb:
@@ -2624,8 +2653,36 @@ static int __devexit spa_remove(struct platform_device *pdev)
 	return 0;
 }
 
+#ifdef CONFIG_PM_RUNTIME
+static int spa_runtime_suspend(struct device *dev)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct spa_driver_data *info = platform_get_drvdata(pdev);
+	 cancel_delayed_work_sync(&info->monitor_VOLT_work);
+	 cancel_delayed_work_sync(&info->monitor_TEMP_work);
+	 cancel_delayed_work_sync(&info->info_notify_work);
+	return 0;
+}
+
+static int spa_runtime_resume(struct device *dev)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct spa_driver_data *info = platform_get_drvdata(pdev);
+	 schedule_delayed_work(&info->monitor_VOLT_work, 0);
+	 schedule_delayed_work(&info->monitor_TEMP_work, 0);
+	 schedule_delayed_work(&info->info_notify_work, 0);
+	return 0;
+}
+
+static const struct dev_pm_ops spa_pm_runtime_ops = {
+	SET_RUNTIME_PM_OPS(spa_runtime_suspend, spa_runtime_resume,
+			   NULL)
+};
+#endif
+
 
 #ifdef CONFIG_PM
+/*
 static int spa_suspend(struct device *dev)
 {
 	printk(" %s  \n",__func__);
@@ -2637,7 +2694,7 @@ static int spa_resume(struct device *dev)
 	printk(" %s  \n",__func__);
 	return 0;
 }
-
+*/
 void spa_shutdown(struct platform_device *pdev)
 {
 	struct spa_driver_data *info = platform_get_drvdata(pdev);
@@ -2656,11 +2713,12 @@ void spa_shutdown(struct platform_device *pdev)
 		del_timer(&info->reCharge_start_timer);
 	}
 }
-
+/*
 static struct dev_pm_ops spa_pm_ops = {
 	.suspend	= spa_suspend,
 	.resume		= spa_resume,
-}; 
+};
+*/
 #endif
 
 /* Probe & Remove function */
@@ -2668,8 +2726,8 @@ static struct platform_driver spa_driver = {
         .driver         = {
                 .name   = "Sec_BattMonitor",
                 .owner  = THIS_MODULE,
-#ifdef CONFIG_PM
-                .pm     = &spa_pm_ops,
+#ifdef CONFIG_PM_RUNTIME                
+                .pm     = &spa_pm_runtime_ops,
 #endif
         },
         .probe          = spa_probe,

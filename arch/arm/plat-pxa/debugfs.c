@@ -17,6 +17,7 @@
 
 #include <mach/addr-map.h>
 #include <plat/debugfs.h>
+#include <mach/cputype.h>
 
 #ifdef CONFIG_CACHE_L2X0
 #include <asm/hardware/cache-l2x0.h>
@@ -135,7 +136,7 @@ static ssize_t cp15_read(struct file *filp, char __user *buffer,
 	len += snprintf(p + len, buf_len - len,
 			"Auxiliary Control: 0x%08x\n", value);
 
-	len += snprintf(p + len, buf_len - len, "\tL2 prefetch: %s\n",
+	len += snprintf(p + len, buf_len - len, "L2 prefetch: %s\n",
 			(value & (1 << 1)) ? "Enabled" : "Disabled");
 
 	asm volatile("mrc p15, 0, %0, c1, c0, 2" : "=r"(value));
@@ -154,9 +155,11 @@ static ssize_t cp15_read(struct file *filp, char __user *buffer,
 	len += snprintf(p + len, buf_len - len,
 			"Non-Secure Access Control: 0x%08x\n", value);
 
-	asm volatile("mrc p15, 0, %0, c1, c1, 3" : "=r"(value));
-	len += snprintf(p + len, buf_len - len,
-			"Virtualization Control: 0x%08x\n", value);
+	if (cpu_is_armv7_a9()) {
+		asm volatile("mrc p15, 0, %0, c1, c1, 3" : "=r"(value));
+		len += snprintf(p + len, buf_len - len,
+				"Virtualization Control: 0x%08x\n", value);
+	}
 
 	/* c2 registers */
 	asm volatile("mrc p15, 0, %0, c2, c0, 0" : "=r"(value));
@@ -244,11 +247,22 @@ static ssize_t cp15_read(struct file *filp, char __user *buffer,
 	len += snprintf(p + len, buf_len - len,
 			"Interrupt Enable Clear(PMINTENCLR): 0x%08x\n", value);
 
-	/* c10 registers */
-	asm volatile("mrc p15, 0, %0, c10, c0, 0" : "=r"(value));
-	len += snprintf(p + len, buf_len - len,
-			"TLB Lockdown: 0x%08x\n", value);
+	if (cpu_is_armv7_a7()) {
+		asm volatile("mrc p15, 1, %0, c9, c0, 2" : "=r"(value));
+		len += snprintf(p + len, buf_len - len,
+				"L2 Control: 0x%08x\n", value);
 
+		asm volatile("mrc p15, 1, %0, c9, c0, 3" : "=r"(value));
+		len += snprintf(p + len, buf_len - len,
+				"L2 Extended Control: 0x%08x\n", value);
+	}
+
+	/* c10 registers */
+	if (cpu_is_armv7_a9()) {
+		asm volatile("mrc p15, 0, %0, c10, c0, 0" : "=r"(value));
+		len += snprintf(p + len, buf_len - len,
+				"TLB Lockdown: 0x%08x\n", value);
+	}
 	asm volatile("mrc p15, 0, %0, c10, c2, 0" : "=r"(value));
 	len += snprintf(p + len, buf_len - len,
 			"Memory Attribute PRRR: 0x%08x\n", value);
@@ -257,14 +271,30 @@ static ssize_t cp15_read(struct file *filp, char __user *buffer,
 	len += snprintf(p + len, buf_len - len,
 			"Memory Attribute NMRR: 0x%08x\n", value);
 
-	/* c11 register */
-	asm volatile("mrc p15, 0, %0, c11, c1, 0" : "=r"(value));
-	len += snprintf(p + len, buf_len - len,
-			"Preload Engine User Accessibility: 0x%08x\n", value);
+	if (cpu_is_armv7_a7()) {
+		asm volatile("mrc p15, 0, %0, c10, c2, 0" : "=r"(value));
+		len += snprintf(p + len, buf_len - len,
+				"Memory Attribute Indirection 0: 0x%08x\n",
+				value);
 
-	asm volatile("mrc p15, 0, %0, c11, c1, 1" : "=r"(value));
-	len += snprintf(p + len, buf_len - len,
-			"Preload Engine Parameters Control: 0x%08x\n", value);
+		asm volatile("mrc p15, 0, %0, c10, c2, 1" : "=r"(value));
+		len += snprintf(p + len, buf_len - len,
+				"Memory Attribute Indirection 1: 0x%08x\n",
+				value);
+	}
+
+	/* c11 register */
+	if (cpu_is_armv7_a9()) {
+		asm volatile("mrc p15, 0, %0, c11, c1, 0" : "=r"(value));
+		len += snprintf(p + len, buf_len - len,
+				"Preload Engine User Accessibility: 0x%08x\n",
+				value);
+
+		asm volatile("mrc p15, 0, %0, c11, c1, 1" : "=r"(value));
+		len += snprintf(p + len, buf_len - len,
+				"Preload Engine Parameters Control: 0x%08x\n",
+				value);
+	}
 
 	/* c12 register */
 	asm volatile("mrc p15, 0, %0, c12, c0, 0" : "=r"(value));
@@ -297,9 +327,10 @@ static ssize_t cp15_read(struct file *filp, char __user *buffer,
 			"Privileged Only Thread ID: 0x%08x\n", value);
 
 	/* c15 registers */
-	asm volatile("mrc p15, 0, %0, c15, c0, 0" : "=r"(value));
-	len += snprintf(p + len, buf_len - len,
-			"Power Control: 0x%08x\n", value);
+	if (cpu_is_armv7_a9()) {
+		asm volatile("mrc p15, 0, %0, c15, c0, 0" : "=r"(value));
+		len += snprintf(p + len, buf_len - len,
+				"Power Control: 0x%08x\n", value);
 
 	asm volatile("mrc p15, 0, %0, c15, c1, 0" : "=r"(value));
 	len += snprintf(p + len, buf_len - len, "NEON is: %s\n",
@@ -316,7 +347,27 @@ static ssize_t cp15_read(struct file *filp, char __user *buffer,
 	asm volatile("mrc p15, 0, %0, c15, c7, 2" : "=r"(value));
 	len += snprintf(p + len, buf_len - len,
 			"Main TLB Attribute: 0x%08x\n", value);
+	} else if (cpu_is_armv7_a7()) {
 
+		asm volatile("mrc p15, 3, %0, c15, c0, 0" : "=r"(value));
+		len += snprintf(p + len, buf_len - len,
+				"Direct Access To Interal Memory Data 0: 0x%08x\n",
+				value);
+
+		asm volatile("mrc p15, 3, %0, c15, c0, 1" : "=r"(value));
+		len += snprintf(p + len, buf_len - len,
+				"Direct Access To Interal Memory Data 1: 0x%08x\n",
+				value);
+
+		asm volatile("mrc p15, 3, %0, c15, c0, 2" : "=r"(value));
+		len += snprintf(p + len, buf_len - len,
+				"Direct Access To Interal Memory Data 2: 0x%08x\n",
+				value);
+
+		asm volatile("mrc p15, 4, %0, c15, c0, 0" : "=r"(value));
+		len += snprintf(p + len, buf_len - len,
+				"Configuration Base Address: 0x%08x\n", value);
+	}
 	if (len == buf_len)
 		pr_warn("The buffer for dumpping cp15 is full now!\n");
 
@@ -610,8 +661,16 @@ struct dentry *pxa;
 
 static int __init pxa_debugfs_init(void)
 {
-	struct dentry *dumpregs_cp15, *dumpregs_gic, *dumpregs_l2;
+	struct dentry *dumpregs_cp15;
+#ifdef CONFIG_ARM_GIC
+	struct dentry *dumpregs_gic;
+#endif
+#ifdef CONFIG_CACHE_L2X0
+	struct dentry *dumpregs_l2;
+#endif
+#ifdef CONFIG_HAVE_ARM_SCU
 	struct dentry *dumpregs_scu;
+#endif
 
 	pxa = debugfs_create_dir("pxa", NULL);
 	if (!pxa)
@@ -658,9 +717,6 @@ err_l2:
 #ifdef CONFIG_ARM_GIC
 	debugfs_remove(dumpregs_gic);
 	dumpregs_gic = NULL;
-#endif
-
-#ifdef CONFIG_ARM_GIC
 err_gic:
 #endif
 	debugfs_remove(dumpregs_cp15);

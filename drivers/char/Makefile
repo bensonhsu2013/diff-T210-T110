@@ -61,6 +61,7 @@ obj-$(CONFIG_DCC_TTY)		+= dcc_tty.o
 obj-$(CONFIG_PS3_FLASH)		+= ps3flash.o
 obj-$(CONFIG_RAMOOPS)		+= ramoops.o
 obj-$(CONFIG_VIBRATOR_88PM80X)  += 88pm80x_vibrator.o
+obj-$(CONFIG_VIBRATOR_88PM822)  += 88pm822_vibrator.o
 obj-$(CONFIG_VIBRATOR_ANDROID) += android_vibrator.o
 
 obj-$(CONFIG_JS_RTC)		+= js-rtc.o
@@ -69,3 +70,4 @@ obj-$(CONFIG_PXA9XX_ACIPC)	+= pxa9xx_acipc.o
 obj-$(CONFIG_MXDCMMB)		+= maxscend/
 obj-$(CONFIG_TILE_SROM)		+= tile-srom.o
 obj-$(CONFIG_USB_88PM80X)	+= 88pm80x_usb.o
+obj-$(CONFIG_USB_88PM822)	+= 88pm822_usb.o

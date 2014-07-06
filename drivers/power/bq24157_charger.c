@@ -22,14 +22,16 @@
 #include <linux/slab.h>
 #include <linux/interrupt.h>
 #include <linux/gpio.h>
-
+#include <linux/gpio-pxa.h>
 #include <mach/bq24157_charger.h>
 #include <linux/mfd/88pm80x.h>
+#ifdef CONFIG_BATTERY_D2199
+#include <linux/d2199/d2199_battery.h>
+#endif
 #if defined(CONFIG_SPA)
-#include <linux/power/spa.h>
+#include <mach/spa.h>
 static void (*spa_external_event)(int, int) = NULL;
 struct bq24157_platform_data *pdata_current_limit = NULL;
-extern int spa_lpm_charging_mode_get(void);
 #endif
 
 static struct i2c_client *bq24157_client = NULL;
@@ -62,7 +64,7 @@ static int bq24157_i2c_read(int length, int reg , unsigned char *values)
 static int bq24157_read_chip_info(void)
 {
 	unsigned char data = 0;	
-	int ret;
+	int ret = 0;
 
 	ret = bq24157_i2c_read(1, BQ24157_VENDER_PART_REVISION, &data);
 	if(ret < 0)
@@ -80,7 +82,7 @@ static int bq24157_read_chip_info(void)
 static int bq24157_set_bit(unsigned int reg_num, unsigned char mask, unsigned char bit)
 {
 	unsigned char data = 0;
-	int ret;
+	int ret = 0;
 	
 	ret = bq24157_i2c_read(1, reg_num, &data);
 	if(ret < 0)
@@ -102,27 +104,15 @@ static int bq24157_set_bit(unsigned int reg_num, unsigned char mask, unsigned ch
 	return 0;
 }
 
-static int bq24157_set_battery_voltage(unsigned int voltage)
+static int bq24157_set_battery_voltage(unsigned char voltage)
 {
-	int ret;
-	unsigned int voltagemV;
-	u8 Voreg;
-	u8 voltage_reg;
-
-	voltagemV = voltage;
-	if (voltagemV < 3500)
-		voltagemV = 3500;
-	else if (voltagemV > 4440)
-		voltagemV = 4440;
-
-	Voreg = (voltagemV - 3500)/20;
-	voltage_reg = (Voreg << VOLTAGE_SHIFT);
+	int ret = 0;
     
-	ret = bq24157_set_bit(BQ24157_BATTERY_VOLTAGE, VO_REG, voltage_reg);
+	ret = bq24157_set_bit(BQ24157_BATTERY_VOLTAGE, VO_REG, voltage);
 	if(ret < 0)
 	{
 		printk("  %s bq24157_set_bit failed\n", __func__);
-		return ret;
+		return ret; 
 	}
 
 	printk("  %s voltage : %x\n", __func__, VOLTAGE_4350MV);
@@ -130,82 +120,11 @@ static int bq24157_set_battery_voltage(unsigned int voltage)
 	return 0;
 }
 
-static int bq24157_set_safety_limit_voltage(unsigned int max_currentmA,unsigned int max_voltagemV)
+static int bq24157_set_safety_limit_voltage(unsigned char voltage)
 {
-	int ret;
-	u8 Vmchrg;
-	u8 Vmreg;
-	u8 limit_reg;
+	int ret = 0;
 
-	if (max_currentmA < 550)
-		max_currentmA = 550;
-	else if (max_currentmA > 1550)
-		max_currentmA = 1550;
-
-	if (max_voltagemV < 4200)
-		max_voltagemV = 4200;
-	else if (max_voltagemV > 4440)
-		max_voltagemV = 4440;
-
-	Vmchrg = (max_currentmA - 550)/100;
-	Vmreg = (max_voltagemV - 4200)/20;
-	limit_reg = ((Vmchrg << MAX_CURRENT_SHIFT) | Vmreg);
-
-	ret = bq24157_set_bit(BQ24157_SAFETY_LIMIT, VMREG, limit_reg);
-	if(ret < 0)
-	{
-		printk("  %s bq24157_set_bit failed\n", __func__);
-		return ret;
-	}
-
-	return 0;
-}
-
-static int bq24157_set_charger_current_limit(unsigned int current_limit)
-{
-	int ret;
-	u8 Iin_limit;
-	u8 control_reg;
-	
-	if (current_limit <= 100)
-		Iin_limit = 0;
-	else if (current_limit > 100 && current_limit <= 500)
-		Iin_limit = 1;
-	else if (current_limit > 500 && current_limit <= 800)
-		Iin_limit = 2;
-	else
-		Iin_limit = 3;
-
-	control_reg = ((Iin_limit << INPUT_CURRENT_LIMIT_SHIFT));
-
-	ret = bq24157_set_bit(BQ24157_CONTROL, LIN_LIMIT, control_reg);
-	if(ret < 0)
-	{
-		printk("  %s bq24157_set_bit failed\n", __func__);
-		return ret;
-	}
-
-	return 0;
-}
-
-static int bq24157_set_weak_battery_voltage(unsigned int weak_voltage)
-{
-	int ret;
-	u8 weak_bat;
-	u8 control_reg;
-
-	if (weak_voltage < 3500)
-		weak_bat = 0;
-	else if (weak_voltage >= 3500 && weak_voltage < 3600)
-		weak_bat = 1;
-	else if (weak_voltage >= 3600 && weak_voltage < 3700)
-		weak_bat = 2;
-	else
-		weak_bat = 3;
-
-	control_reg = ((weak_bat << WEAK_BATTERY_VOLTAGE_SHIFT));
-
-	ret = bq24157_set_bit(BQ24157_CONTROL, V_LOWV, control_reg);
+	ret = bq24157_set_bit(BQ24157_SAFETY_LIMIT, LIMIT_VOLTAGE_CURRENT_MASK, voltage);
 	if(ret < 0)
 	{
 		printk("  %s bq24157_set_bit failed\n", __func__);
@@ -215,16 +134,39 @@ static int bq24157_set_weak_battery_voltage(unsigned int weak_voltage)
 	return 0;
 }
 
-static int bq24157_set_charge_termination_enable(bool enable)
+static int bq24157_set_charger_current_limit(unsigned char current_limit)
 {
-	int ret;
-	unsigned char term_en_reg;
+	int ret = 0;
 
-	if (enable)
-		term_en_reg = TE_ENABLE;
-	else 
-		term_en_reg = 0;
-	ret = bq24157_set_bit(BQ24157_CONTROL, TE, term_en_reg);
+	ret = bq24157_set_bit(BQ24157_CONTROL, LIN_LIMIT, current_limit);
+	if(ret < 0)
+	{
+		printk("  %s bq24157_set_bit failed\n", __func__);
+		return ret; 
+	}
+
+	return 0;
+}
+
+static int bq24157_set_weak_battery_voltage(unsigned char voltage)
+{
+	int ret = 0;
+
+	ret = bq24157_set_bit(BQ24157_CONTROL, V_LOWV, voltage);
+	if(ret < 0)
+	{
+		printk("  %s bq24157_set_bit failed\n", __func__);
+		return ret; 
+	}
+
+	return 0;
+}
+
+static int bq24157_set_charge_termination_enable(unsigned char enable)
+{
+	int ret = 0;
+
+	ret = bq24157_set_bit(BQ24157_CONTROL, BQ_TE, enable);
 	if(ret < 0)
 	{
 		printk("  %s bq24157_set_bit failed\n", __func__);
@@ -234,40 +176,10 @@ static int bq24157_set_charge_termination_enable(bool enable)
 	return 0;
 }
 
-static int bq24157_set_low_chg_current(bool low_chg)
+static int bq24157_set_low_chg_current(unsigned char low_chg)
 {
-	int ret;
-	unsigned char low_chg_reg;
-
-	if (low_chg)
-		low_chg_reg = LOW_CHG_CURRENT;
-	else 
-		low_chg_reg = 0;
-	ret = bq24157_set_bit(BQ24157_CHARGER_VOLTAGE, LOW_CHG, low_chg_reg);
-	if(ret < 0)
-	{
-		printk("  %s bq24157_set_bit failed\n", __func__);
-		return ret;
-	}
-	
-	return 0;
-}
-
-static int bq24157_set_dpm_voltage(unsigned int dpm_voltage)
-{
-	int ret;
-	unsigned int dpm_voltagemV;
-	u8 dpm_Voreg;
-
-	dpm_voltagemV = dpm_voltage;
-	if (dpm_voltagemV < 4200)
-		dpm_voltagemV = 4200;
-	else if (dpm_voltagemV > 4760)
-		dpm_voltagemV = 4760;
-
-	dpm_Voreg = (dpm_voltagemV - 4200)/80;
-	
-	ret = bq24157_set_bit(BQ24157_CHARGER_VOLTAGE, DPM_MASK, dpm_Voreg);
+	int ret = 0;
+	ret = bq24157_set_bit(BQ24157_CHARGER_VOLTAGE, LOW_CHG, low_chg);
 	if(ret < 0)
 	{
 		printk("  %s bq24157_set_bit failed\n", __func__);
@@ -277,47 +189,23 @@ static int bq24157_set_dpm_voltage(unsigned int dpm_voltage)
 	return 0;
 }
 
-
-static int bq24157_set_charge_termination_current(unsigned int termination_current)
+static int bq24157_set_charge_termination_current(unsigned char termination_current)
 {
-	int ret;
-	unsigned int term_current;
-	u8 term_reg;
-
-	term_current = termination_current;
-	if (term_current < 50)
-		term_current = 50;
-	else if (term_current > 400)
-		term_current = 400;
-
-	term_reg = (term_current - 50)/50;
-
-	ret = bq24157_set_bit(BQ24157_BATTERY_TERMINATION, VI_TERM, term_reg);
+	int ret = 0;
+	ret = bq24157_set_bit(BQ24157_BATTERY_TERMINATION, VI_TERM, termination_current);
 	if(ret < 0)
 	{
 		printk("  %s bq24157_set_bit failed\n", __func__);
 		return ret;
 	}
-
+	
 	return 0;
 }
 
-static int bq24157_set_charge_current(unsigned int charge_current)
+static int bq24157_set_charge_current(unsigned char charge_current)
 {
-	int ret;
-	unsigned int charg_current;
-	u8 chag_reg;
-	u8 Fast_chage_reg;
-
-	charg_current = charge_current;
-	if (charg_current < 550)
-		charg_current = 550;
-	else if (charg_current > 1250)
-		charg_current = 1250;
-
-	chag_reg = (charg_current - 550)/100;
-	Fast_chage_reg = (chag_reg << CHARGE_CURRENT_SHIFT);
-        ret = bq24157_set_bit(BQ24157_BATTERY_TERMINATION, VI_CHRG, Fast_chage_reg);
+        int ret = 0;
+        ret = bq24157_set_bit(BQ24157_BATTERY_TERMINATION, VI_CHRG, charge_current);
         if(ret < 0)
         {
                 printk("  %s bq24157_set_bit failed\n", __func__);
@@ -332,11 +220,11 @@ static int bq24157_set_charge_current(unsigned int charge_current)
 static void bq24157_set_current_limit_work(struct work_struct *work)
 {
 	struct bq24157_platform_data *pdata = pdata_current_limit;
-	int ret;
+	int ret = 0;
 
 	printk("  %s \n", __func__);
 
-	ret = bq24157_set_charger_current_limit(pdata->cin_limit_current); //set charge current limit
+	ret = bq24157_set_charger_current_limit(NO_LIMIT); //set charge current limit
 	if(ret < 0)
 	{
 		printk("  %s bq24157_set_charger_current_limit failed %d\n", __func__, ret);
@@ -344,20 +232,38 @@ static void bq24157_set_current_limit_work(struct work_struct *work)
 	}
 	wake_unlock(&pdata->set_current_limit_wakelock);
 }
+
+
 static void bq24157_enable_charge(enum power_supply_type type)
 {
-	int ret;
-	unsigned int chg_current = 0;
+	int ret = 0;
+	unsigned char chg_current = 0;
+#if 0
 	struct bq24157_platform_data *pdata = pdata_current_limit;
+#endif
 	printk("#############################%s\n", __func__);
 
 	if(type == POWER_SUPPLY_TYPE_MAINS)
 	{
-		chg_current = pdata->charge_ta_current;
+#ifdef CONFIG_MACH_WILCOX
+		chg_current = VI_CHRG_1050MA;
+#else
+		chg_current = VI_CHRG_650MA;
+#endif
+#ifdef CONFIG_BATTERY_D2199
+#ifdef CONFIG_MACH_WILCOX
+		d2199_battery_write_status(D2199_BATTERY_CHG_CURRENT, 1050);
+#else
+		d2199_battery_write_status(D2199_BATTERY_CHG_CURRENT, 650);
+#endif
+#endif
 	}
 	else
 	{
-	     chg_current = pdata->charge_usb_current;
+	     chg_current = VI_CHRG_550MA;
+#ifdef CONFIG_BATTERY_D2199
+		 d2199_battery_write_status(D2199_BATTERY_CHG_CURRENT, 550);
+#endif
 	}
 
 	ret = bq24157_set_charge_current(chg_current);
@@ -367,7 +273,7 @@ static void bq24157_enable_charge(enum power_supply_type type)
 	}
 
 #if 0
-	ret = bq24157_set_charger_current_limit(NO_LIMIT); //set charge current limit
+	ret = bq24157_set_charger_current_limit(USB_100MA); //set charge current limit
 	if(ret < 0)
 	{
 		printk("  %s bq24157_set_charger_current_limit failed %d\n", __func__, ret);
@@ -401,6 +307,9 @@ static void bq24157_disable_charge(unsigned char end_of_charge)
 		case SPA_END_OF_CHARGE_NONE:
 			bq24157_is_ovp = 0;
 			gpio_direction_output(bq24157_chg_en, 1);
+#ifdef CONFIG_BATTERY_D2199
+			d2199_battery_write_status(D2199_BATTERY_CHG_CURRENT, 0);
+#endif
 			break;
 		case SPA_END_OF_CHARGE_BY_FULL:
 		case SPA_END_OF_CHARGE_BY_TEMPERATURE:
@@ -408,8 +317,12 @@ static void bq24157_disable_charge(unsigned char end_of_charge)
 		case SPA_END_OF_CHARGE_BY_VF_OPEN:
 		case SPA_END_OF_CHARGE_BY_QUICKSTART:
 			gpio_direction_output(bq24157_chg_en, 1);
+#ifdef CONFIG_BATTERY_D2199
+			d2199_battery_write_status(D2199_BATTERY_CHG_CURRENT, 0);
+#endif
 			break;
 		case SPA_END_OF_CHARGE_BY_OVP:
+			bq24157_is_ovp = 1;
 			break;
 	}
 
@@ -419,70 +332,65 @@ static void bq24157_disable_charge(unsigned char end_of_charge)
 
 static int bq24157_init_data(void)
 {
-	int ret;
-	struct bq24157_platform_data *pdata = pdata_current_limit;
-    printk("bq24157_init_data max_charger_current : %d max_charger_current : %d \n", pdata->max_charger_current, pdata->max_charger_voltage);
-	ret = bq24157_set_safety_limit_voltage(pdata->max_charger_current, pdata->max_charger_voltage);
+	int ret = 0; 
+    
+#ifdef CONFIG_MACH_WILCOX    
+	ret = bq24157_set_safety_limit_voltage(LIMIT_4400MV_1350MA);
+#else
+	ret = bq24157_set_safety_limit_voltage(LIMIT_4340MV_1150MA);
+#endif
 	if(ret < 0)
 	{
 		printk("  %s bq24157_set_safety_limit_voltage failed %d\n", __func__, ret);
 		return ret;
 	}
-	printk("bq24157_init_data regul_vol : %d \n", pdata->regulation_voltage);
-	ret = bq24157_set_battery_voltage(pdata->regulation_voltage); //set max battery voltage to 4.35V
+#ifdef CONFIG_MACH_WILCOX
+	ret = bq24157_set_battery_voltage(VOLTAGE_4350MV); //set max battery voltage to 4.35V
+#else
+	ret = bq24157_set_battery_voltage(VOLTAGE_4350MV); //set max battery voltage to 4.35V
+#endif
 	if(ret < 0)
 	{
 		printk("  %s bq24157_set_battery_voltage failed %d\n", __func__, ret);
 		return ret;
 	}
-	printk("bq24157_init_data cin : %d \n", pdata->cin_limit_current);
-	ret = bq24157_set_charger_current_limit(pdata->cin_limit_current); //set charge current limit
+
+	ret = bq24157_set_charger_current_limit(NO_LIMIT); //set charge current limit
 	if(ret < 0)
 	{
 		printk("  %s bq24157_set_charger_current_limit failed %d\n", __func__, ret);
 		return ret;
 	}
 
-	ret = bq24157_set_weak_battery_voltage(pdata->weak_bat_voltage);
+	ret = bq24157_set_weak_battery_voltage(WEAK_BATTERY_3400MV);
 	if(ret < 0)
 	{
 		printk("  %s bq24157_set_weak_battery_voltage failed %d\n", __func__, ret);
 		return ret;
 	}
-	printk("bq24157_init_datacharge_usb_current : %d \n", pdata->charge_usb_current);
-	ret = bq24157_set_charge_current(pdata->charge_usb_current);
+
+	ret = bq24157_set_charge_current(VI_CHRG_550MA);
 	if(ret < 0)
 	{
 		printk("  %s bq24157_set_charge_current failed %d\n", __func__, ret);
 		return ret;
 	}
 
-	ret = bq24157_set_low_chg_current(pdata->low_charge_mode);
+	ret = bq24157_set_low_chg_current(NORMAL_CHG_CURRENT);
 	if(ret < 0)
 	{
 		printk("  %s bq24157_set_log_chg_current failed %d\n", __func__, ret);
 		return ret;	
 	}
-	printk("bq24157_init_datacharge_dpm_voltage : %d \n", pdata->dpm_voltage);
-	ret = bq24157_set_dpm_voltage(pdata->dpm_voltage);
-	if(ret < 0)
-	{
-		printk("  %s bq24157_set_dpm_voltage failed %d\n", __func__, ret);
-		return ret;	
-	}
-	printk("bq24157_init_lpm_temination_current : %d \n", pdata->lpm_temination_current);
-	if(spa_lpm_charging_mode_get())
-		ret = bq24157_set_charge_termination_current(pdata->lpm_temination_current);
-	else
-		ret = bq24157_set_charge_termination_current(pdata->temination_current);
 
+	ret = bq24157_set_charge_termination_current(VI_TERM_100MA);
 	if(ret < 0)
 	{
 		printk("  %s bq24157_set_charge_termination_current failed %d\n", __func__, ret);
 		return ret;
 	}
 
-	ret = bq24157_set_charge_termination_enable(pdata->termination_en);
+	ret = bq24157_set_charge_termination_enable(TE_ENABLE);
 	if(ret < 0)
 	{
 		printk("  %s bq24157_set_charge_termination_enable failed %d\n", __func__, ret);
@@ -512,7 +420,7 @@ static void bq24157_stat_irq_delayed_work(struct work_struct *work)
 	struct bq24157_platform_data *pdata = container_of(work, struct bq24157_platform_data, stat_irq_delayed_work.work);
 	unsigned char data = 0;
 	int ret = 0;
-	int stat = gpio_get_value(MMP_TRQ_TO_GPIO(bq24157_client->irq))? 1 : 0; 
+	int stat = gpio_get_value(pxa_irq_to_gpio(bq24157_client->irq))? 1 : 0; 
 	if((bq24157_is_ovp==1) && (stat == 0))
 	{
 		bq24157_is_ovp = 0;	
@@ -548,7 +456,7 @@ static void bq24157_stat_irq_delayed_work(struct work_struct *work)
 					spa_external_event(SPA_CATEGORY_BATTERY, SPA_BATTERY_EVENT_OVP_CHARGE_RESTART);
 				}
 				else
-					spa_external_event(SPA_CATEGORY_BATTERY, SPA_BATTERY_EVENT_CHARGE_FULL);
+				spa_external_event(SPA_CATEGORY_BATTERY, SPA_BATTERY_EVENT_CHARGE_FULL);
 			}
 #endif
 			break;
@@ -592,6 +500,11 @@ err_read_status_control:
 	wake_unlock(&pdata->stat_irq_wakelock);
 }
 
+#ifdef CONFIG_BATTERY_D2199
+extern int d2199_extern_read_temperature(int *tbat);
+#endif
+
+
 static irqreturn_t bq24157_stat_irq(int irq, void *dev_id)
 {
 	struct bq24157_platform_data *pdata = dev_id;
@@ -605,7 +518,6 @@ static int __devinit bq24157_probe(struct i2c_client *client, const struct i2c_d
 	int ret = 0;
 	struct i2c_adapter *adapter = to_i2c_adapter(client->dev.parent);
 	struct bq24157_platform_data *pdata = client->dev.platform_data;
-	pdata_current_limit = pdata;
 
 	/*First check the functionality supported by the host*/
 	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_READ_I2C_BLOCK)) {
@@ -687,30 +599,31 @@ static int __devinit bq24157_probe(struct i2c_client *client, const struct i2c_d
         spa_external_event = spa_get_external_event_handler();
 #endif
 
-
+#ifndef CONFIG_BATTERY_D2199
 	ret = spa_bat_register_read_temperature(pm80x_read_temperature);
 	if(ret)
 	{
 		printk("%s fail to register spa_bat_register_read_temperature function\n", __func__);
 	}
+#endif
 
 	if(client->irq){
                 printk("  %s irq : %d\n", __func__, client->irq);
 
 		/* check init status */ 
-		if((gpio_get_value(MMP_TRQ_TO_GPIO(bq24157_client->irq))? 1 : 0) == 1)
+		if((gpio_get_value(pxa_irq_to_gpio(bq24157_client->irq))? 1 : 0) == 1)
 		{
 			wake_lock(&pdata->stat_irq_wakelock);
 			schedule_delayed_work(&pdata->stat_irq_delayed_work, 0);
 		}
 
-                ret = gpio_request(MMP_TRQ_TO_GPIO(client->irq), "bq24157_stat");
+                ret = gpio_request(pxa_irq_to_gpio(client->irq), "bq24157_stat");
                 if(ret)
                 {
                         printk("  %s gpio_request failed\n", __func__);
                         goto err_gpio_request_bq24157_stat;
                 }
-                gpio_direction_input(MMP_TRQ_TO_GPIO(client->irq));
+                gpio_direction_input(pxa_irq_to_gpio(client->irq));
                 ret = request_irq(client->irq, bq24157_stat_irq, IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING, "bq24157_stat", pdata);
                 if(ret)
                 {
@@ -786,7 +699,7 @@ static struct i2c_driver bq24157_i2c_driver = {
 static int __init bq24157_init(void)
 {
 	int ret;
-	if ((ret = i2c_add_driver(&bq24157_i2c_driver) < 0)) {
+	if ((ret = i2c_add_driver(&bq24157_i2c_driver)) < 0) {
 		printk(KERN_ERR "%s i2c_add_driver failed.\n", __func__);
 	}
 

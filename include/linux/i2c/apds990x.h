@@ -74,6 +74,7 @@ struct apds990x_platform_data {
 	u8     ppcount;
 	int    (*setup_resources)(void);
 	int    (*release_resources)(void);
+	int    (*power_on)(int);
 };
 
 #endif

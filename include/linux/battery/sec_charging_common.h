@@ -147,7 +147,7 @@ enum sec_battery_full_charged {
 /* SEC_BATTERY_FULL_CONDITION_SLEEPINFULL
   * change polling time as sleep polling time even in full-charged
   */
-#define SEC_BATTERY_FULL_CONDITION_SLEEPINFULL	2
+#define SEC_BATTERY_FULL_CONDITION_NOSLEEPINFULL	2
 /* SEC_BATTERY_FULL_CONDITION_SOC
   * use capacity for full-charged check
   */
@@ -261,10 +261,14 @@ enum sec_battery_temp_check {
   * check cable by interrupt
   */
 #define SEC_BATTERY_CABLE_CHECK_INT			8
+/* SEC_BATTERY_CABLE_CHECK_CHGINT
+  * check cable by charger interrupt
+  */
+#define SEC_BATTERY_CABLE_CHECK_CHGINT			16
 /* SEC_BATTERY_CABLE_CHECK_POLLING
   * check cable by GPIO polling
   */
-#define SEC_BATTERY_CABLE_CHECK_POLLING			16
+#define SEC_BATTERY_CABLE_CHECK_POLLING			32
 
 /* check cable source (can be used overlapped) */
 #define sec_battery_cable_source_t unsigned int
@@ -323,6 +327,11 @@ enum sec_battery_temp_check {
  * SUMMIT:AICL, MAXIM:regulation loop
  */
 #define SEC_CHARGER_NO_GRADUAL_CHARGING_CURRENT		1
+
+/* SEC_CHARGER_MINIMUM_SIOP_CHARGING_CURRENT
+ * charging current should be over than USB charging current
+ */
+#define SEC_CHARGER_MINIMUM_SIOP_CHARGING_CURRENT	2
 
 /**
  * struct sec_bat_adc_table_data - adc to temperature table for sec battery
@@ -532,7 +541,6 @@ struct sec_battery_platform_data {
 	/* ADC type for each channel */
 	unsigned int adc_type[];
 };
-
 #define sec_battery_platform_data_t \
 	struct sec_battery_platform_data
 

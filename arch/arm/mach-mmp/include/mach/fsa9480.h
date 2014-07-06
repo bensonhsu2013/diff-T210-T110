@@ -71,9 +71,9 @@ enum {
 	CABLE_TYPE_AUDIODOCK_MUIC,
 	CABLE_TYPE_SMARTDOCK_MUIC,
 	CABLE_TYPE_SMARTDOCK_USB_MUIC,
-	CABLE_TYPE_SMARTDOCK_TA_MUIC,	
+	CABLE_TYPE_SMARTDOCK_TA_MUIC,
 };
-	
+
 void fsa9480_set_switch(const char* buf);
 ssize_t fsa9480_get_switch(char* buf);
 

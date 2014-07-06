@@ -648,6 +648,8 @@ spi_write(struct spi_device *spi, const void *buf, size_t len)
 	struct spi_transfer	t = {
 			.tx_buf		= buf,
 			.len		= len,
+			.bits_per_word = 16,
+			.speed_hz = 13000000,
 		};
 	struct spi_message	m;
 
@@ -672,6 +674,8 @@ spi_read(struct spi_device *spi, void *buf, size_t len)
 	struct spi_transfer	t = {
 			.rx_buf		= buf,
 			.len		= len,
+			.bits_per_word = 16,
+			.speed_hz = 13000000,
 		};
 	struct spi_message	m;
 

@@ -1,9 +1,6 @@
 config ZRAM
 	tristate "Compressed RAM block device support"
-	# arch dependency is because of the use of local_unmap_kernel_range
-	# in zsmalloc-main.c.
-	# TODO: implement local_unmap_kernel_range in all architecture.
-	depends on BLOCK && SYSFS && (ARM || MIPS || SUPERH)
+	depends on BLOCK && SYSFS
 	select ZSMALLOC
 	select LZO_COMPRESS
 	select LZO_DECOMPRESS
@@ -27,3 +24,17 @@ config ZRAM_DEBUG
 	help
 	  This option adds additional debugging code to the compressed
 	  RAM block device driver.
+
+config ZRAM_FOR_ANDROID
+	bool "Optimize zram behavior for android"
+	depends on ZRAM && ANDROID
+	default n
+	help
+	  This option enables modified zram behavior optimized for android
+
+config ZRAM_FOR_RTCC2
+	bool "Enable RTCC v2"
+	depends on ZRAM && ANDROID
+	default n
+	help
+	  This option enables RTCC v2

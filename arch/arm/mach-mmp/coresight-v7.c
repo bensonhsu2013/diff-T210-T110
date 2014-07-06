@@ -12,7 +12,9 @@
 
 #include <linux/cpu.h>
 #include <linux/smp.h>
+#include <linux/clk.h>
 #include <linux/init.h>
+#include <linux/err.h>
 #include <linux/delay.h>
 #include <linux/percpu.h>
 #include <linux/cpu_pm.h>
@@ -20,16 +22,7 @@
 
 #include <asm/io.h>
 
-#include <mach/regs-apmu.h>
 #include <mach/regs-coresight.h>
-
-#ifdef CONFIG_CPU_PXA988
-struct cti_info {
-	u32	cti_ctrl;	/* offset: 0x0 */
-	u32	cti_en_in1;	/* offset: 0x24 */
-	u32	cti_en_out6;	/* offset: 0xb8 */
-};
-#endif
 
 struct ptm_info {
 	u32	ptm_ter;	/* offset: 0x8 */
@@ -47,33 +40,35 @@ struct coresight_info {
 	u32     cstf_fcr;	/* offset: 0x0 */
 };
 
-#ifdef CONFIG_CPU_PXA988
-static DEFINE_PER_CPU(struct cti_info, cpu_cti_info);
-#endif
+static struct clk *dbgclk;
 
-static DEFINE_PER_CPU(struct ptm_info, cpu_ptm_info);
-
-static struct coresight_info cst_info;
-
-
-void coresight_panic_locked_cpu(int cpu) {
-	unsigned int val, timeout = 10000;
-	u32 regval;
+void coresight_dump_pcsr(u32 cpu)
+{
+	u32 val;
 	int i;
 
-	printk("Will change PC of cpu%d to 0 to trigger panic\n", cpu);
+	if (!dbgclk)
+		return;
 
-	/* Enable trace/debug clock */
-	regval = readl(APMU_TRACE);
-	regval |= ((1 << 3) | (1 << 4) | (1 << 16));
-	writel(regval, APMU_TRACE);
+	clk_enable(dbgclk);
 
-	printk("Please take below PCSR values as reference\n");
+	printk(KERN_EMERG "======== dump PCSR for cpu%d ========\n", cpu);
 	for (i = 0; i < 8; i++) {
 		val = readl(DBG_PCSR(cpu));
-		printk(KERN_EMERG "PCSR of cpu %d is 0x%x\n", cpu, val);
+		printk(KERN_EMERG "PCSR of cpu%d is 0x%x\n", cpu, val);
 		udelay(10);
 	}
+}
+
+void coresight_panic_locked_cpu(int cpu)
+{
+	unsigned int val, timeout = 10000;
+
+	if (!dbgclk)
+		return;
+
+	clk_enable(dbgclk);
+	coresight_dump_pcsr(cpu);
 
 	/* Unlock debug register access */
 	writel(0xC5ACCE55, DBG_LAR(cpu));
@@ -91,7 +86,7 @@ void coresight_panic_locked_cpu(int cpu) {
 		val = readl(DBG_DSCR(cpu));
 		if (val & 0x1)
 			break;
-	} while (timeout--);
+	}while(timeout--);
 
 	if (!timeout) {
 		printk(KERN_EMERG "Cannot stop cpu%d\n", cpu);
@@ -107,7 +102,7 @@ void coresight_panic_locked_cpu(int cpu) {
 		val = readl(DBG_DSCR(cpu));
 		if (val & (0x1 << 24))
 			break;
-	} while (timeout--);
+	}while (timeout--);
 
 	if (!timeout)
 		printk(KERN_EMERG "Cannot execute instructions on cpu%d\n", cpu);
@@ -117,7 +112,7 @@ void coresight_panic_locked_cpu(int cpu) {
 	writel(val, DBG_DSCR(cpu));
 
 	/* Restart dest cpu */
-	printk(KERN_EMERG "Going to restart cpu%d\n", cpu);
+	printk(KERN_EMERG "Going to trigger panic on cpu%d\n", cpu);
 	writel(0x2, DBG_DRCR(cpu));
 
 	timeout = 10000;
@@ -131,9 +126,18 @@ void coresight_panic_locked_cpu(int cpu) {
 		printk(KERN_EMERG "Cannot restart cpu%d\n", cpu);
 }
 
+#ifdef CONFIG_CORESIGHT_TRACE_SUPPORT
 
-#ifdef CONFIG_CPU_PXA988
-/* The following operations are needed by Pixiu */
+/* The following CTI related operations are needed by Pixiu */
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
+struct cti_info {
+	u32	cti_ctrl;	/* offset: 0x0 */
+	u32	cti_en_in1;	/* offset: 0x24 */
+	u32	cti_en_out6;	/* offset: 0xb8 */
+};
+
+static DEFINE_PER_CPU(struct cti_info, cpu_cti_info);
+
 static inline void cti_enable_access(void)
 {
 	writel_relaxed(0xC5ACCE55, CTI_LOCK);
@@ -164,6 +168,24 @@ static void coresight_cti_restore(void)
 	isb();
 }
 #endif
+
+static DEFINE_PER_CPU(struct ptm_info, cpu_ptm_info);
+
+static struct coresight_info cst_info;
+
+static u32 enable_etm_trace = (1 << CONFIG_NR_CPUS) - 1;
+static int __init __init_etm_trace(char *arg)
+{
+	u32 cpu_mask;
+
+	if (!get_option(&arg, &cpu_mask))
+		return 0;
+
+	enable_etm_trace &= cpu_mask;
+
+	return 1;
+}
+__setup("etm_trace=", __init_etm_trace);
 
 /* The following operations are needed by XDB */
 static inline void ptm_enable_access(void)
@@ -212,6 +234,24 @@ static void coresight_ptm_restore(void)
 	isb();
 }
 
+static void coresight_core_save(void)
+{
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
+	coresight_cti_save();
+#endif
+
+	coresight_ptm_save();
+}
+
+static void coresight_core_restore(void)
+{
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
+	coresight_cti_restore();
+#endif
+
+	coresight_ptm_restore();
+}
+
 static inline void coresight_enable_access(void)
 {
 	writel_relaxed(0xC5ACCE55, CSTF_LOCK);
@@ -248,41 +288,17 @@ static void coresight_restore(void)
 	coresight_disable_access();
 }
 
-/* Export following two APIs for hotplug usage */
-void v7_coresight_save(void)
-{
-#ifdef CONFIG_CPU_PXA988
-	coresight_cti_save();
-#endif
-
-	coresight_ptm_save();
-}
-
-void v7_coresight_restore(void)
-{
-#ifdef CONFIG_CPU_PXA988
-	coresight_cti_restore();
-#endif
-
-	coresight_ptm_restore();
-}
 
 static int coresight_notifier(struct notifier_block *self,
 				unsigned long cmd, void *v)
 {
 	switch (cmd) {
 	case CPU_PM_ENTER:
-		coresight_ptm_save();
-#ifdef CONFIG_CPU_PXA988
-		coresight_cti_save();
-#endif
+		coresight_core_save();
 		break;
 	case CPU_PM_ENTER_FAILED:
 	case CPU_PM_EXIT:
-		coresight_ptm_restore();
-#ifdef CONFIG_CPU_PXA988
-		coresight_cti_restore();
-#endif
+		coresight_core_restore();
 		break;
 	case CPU_CLUSTER_PM_ENTER:
 		coresight_save();
@@ -300,11 +316,102 @@ static struct notifier_block coresight_notifier_block = {
 	.notifier_call = coresight_notifier,
 };
 
-static int __init coresight_pm_init(void)
+static int __cpuinit coresight_core_notifier(struct notifier_block *nfb,
+				      unsigned long action, void *hcpu)
 {
+	switch (action & ~CPU_TASKS_FROZEN) {
+	case CPU_STARTING:
+		coresight_core_restore();
+		return NOTIFY_OK;
+
+	case CPU_DYING:
+		coresight_core_save();
+		return NOTIFY_OK;
+
+	default:
+		return NOTIFY_DONE;
+	}
+}
+
+static void __init coresight_mp_init(void)
+{
+	coresight_enable_access();
+	writel_relaxed(0x1000, TPIU_REG(0x304));
+	writel_relaxed(0x1, ETB_REG(0x304));
+	writel_relaxed(0x0, CSTF_REG(0x4));
+	writel_relaxed(enable_etm_trace, CSTF_REG(0x0));
+	writel_relaxed(0x1, ETB_REG(0x20));
+	coresight_disable_access();
+}
+
+void coresight_ptm_disable(u32 cpu)
+{
+	void __iomem *ptm_base = PTM_CORE0_VIRT_BASE + 0x1000 * cpu;
+
+	writel_relaxed(0xC5ACCE55, (ptm_base + 0xFB0));
+	writel_relaxed(0x1, (ptm_base + 0x0));
+	writel_relaxed(0x0, (ptm_base + 0xFB0));
+
+	dsb();
+	isb();
+}
+
+static void coresight_ptm_enable(u32 cpu)
+{
+	void __iomem *ptm_base = PTM_CORE0_VIRT_BASE + 0x1000 * cpu;
+
+	/* enable PTM access first */
+	writel_relaxed(0xC5ACCE55, (ptm_base + 0xFB0));
+
+#ifdef CONFIG_CPU_CA7MP
+	writel_relaxed(0xFFFFFFFF, (ptm_base + 0x300));
+#endif
+	writel_relaxed(0x400, (ptm_base + 0x0));
+	writel_relaxed(0x406f, (ptm_base + 0x8));
+	writel_relaxed(0x6f, (ptm_base + 0x20));
+	writel_relaxed(0x1000000, (ptm_base + 0x24));
+	writel_relaxed((cpu + 0x1), (ptm_base + 0x200));
+#ifdef CONFIG_CPU_CA7MP
+	writel_relaxed(0xc940, (ptm_base + 0x0));
+#else
+	writel_relaxed(0xc000, (ptm_base + 0x0));
+#endif
+
+	/* disable PTM access */
+	writel_relaxed(0x0, (ptm_base + 0xFB0));
+
+	dsb();
+	isb();
+}
+
+static void __init coresight_ptm_init(void)
+{
+	int cpu;
+
+	for_each_possible_cpu(cpu)
+		if (test_bit(cpu, (void *)&enable_etm_trace))
+			coresight_ptm_enable(cpu);
+}
+#endif
+
+static int __init coresight_init(void)
+{
+	dbgclk = clk_get(NULL, "DBGCLK");
+	if (IS_ERR(dbgclk)) {
+		pr_warn("No DBGCLK is defined...\n");
+		dbgclk = NULL;
+	}
+
+#ifdef CONFIG_CORESIGHT_TRACE_SUPPORT
+	/* enable etm trace by default */
+	coresight_mp_init();
+	coresight_ptm_init();
+
+	cpu_notifier(coresight_core_notifier, 0);
 	cpu_pm_register_notifier(&coresight_notifier_block);
+#endif
 
 	return 0;
 }
 
-arch_initcall(coresight_pm_init);
+arch_initcall(coresight_init);

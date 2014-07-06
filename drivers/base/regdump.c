@@ -14,6 +14,7 @@
 #include <linux/module.h>
 #include <asm/io.h>
 
+
 #define REGDUMP_READLINE_NUM		80
 #ifdef CONFIG_SMP
 static DECLARE_RWSEM(all_cpu_access_lock);
@@ -120,6 +121,36 @@ int dump_reg_to_mem(void)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(dump_reg_to_mem);
+
+int dump_reg_to_console(void)
+{
+	struct regdump_ops *ops;
+	struct regdump_region *region;
+	unsigned long val;
+	int i;
+
+	dump_access_lock();
+	list_for_each_entry_reverse(ops, &regdump_ops_list, node)
+	{
+		printk(KERN_EMERG "======== dump %s start ========\n",
+				ops->dev_name);
+		if (ops->enable) {
+			region = ops->regions;
+			for (i = 0; i < ops->reg_nums; i++, region++) {
+				val = regdump_read_region(ops, region);
+				printk(KERN_ERR"%-26s: 0x%lx: 0x%08lx\n",
+				region->name, ops->phy_base + region->start,
+				val);
+			}
+		}
+		printk(KERN_EMERG "======== dump %s end ========\n",
+				ops->dev_name);
+	}
+	dump_access_unlock();
+
+	return 0;
+}
+
 
 DEFINE_MUTEX(dev_mutex);
 static int regdump_generic_open(struct inode *inode, struct file *filp)
@@ -485,14 +516,27 @@ EXPORT_SYMBOL_GPL(unregister_regdump_ops);
 static __init int regdump_init_debugfs(void)
 {
 	struct dentry *d_regdump;
+	struct dentry *dentry;
 
 	d_regdump = regdump_init_dentry();
-	debugfs_create_file("current_enabled_devices", 0444, d_regdump,
+	dentry = debugfs_create_file("current_enabled_devices", 0444, d_regdump,
 			(void *)&show_regdump_seq_ops, &show_regdump_fops);
-	debugfs_create_file("dump_all", 0444, d_regdump,
+	if(!dentry) {
+		pr_err("Failed to create current_enabled_devices debug file\n");
+		return -ENOMEM;
+	} 
+	dentry = debugfs_create_file("dump_all", 0444, d_regdump,
 			(void *)&dump_all_regs_seq_ops, &dump_allregs_fops);
-	debugfs_create_file("enable_all", 0644, d_regdump,
+	if(!dentry) {
+		pr_err("Failed to create dump_all debug file\n");
+		return -ENOMEM;
+	} 
+	dentry = debugfs_create_file("enable_all", 0644, d_regdump,
 			NULL, &enable_regdump_fops);
+	if(!dentry) {
+		pr_err("Failed to create enable_all debug file\n");
+		return -ENOMEM;
+	} 
 
 	return 0;
 }

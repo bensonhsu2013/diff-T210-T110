@@ -151,7 +151,7 @@ struct lcd_regs {
 #define LCD_TCLK_DIV					(0x009C)
 
 /* dither configure */
-#if defined(CONFIG_CPU_PXA988)
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 #define LCD_DITHER_CTRL				(0x01EC)
 #else
 #define LCD_DITHER_CTRL				(0x00A0)
@@ -170,7 +170,7 @@ struct lcd_regs {
 #define DITHER_EN1					(1)
 
 /* dither table data was fixed by video bpp of input and output*/
-#if defined(CONFIG_CPU_PXA988)
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 #define DITHER_TB_4X4_INDEX0		(0x6e4ca280)
 #define DITHER_TB_4X4_INDEX1		(0x5d7f91b3)
 #define DITHER_TB_4X8_INDEX0		(0xb391a280)
@@ -921,7 +921,7 @@ struct lcd_regs {
 #define ALL_LAYER_ALPHA_SEL			(0x02F4)
 
 /* pxa988 has different MASTER_CTRL from MMP3/MMP2 */
-#if defined(CONFIG_CPU_PXA988)
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 #define TIMING_MASTER_CONTROL			(0x01F4)
 #define MASTER_ENH(id)				(1 << ((id) + 4))
 #define MASTER_ENV(id)				(1 << ((id) + 6))
@@ -1415,7 +1415,7 @@ struct dsi_regs {
  * it will be used in dsi_set_dphy() in pxa688_phy.c
  * as low power mode clock.
  */
-#if defined(CONFIG_CPU_PXA988)
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 #define DSI_ESC_CLK				52  /* Unit: Mhz */
 #define DSI_ESC_CLK_T				19  /* Unit: ns */
 #else

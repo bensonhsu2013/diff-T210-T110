@@ -613,6 +613,9 @@ static char * const migratetype_names[MIGRATE_TYPES] = {
 	"Reclaimable",
 	"Movable",
 	"Reserve",
+#ifdef CONFIG_CMA
+	"CMA",
+#endif
 	"Isolate",
 };
 
@@ -719,6 +722,7 @@ const char * const vmstat_text[] = {
 	"numa_other",
 #endif
 	"nr_anon_transparent_hugepages",
+	"nr_free_cma",
 	"nr_dirty_threshold",
 	"nr_dirty_background_threshold",
 
@@ -820,6 +824,7 @@ static void pagetypeinfo_showfree_print(struct seq_file *m,
 	int order, mtype;
 
 	for (mtype = 0; mtype < MIGRATE_TYPES; mtype++) {
+		unsigned long sum = 0;
 		seq_printf(m, "Node %4d, zone %8s, type %12s ",
 					pgdat->node_id,
 					zone->name,
@@ -834,10 +839,57 @@ static void pagetypeinfo_showfree_print(struct seq_file *m,
 			list_for_each(curr, &area->free_list[mtype])
 				freecount++;
 			seq_printf(m, "%6lu ", freecount);
+			sum += freecount << order;
 		}
+		seq_printf(m, "%6lu ", sum);
 		seq_putc(m, '\n');
 	}
 }
+
+#ifdef CONFIG_CMA
+static void pagetypeinfo_showfree_cma_detail_print(struct seq_file *m,
+					pg_data_t *pgdat, struct zone *zone)
+{
+	struct free_area *area;
+	struct page *page;
+	struct list_head *hd;
+	int order, count;
+	unsigned long pre, now = 0;
+
+	for (order = 0; order < MAX_ORDER; ++order) {
+		count = 0;
+		area = &(zone->free_area[order]);
+		if (list_empty(&area->free_list[MIGRATE_CMA]))
+			continue;
+
+		hd = &(area->free_list[MIGRATE_CMA]);
+
+		seq_printf(m, "[%2d]:", order);
+		list_for_each_entry(page, hd, lru) {
+			if (count && (count % 16 == 0))
+				seq_printf(m, "     ");
+			if (count == 0) {
+				pre = page_to_pfn(page);
+				now = pre;
+				seq_printf(m, "%7lx", now);
+			} else {
+				pre = now;
+				now = page_to_pfn(page);
+
+				if (now > pre)
+					seq_printf(m, "*%6lx", now);
+				else
+					seq_printf(m, "%7lx", now);
+			}
+			count++;
+			if (count % 16 == 0)
+				seq_putc(m, '\n');
+		}
+		if (count % 16)
+			seq_putc(m, '\n');
+	}
+}
+#endif
 
 /* Print out the free pages at each order for each migatetype */
 static int pagetypeinfo_showfree(struct seq_file *m, void *arg)
@@ -852,7 +904,10 @@ static int pagetypeinfo_showfree(struct seq_file *m, void *arg)
 	seq_putc(m, '\n');
 
 	walk_zones_in_node(m, pgdat, pagetypeinfo_showfree_print);
-
+#ifdef CONFIG_CMA
+	seq_printf(m, "\nList of free pages of cma at order\n");
+	walk_zones_in_node(m, pgdat, pagetypeinfo_showfree_cma_detail_print);
+#endif
 	return 0;
 }
 
@@ -1019,7 +1074,7 @@ static void zoneinfo_show_print(struct seq_file *m, pg_data_t *pgdat,
 		   "\n  all_unreclaimable: %u"
 		   "\n  start_pfn:         %lu"
 		   "\n  inactive_ratio:    %u",
-		   zone->all_unreclaimable,
+		   !zone_reclaimable(zone),
 		   zone->zone_start_pfn,
 		   zone->inactive_ratio);
 	seq_putc(m, '\n');

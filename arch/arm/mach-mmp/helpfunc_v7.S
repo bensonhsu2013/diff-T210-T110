@@ -22,6 +22,7 @@
 #include <asm/hardware/cache-l2x0.h>
 
 
+#ifdef CONFIG_CPU_CA9MP
 /*
  * Marvell specific entry point for secondary CPUs.
  * The secondary kernel init calls v7_flush_dcache_all before it enables
@@ -70,6 +71,7 @@ ENTRY(v7_invalidate_l1)
         isb
         mov     pc, lr
 ENDPROC(v7_invalidate_l1)
+#endif
 
 #ifdef CONFIG_CACHE_L2X0
 /*

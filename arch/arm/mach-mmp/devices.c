@@ -10,6 +10,7 @@
 #include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
 #include <linux/delay.h>
+#include <linux/gpio.h>
 
 #include <asm/irq.h>
 #include <mach/irqs.h>
@@ -17,7 +18,12 @@
 #include <mach/cputype.h>
 #include <mach/regs-usb.h>
 #include <mach/soc_coda7542.h>
+#ifdef CONFIG_UIO_HANTRO
+#include <mach/soc_hantro.h>
+#endif
 #include <mach/addr-map.h>
+
+#include "common.h"
 
 int __init pxa_register_device(struct pxa_device_desc *desc,
 				void *data, size_t size)
@@ -74,8 +80,28 @@ int __init pxa_register_device(struct pxa_device_desc *desc,
 	return platform_device_add(pdev);
 }
 
+void __init
+pxa_init_i2c_gpio_irq(struct pxa_i2c_board_gpio *gpio_info, unsigned len,
+				struct i2c_board_info *i2c_info, unsigned size)
+{
+	int i, j;
+
+	for (i = 0; i < len; i++) {
+		for (j = 0; j < size; j++) {
+			if (!strcmp(i2c_info[j].type, gpio_info[i].type)) {
+				i2c_info[j].irq = gpio_to_irq(gpio_info[i].gpio);
+				break;
+			}
+		}
+
+		if (j == size)
+			pr_err("No i2c device named %s need to set irq!\n",
+				gpio_info[i].type);
+	}
+}
+
 #ifdef CONFIG_PXA9XX_ACIPC
-#if defined(CONFIG_CPU_PXA988)
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 static struct resource pxa9xx_resource_acipc[] = {
 	[0] = {
 		.start  = 0xD401D000,
@@ -101,6 +127,22 @@ static struct resource pxa9xx_resource_acipc[] = {
 		.name   = "IPC_AP_SET_MSG",
 	},
 };
+
+#elif defined(CONFIG_CPU_EDEN)
+static struct resource pxa9xx_resource_acipc[] = {
+	[0] = {
+		.start  = 0xD0220000,
+		.end    = 0xD02200ff,
+		.flags  = IORESOURCE_MEM,
+	},
+	[1] = {
+		.start  = IRQ_EDEN_IPC_CP,
+		.end    = IRQ_EDEN_IPC_CP,
+		.flags  = IORESOURCE_IRQ,
+		.name   = "IPC_CP2AP",
+	},
+};
+
 #else
 static struct resource pxa9xx_resource_acipc[] = {};
 #endif
@@ -114,7 +156,7 @@ struct platform_device pxa9xx_device_acipc = {
 #endif
 
 #if defined(CONFIG_USB) || defined(CONFIG_USB_GADGET)
-#ifndef CONFIG_CPU_PXA988
+#if !defined(CONFIG_CPU_PXA988) && !defined(CONFIG_CPU_PXA1088)
 
 /*****************************************************************************
  * The registers read/write routines
@@ -411,7 +453,7 @@ void pxa_usb_phy_deinit(void __iomem *phy_reg)
 #endif
 #endif
 
-#if (defined(CONFIG_USB_SUPPORT) && !defined(CONFIG_CPU_PXA988))
+#if (defined(CONFIG_USB_SUPPORT) && !defined(CONFIG_CPU_PXA988) && !defined(CONFIG_CPU_PXA1088))
 static u64 usb_dma_mask = ~(u32)0;
 
 #ifdef CONFIG_USB_MV_UDC
@@ -531,11 +573,13 @@ static struct resource pxa_coda7542_resources[] = {
 		.end   = 0xD420DFFF,
 		.flags = IORESOURCE_MEM,
 	},
+#ifndef CONFIG_CPU_PXA1088
 	[1] = {
 		.start = SRAM_VIDEO_BASE,
 		.end   = SRAM_VIDEO_BASE + SRAM_VIDEO_SIZE - 1,
 		.flags = IORESOURCE_MEM,
 	},
+#endif
 	[2] = {
 		.start = IRQ_PXA988_CODA7542,
 		.end   = IRQ_PXA988_CODA7542,
@@ -562,5 +606,99 @@ void __init pxa_register_coda7542(void)
 	if (ret)
 		dev_err(&(pxa_device_coda7542.dev),
 			"unable to register coda7542 device: %d\n", ret);
+}
+
+#endif
+
+#ifdef CONFIG_UIO_HANTRO
+static u64 pxa_hantro_dam_mask = DMA_BIT_MASK(32);
+/* decoder resources */
+static struct resource pxa_hantro_dec_resources[] = {
+	[0] = {
+		.start = 0xF0400000,
+		.end   = 0xF04007FF,
+		.flags = IORESOURCE_MEM,
+	},
+	[1] = {
+		.start = IRQ_EDEN_VPU,
+		.end   = IRQ_EDEN_VPU,
+		.flags = IORESOURCE_IRQ,
+	},
+};
+
+/* post processor resources */
+static struct resource pxa_hantro_pp_resources[] = {
+	[0] = {
+		.start = 0xF0400000,
+		.end   = 0xF04007FF,
+		.flags = IORESOURCE_MEM,
+	},
+	[1] = {
+		.start = IRQ_EDEN_VPU,
+		.end   = IRQ_EDEN_VPU,
+		.flags = IORESOURCE_IRQ,
+	},
+};
+
+/* encoder resources */
+static struct resource pxa_hantro_enc_resources[] = {
+	[0] = {
+		.start = 0xF0400800,
+		.end   = 0xF07FFFFF,
+		.flags = IORESOURCE_MEM,
+	},
+	[1] = {
+		.start = IRQ_EDEN_VPU,
+		.end   = IRQ_EDEN_VPU,
+		.flags = IORESOURCE_IRQ,
+	},
+};
+
+struct platform_device pxa_device_hantro[] = {
+/* decoder */
+	{
+		.name		= UIO_HANTRO_NAME,
+		.id		= HANTRO_DEC,
+		.dev		= {
+			.dma_mask = &pxa_hantro_dam_mask,
+			.coherent_dma_mask = DMA_BIT_MASK(32),
+		},
+		.resource	= pxa_hantro_dec_resources,
+		.num_resources	= ARRAY_SIZE(pxa_hantro_dec_resources),
+	},
+/* post processor */
+	{
+		.name		= UIO_HANTRO_NAME,
+		.id		= HANTRO_PP,
+		.dev		= {
+			.dma_mask = &pxa_hantro_dam_mask,
+			.coherent_dma_mask = DMA_BIT_MASK(32),
+		},
+		.resource	= pxa_hantro_pp_resources,
+		.num_resources	= ARRAY_SIZE(pxa_hantro_pp_resources),
+	},
+/* encoder */
+	{
+		.name		= UIO_HANTRO_NAME,
+		.id		= HANTRO_ENC,
+		.dev		= {
+			.dma_mask = &pxa_hantro_dam_mask,
+			.coherent_dma_mask = DMA_BIT_MASK(32),
+		},
+		.resource	= pxa_hantro_enc_resources,
+		.num_resources	= ARRAY_SIZE(pxa_hantro_enc_resources),
+	},
+};
+
+void __init pxa_register_hantro(void)
+{
+	int i, ret;
+
+	for (i = 0; i < ARRAY_SIZE(pxa_device_hantro); i++) {
+		ret = platform_device_register(&pxa_device_hantro[i]);
+		if (ret)
+			dev_err(&(pxa_device_hantro[i].dev),
+			"unable to register hantro device: %d\n", i);
+	}
 }
 #endif

@@ -35,12 +35,12 @@ struct mms_info {
 	struct mms_ts_platform_data	*pdata;
 };
 
-struct mms_info *info;
+static struct mms_info *info;
 struct i2c_client *mms_client;
 
 extern void ts_power_control(int en);
 unsigned char TSP_PanelVersion, TSP_PhoneVersion;
-unsigned char TSP_CorePanelVersion,TSP_CorePhoneVersion,TSP_type;
+unsigned char TSP_CorePanelVersion,TSP_CorePhoneVersion,TSP_type,TSP_force_update;
 
 
 static void hw_reboot(bool bootloader)
@@ -385,7 +385,8 @@ out:
 
 	return ret;
 }
-#ifdef CONFIG_MACH_ARUBA_TD	
+#if defined(CONFIG_MACH_ARUBA_TD) || defined(CONFIG_MACH_WARUBA) || defined(CONFIG_MACH_HARRISON) \
+	|| defined(CONFIG_MACH_HELANDELOS) || defined(CONFIG_MACH_CS02) || defined(CONFIG_MACH_CS05)
 int mms_flash_fw2(struct i2c_client *client,const char* fw_name)
 {
 	int ret;
@@ -416,6 +417,55 @@ out:
 //	ret = fw_download(MELFAS_binary, 31744);
 
 	return ret;
+}
+#define MMS_FW "/sdcard/melfas_fw.bin"
+#include <linux/proc_fs.h>
+#include <linux/uaccess.h>
+int mms_fw_force_updated(struct i2c_client *client)
+{
+	struct file *fp;
+	mm_segment_t old_fs;
+	unsigned short fw_size, nread;
+	const struct firmware *fw;
+	char *fw_data;
+	int error = 0;
+	old_fs = get_fs();
+	set_fs(KERNEL_DS);
+	mms_client = client;
+	fp = filp_open(MMS_FW, O_RDONLY, S_IRUSR);
+	if (IS_ERR(fp)) {
+		dev_err(&client->dev,
+			"%s: failed to open %s.\n", __func__, MMS_FW);
+		error = -ENOENT;
+		goto open_err;
+	}
+	fw_size = fp->f_path.dentry->d_inode->i_size;
+	printk("fw_size = %u\n",fw_size);
+	if (0 < fw_size) {
+		fw_data = kzalloc(fw_size, GFP_KERNEL);
+		nread = vfs_read(fp, (char __user *)fw_data,
+			fw_size, &fp->f_pos);
+		dev_info(&client->dev,
+			"%s: start, file path %s, size %u Bytes\n", __func__,
+		       MMS_FW, fw_size);
+		if (nread != fw_size) {
+			dev_err(&client->dev,
+			       "%s: failed to read firmware file, nread %u Bytes\n",
+			       __func__,
+			       nread);
+			error = -EIO;
+		} else
+		{
+			printk(KERN_ERR "[TSP] %s ( %d)\n", __func__, __LINE__);
+			error = fw_download(fw_data, fw_size);
+			printk(KERN_ERR "[TSP] %s ( %d)\n", __func__, __LINE__);
+		}		
+		kfree(fw_data);
+	}
+	filp_close(fp, current->files);
+ open_err:
+	set_fs(old_fs);
+	return error;
 }
 #endif
 

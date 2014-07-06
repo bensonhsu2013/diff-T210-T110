@@ -18,20 +18,30 @@
 #include <linux/irq.h>
 #include <linux/io.h>
 #include <asm/hardware/gic.h>
-#include <mach/cputype.h>
+#include <mach/features.h>
 #include <mach/irqs.h>
 #include <mach/regs-icu.h>
 #include <mach/regs-apbc.h>
 
+#define ICU_INT_CONF_CPU3	(1 << 9)
+#define ICU_INT_CONF_CPU2	(1 << 8)
 #define ICU_INT_CONF_CPU1	(1 << 7)
 #define ICU_INT_CONF_CPU0	(1 << 6)
-#define ICU_INT_CONF_AP(n)	(1 << (6 + (n & 1)))
-#define ICU_INT_CONF_AP_MASK	(3 << 6)
+#define ICU_INT_CONF_AP(n)	(1 << (6 + (n & 0x3)))
+#define ICU_INT_CONF_AP_MASK	(0xF << 6)
 #define ICU_INT_CONF_IRQ_FIQ	(1 << 4)
 #define ICU_INT_CONF_PRIO(n)	(n & 0xF)
 #define ICU_INT_CONF_MASKING	(0 << 0)
 
 #define ICU_IRQ_CPU0_MASKED	(ICU_INT_CONF_IRQ_FIQ | ICU_INT_CONF_CPU0)
+
+#if defined(CONFIG_CPU_PXA988)
+#define ICU_IRQ_START	IRQ_PXA988_START
+#define ICU_IRQ_END	IRQ_PXA988_END
+#elif defined(CONFIG_CPU_PXA1088)
+#define ICU_IRQ_START	IRQ_PXA1088_START
+#define ICU_IRQ_END	IRQ_PXA1088_END
+#endif
 
 /*
  * Return:
@@ -47,7 +57,7 @@ static inline int irq_need_handle(struct irq_data *d)
 		return -1;
 
 	/* out of the ICU range */
-	if (d->irq >= IRQ_PXA988_END)
+	if (d->irq >= ICU_IRQ_END)
 		return -1;
 
 #ifdef CONFIG_CPU_PXA988
@@ -62,7 +72,7 @@ static inline int irq_need_handle(struct irq_data *d)
 	 * from the GIC spi irq number to get the raw icu based irq.
 	 * For PPI and SGI, just skip it.
 	 */
-	return d->irq - IRQ_PXA988_START;
+	return d->irq - ICU_IRQ_START;
 }
 
 static void icu_mask_irq(struct irq_data *d)
@@ -125,20 +135,26 @@ void __init mmp_wakeupgen_init(void)
 	int irq;
 
 	/* disable global irq/fiq in icu for all the cores */
-#ifdef CONFIG_CPU_PXA988
+#if defined(CONFIG_CPU_PXA988)
 	__raw_writel(0x3, PXA988_ICU_CP_GBL_INT_MSK);
 	__raw_writel(0x3, PXA988_ICU_A9C0_GBL_INT_MSK);
 	__raw_writel(0x3, PXA988_ICU_A9C1_GBL_INT_MSK);
+#elif defined(CONFIG_CPU_PXA1088)
+	__raw_writel(0x3, PXA1088_ICU_CP_GBL_INT_MSK);
+	__raw_writel(0x3, PXA1088_ICU_APC0_GBL_INT_MSK);
+	__raw_writel(0x3, PXA1088_ICU_APC1_GBL_INT_MSK);
+	__raw_writel(0x3, PXA1088_ICU_APC2_GBL_INT_MSK);
+	__raw_writel(0x3, PXA1088_ICU_APC3_GBL_INT_MSK);
 #endif
 	/*
 	 * config all the interrupt source be able to interrupt the cpu 0,
 	 * except those which are routed to Seagull
 	 * in IRQ mode, with priority 0 as masked by default.
 	 */
-	for (irq = 0; irq < 64; irq++) {
-		if (irq == IRQ_PXA988_AIRQ - 32
-		 || irq == IRQ_PXA988_CP_TIMER1 - 32
-		 || irq == IRQ_PXA988_CP_TIMER2_3 - 32)
+	for (irq = 0; irq < ICU_IRQ_END - ICU_IRQ_START; irq++) {
+		if (irq == IRQ_PXA988_AIRQ - ICU_IRQ_START
+		 || irq == IRQ_PXA988_CP_TIMER1 - ICU_IRQ_START
+		 || irq == IRQ_PXA988_CP_TIMER2_3 - ICU_IRQ_START)
 			__raw_writel(__raw_readl(ICU_INT_CONF(irq)) &
 					~ICU_INT_CONF_CPU0, ICU_INT_CONF(irq));
 		else
@@ -146,10 +162,9 @@ void __init mmp_wakeupgen_init(void)
 	}
 
 #ifdef CONFIG_CPU_PXA988
-	if (cpu_pxa98x_stepping() < PXA98X_A0) {
+	if (has_feat_ipc_wakeup_core()) {
 		/*
-		* WORKAROUND: "Trigger IPC interrupt to wake cores when sending
-		* IPI"
+		* "Trigger IPC interrupt to wake cores when sending IPI"
 		* Enable the IPC AP3 in ICU to let the IPC interrupt be able to
 		* wake up two AP cores.
 		*/

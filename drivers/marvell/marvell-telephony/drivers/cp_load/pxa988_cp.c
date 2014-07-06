@@ -26,7 +26,10 @@
 #define APMU_DEBUG_CP_HALT        (1 << 0)
 #define APMU_DEBUG_CP_CLK_OFF_ACK (1 << 3)
 
+#define SIMCRAD_STATUS         (APB_VIRT_BASE + 0x70000)
+
 extern unsigned long arbel_bin_phys_addr;
+extern int g_simcard;
 
 /**
  * interface exported by kernel for disabling FC during hold/release CP
@@ -51,6 +54,9 @@ void cp_releasecp(void)
 
 	acquire_fc_mutex();
 	printk("%s: acquire fc mutex\n", __func__);
+
+	printk("%s: g_simcard=%d register=%#X\n", __func__, g_simcard, SIMCRAD_STATUS);
+	writel(g_simcard, SIMCRAD_STATUS);
 
 	/*
 	 * unmask CP_CLK_OFF_ACK and CP_HALT

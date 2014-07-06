@@ -68,6 +68,7 @@ struct i2c_pxa_platform_data {
 	unsigned int		use_pio :1;
 	unsigned int		fast_mode :1;
 	unsigned int		high_mode:1;
+	unsigned int		fifo_mode:1;
 	unsigned char		master_code;
 	unsigned int		ilcr;
 	unsigned int		iwcr;

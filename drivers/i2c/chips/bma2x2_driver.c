@@ -1,5 +1,5 @@
-/*  Date: 2012/11/14 16:29:00
- *  Revision: 1.7
+/*  Date: 2013/06/17 22:13:00
+ *  Revision: 1.7.2
  */
 
 /*
@@ -29,17 +29,48 @@
 #ifdef CONFIG_HAS_EARLYSUSPEND
 #include <linux/earlysuspend.h>
 #endif
+#ifdef CONFIG_PM_RUNTIME
+#include <linux/pm_runtime.h>
+#endif
 #ifdef CONFIG_INPUT_BMA2x2_ACC_ALERT_INT
-//#include <linux/wakelock.h>
+#include <linux/wakelock.h>
 #include <linux/gpio.h>
-#include <mach/mfp-pxa988-aruba.h>
-// GPIO033_GPIO_33
+#include <mach/gpio-edge.h>
+#if defined(CONFIG_MACH_HELANDELOS) || defined(CONFIG_MACH_WILCOX)
+#include <mach/mfp-pxa1088-delos.h>
+#elif defined(CONFIG_MACH_CS05)
+#include <mach/mfp-pxa1088-cs05.h>
+#elif defined(CONFIG_MACH_DEGAS)
+#include <mach/mfp-pxa1088-degas.h>
+#elif defined(CONFIG_MACH_CT01)
+#include <mach/mfp-pxa1088-ct01.h>
+#elif defined(CONFIG_MACH_CS02)
+#include <mach/mfp-pxa986-cs02.h>
+#elif defined(CONFIG_MACH_GOLDEN)
+#include <mach/mfp-pxa986-golden.h>
+#elif defined(CONFIG_MACH_GOYA)
+#include <mach/mfp-pxa986-goya.h>
+#elif defined(CONFIG_MACH_BAFFIN)
+#include <mach/mfp-pxa988-baffin.h>
+#elif defined(CONFIG_MACH_BAFFINQ)
+#include <mach/mfp-pxa1088-baffinq.h>
+#elif defined(CONFIG_MACH_LT02)
+#include <mach/mfp-pxa986-lt02.h>
+#endif
 #endif
 
-#include <linux/sensors_head.h>
-
+#include "sensors_head.h"
 #include "bst_sensor_common.h"
 
+#if defined(CONFIG_MACH_WILCOX)
+#define DEFENCE_REACTIVE_ALERT
+#endif
+#if defined(DEFENCE_REACTIVE_ALERT)
+#include <linux/smp.h>
+#include <linux/sched.h>
+#include <linux/time.h>
+#include <linux/ktime.h>
+#endif
 
 #define SENSOR_NAME			"bma2x2"
 #define ABSMIN				-512
@@ -55,7 +86,7 @@
 #define SLOPE_Z_INDEX			7
 #define BMA2X2_MAX_DELAY		200
 #define BMA2X2_RANGE_SET		3  /* +/- 2G */
-#define BMA2X2_BW_SET			12 /* 125HZ  */
+#define BMA2X2_BW_SET			BMA2X2_BW_31_25HZ
 
 #define LOW_G_INTERRUPT				REL_Z
 #define HIGH_G_INTERRUPT			REL_HWHEEL
@@ -796,7 +827,7 @@
 #define BMA2X2_SLO_NO_MOT_THRES__POS                  0
 #define BMA2X2_SLO_NO_MOT_THRES__LEN                  8
 #define BMA2X2_SLO_NO_MOT_THRES__MSK                  0xFF
-#define BMA2X2_SLO_NO_MOT_THRES__REG		BMA2X2_SLO_NO_MOT_THRES_REG
+#define BMA2X2_SLO_NO_MOT_THRES__REG           BMA2X2_SLO_NO_MOT_THRES_REG
 
 #define BMA2X2_TAP_DUR__POS                    0
 #define BMA2X2_TAP_DUR__LEN                    3
@@ -892,6 +923,7 @@
 #define BMA2X2_SELF_TEST_AMP__LEN               1
 #define BMA2X2_SELF_TEST_AMP__MSK               0x10
 #define BMA2X2_SELF_TEST_AMP__REG               BMA2X2_SELF_TEST_REG
+
 
 #define BMA2X2_UNLOCK_EE_PROG_MODE__POS     0
 #define BMA2X2_UNLOCK_EE_PROG_MODE__LEN     1
@@ -1227,8 +1259,15 @@
 #define BMA_MAX_RETRY_I2C_XFER (100)
 
 #define CALIBRATION_FILE_PATH	"/efs/calibration_data"
-
+//#define CALIBRATION_FILE_PATH	"/efs/sensor/acc_cal"
 unsigned char *sensor_name[] = { "BMA255", "BMA250E", "BMA222E", "BMA280" };
+#if defined(CONFIG_MACH_HELANDELOS) \
+	|| defined(CONFIG_MACH_WILCOX) \
+	|| defined(CONFIG_MACH_CS02) \
+	|| defined(CONFIG_MACH_BAFFINQ) \
+	|| defined(CONFIG_MACH_CS05)
+#define BMA2X2_MINUS_SIGNED_Z /* For REAR plate located bma2x2 calibration */
+#endif
 
 struct bma2x2acc {
 	s16	x,
@@ -1266,9 +1305,10 @@ struct bma2x2_data {
 	struct bma2x2_platform_data *pdata;
 	struct mutex data_mutex;
 	struct work_struct alert_work;
-//	struct wake_lock reactive_wake_lock;
+	struct wake_lock reactive_wake_lock;
 	atomic_t reactive_state;
 	atomic_t reactive_enable;
+	atomic_t factory_test;
 	bool factory_mode;
 #endif
 	int IRQ;
@@ -1286,6 +1326,11 @@ static struct bma2x2_data *bma2x2_acc_get_data(void)
 	return bma2x2_data;
 }
 
+#if defined(DEFENCE_REACTIVE_ALERT)
+static unsigned long long t_before;
+static unsigned long nanosec_before;
+#endif
+
 #ifdef CONFIG_HAS_EARLYSUSPEND
 static void bma2x2_early_suspend(struct early_suspend *h);
 static void bma2x2_late_resume(struct early_suspend *h);
@@ -1298,9 +1343,7 @@ static void bma2x2_remap_sensor_data(struct bma2x2acc *val,
 #ifdef CONFIG_BMA_USE_PLATFORM_DATA
 	struct bosch_sensor_data bsd;
 
-	if ((NULL == client_data->bst_pd) ||
-			(BOSCH_SENSOR_PLACE_UNKNOWN
-			 == client_data->bst_pd->place))
+	if (NULL == client_data->bst_pd)
 		return;
 
 	bsd.x = val->x;
@@ -1981,8 +2024,7 @@ static int bma2x2_set_low_g_duration(struct i2c_client *client, unsigned char
 	int comres = 0;
 	unsigned char data;
 
-	comres = bma2x2_smbus_read_byte(client, BMA2X2_LOWG_DUR__REG, &data);
-	data = BMA2X2_SET_BITSLICE(data, BMA2X2_LOWG_DUR, duration);
+	data = duration;
 	comres = bma2x2_smbus_write_byte(client, BMA2X2_LOWG_DUR__REG, &data);
 
 	return comres;
@@ -2007,8 +2049,7 @@ static int bma2x2_set_low_g_threshold(struct i2c_client *client, unsigned char
 	int comres = 0;
 	unsigned char data;
 
-	comres = bma2x2_smbus_read_byte(client, BMA2X2_LOWG_THRES__REG, &data);
-	data = BMA2X2_SET_BITSLICE(data, BMA2X2_LOWG_THRES, threshold);
+	data = threshold;
 	comres = bma2x2_smbus_write_byte(client, BMA2X2_LOWG_THRES__REG, &data);
 
 	return comres;
@@ -2033,8 +2074,7 @@ static int bma2x2_set_high_g_duration(struct i2c_client *client, unsigned char
 	int comres = 0;
 	unsigned char data;
 
-	comres = bma2x2_smbus_read_byte(client, BMA2X2_HIGHG_DUR__REG, &data);
-	data = BMA2X2_SET_BITSLICE(data, BMA2X2_HIGHG_DUR, duration);
+	data = duration;
 	comres = bma2x2_smbus_write_byte(client, BMA2X2_HIGHG_DUR__REG, &data);
 
 	return comres;
@@ -2059,8 +2099,7 @@ static int bma2x2_set_high_g_threshold(struct i2c_client *client, unsigned char
 	int comres = 0;
 	unsigned char data;
 
-	comres = bma2x2_smbus_read_byte(client, BMA2X2_HIGHG_THRES__REG, &data);
-	data = BMA2X2_SET_BITSLICE(data, BMA2X2_HIGHG_THRES, threshold);
+	data = threshold;
 	comres = bma2x2_smbus_write_byte(client, BMA2X2_HIGHG_THRES__REG,
 			&data);
 
@@ -2380,6 +2419,9 @@ static int bma2x2_set_mode(struct i2c_client *client, unsigned char Mode)
 	int comres = 0;
 	unsigned char data1, data2;
 	struct bma2x2_data *bma2x2 = i2c_get_clientdata(client);
+	pr_info("%s: %d reactive_enable = %d, reactive_state =%d\n", __func__, Mode,
+		atomic_read(&bma2x2->reactive_enable),
+		atomic_read(&bma2x2->reactive_state));
 
 	if (Mode < 6) {
 		comres = bma2x2_smbus_read_byte(client, BMA2X2_MODE_CTRL_REG,
@@ -2389,8 +2431,9 @@ static int bma2x2_set_mode(struct i2c_client *client, unsigned char Mode)
 				&data2);
 		switch (Mode) {
 		case BMA2X2_MODE_NORMAL:
-				#ifdef CONFIG_INPUT_BMA2x2_ACC_ALERT_INT
+				#if 0 //def CONFIG_INPUT_BMA2x2_ACC_ALERT_INT
 				if(atomic_read(&bma2x2->reactive_enable)){
+					pr_info("%s: %d Break! cause reactive_enable is 1\n", __func__, Mode);
 					break;
 				}
 				#endif
@@ -2400,10 +2443,13 @@ static int bma2x2_set_mode(struct i2c_client *client, unsigned char Mode)
 						BMA2X2_LOW_POWER_MODE, 0);
 				bma2x2_smbus_write_byte(client,
 						BMA2X2_MODE_CTRL_REG, &data1);
-				mdelay(1);
+				mdelay(3);
 				bma2x2_smbus_write_byte(client,
 					BMA2X2_LOW_NOISE_CTRL_REG, &data2);
-                                bma2x2_open_cal(client);
+				bma2x2_open_cal(client);
+				pr_info("%s: %d Success  reactive_enable = %d, reactive_state =%d\n", __func__, Mode,
+					atomic_read(&bma2x2->reactive_enable),
+					atomic_read(&bma2x2->reactive_state));
 				break;
 		case BMA2X2_MODE_LOWPOWER1:
 				data1  = BMA2X2_SET_BITSLICE(data1,
@@ -2412,9 +2458,12 @@ static int bma2x2_set_mode(struct i2c_client *client, unsigned char Mode)
 						BMA2X2_LOW_POWER_MODE, 0);
 				bma2x2_smbus_write_byte(client,
 						BMA2X2_MODE_CTRL_REG, &data1);
-				mdelay(1);
+				mdelay(3);
 				bma2x2_smbus_write_byte(client,
 					BMA2X2_LOW_NOISE_CTRL_REG, &data2);
+				pr_info("%s: %d Success  reactive_enable = %d, reactive_state =%d\n", __func__, Mode,
+					atomic_read(&bma2x2->reactive_enable),
+					atomic_read(&bma2x2->reactive_state));
 				break;
 		case BMA2X2_MODE_SUSPEND:
 				#ifdef CONFIG_INPUT_BMA2x2_ACC_ALERT_INT
@@ -2428,23 +2477,26 @@ static int bma2x2_set_mode(struct i2c_client *client, unsigned char Mode)
 						BMA2X2_LOW_POWER_MODE, 0);
 				bma2x2_smbus_write_byte(client,
 					BMA2X2_LOW_NOISE_CTRL_REG, &data2);
-				mdelay(1);
+				mdelay(3);
 				bma2x2_smbus_write_byte(client,
 					BMA2X2_MODE_CTRL_REG, &data1);
+				pr_info("%s: %d Success!  reactive_enable = %d, reactive_state =%d\n", __func__, Mode,
+					atomic_read(&bma2x2->reactive_enable),
+					atomic_read(&bma2x2->reactive_state));
 				break;
 		case BMA2X2_MODE_DEEP_SUSPEND:
 				#ifdef CONFIG_INPUT_BMA2x2_ACC_ALERT_INT
 				if(atomic_read(&bma2x2->reactive_enable)){
 					break;
 				}
-				#endif			
+				#endif
 				data1  = BMA2X2_SET_BITSLICE(data1,
 							BMA2X2_MODE_CTRL, 1);
 				data2  = BMA2X2_SET_BITSLICE(data2,
 						BMA2X2_LOW_POWER_MODE, 1);
 				bma2x2_smbus_write_byte(client,
 						BMA2X2_MODE_CTRL_REG, &data1);
-				mdelay(1);
+				mdelay(3);
 				bma2x2_smbus_write_byte(client,
 					BMA2X2_LOW_NOISE_CTRL_REG, &data2);
 				break;
@@ -2455,7 +2507,7 @@ static int bma2x2_set_mode(struct i2c_client *client, unsigned char Mode)
 						BMA2X2_LOW_POWER_MODE, 1);
 				bma2x2_smbus_write_byte(client,
 						BMA2X2_MODE_CTRL_REG, &data1);
-				mdelay(1);
+				mdelay(3);
 				bma2x2_smbus_write_byte(client,
 					BMA2X2_LOW_NOISE_CTRL_REG, &data2);
 				break;
@@ -2466,7 +2518,7 @@ static int bma2x2_set_mode(struct i2c_client *client, unsigned char Mode)
 						BMA2X2_LOW_POWER_MODE, 1);
 				bma2x2_smbus_write_byte(client,
 					BMA2X2_LOW_NOISE_CTRL_REG, &data2);
-				mdelay(1);
+				mdelay(3);
 				bma2x2_smbus_write_byte(client,
 						BMA2X2_MODE_CTRL_REG, &data1);
 		break;
@@ -2552,8 +2604,6 @@ static int bma2x2_set_range(struct i2c_client *client, unsigned char Range)
 			data1  = BMA2X2_SET_BITSLICE(data1,
 					BMA2X2_RANGE_SEL, 12);
 			break;
-		default:
-			break;
 		}
 		comres += bma2x2_smbus_write_byte(client, BMA2X2_RANGE_SEL_REG,
 				&data1);
@@ -2624,8 +2674,6 @@ static int bma2x2_set_bandwidth(struct i2c_client *client, unsigned char BW)
 			Bandwidth = BMA2X2_BW_1000HZ;
 
 			/*  1000 Hz      500 uS   */
-			break;
-		default:
 			break;
 		}
 		comres = bma2x2_smbus_read_byte(client, BMA2X2_BANDWIDTH__REG,
@@ -2729,8 +2777,6 @@ int bma2x2_set_sleep_duration(struct i2c_client *client, unsigned char
 			sleep_duration = BMA2X2_SLEEP_DUR_1S;
 
 			/*  1 SECS   */
-			break;
-		default:
 			break;
 		}
 		comres = bma2x2_smbus_read_byte(client, BMA2X2_SLEEP_DUR__REG,
@@ -3350,21 +3396,19 @@ static int bma2x2_read_accel_z(struct i2c_client *client,
 static int bma2x2_open_cal(struct i2c_client *client)
 {
 	struct bma2x2_data *bma2x2 = i2c_get_clientdata(client);
-
         int cal_data[3];
         int err;
 	mm_segment_t old_fs;
 	struct file *cal_filp = NULL;
 
 	printk(KERN_INFO "bma2x2_open_cal");
-
 	old_fs = get_fs();
 	set_fs(KERNEL_DS);
 
 	cal_filp = filp_open(CALIBRATION_FILE_PATH,
 		O_RDONLY, 0666);
         if (IS_ERR(cal_filp)) {
-		pr_err("[ACC] %s: Can't open calibration file\n",
+		pr_err("[ACC] %s: calibration has never done.\n",
 			__func__);
 		set_fs(old_fs);
 		err = PTR_ERR(cal_filp);
@@ -3388,78 +3432,95 @@ static int bma2x2_open_cal(struct i2c_client *client)
         bma2x2_set_offset_z(bma2x2->bma2x2_client, (unsigned char)cal_data[2]);
 
         return 0;
-
 }
 
 #ifdef CONFIG_INPUT_BMA2x2_ACC_ALERT_INT
 static int bma2x2_get_motion_interrupt(struct i2c_client *client)
 {
-	int comres = 0;
-        int result = 0;
+	int comres;
+	int result = 0;
 	unsigned char data;
-	
+
 	comres = bma2x2_smbus_read_byte(client, BMA2X2_SLOPE_INT_S__REG,
 			&data);
 
-        pr_info("%s: ACC_INT_STATUS %x\n", __func__, data);
+	pr_info("%s: ACC_INT_STATUS %x\n", __func__, data);
 	if (data & 0x04)
 		result = 1;
-
-        return result;
+	else
+		pr_info("%s: Skip!! INTRPT report cause STATUS is not 0x04\n", __func__);
+	return result;
 }
 
 static void bma2x2_set_motion_interrupt(struct i2c_client *client, bool enable, bool factorytest)
 {
 	struct bma2x2_data *bma2x2 = i2c_get_clientdata(client);
-	int comres = 0;
+	int comres;
         unsigned char data;
 	if (enable) {
-                bma2x2_soft_reset(bma2x2->bma2x2_client);
-                bma2x2_set_range(client, BMA2X2_RANGE_SET);
-                bma2x2_set_mode(bma2x2->bma2x2_client,
-                                BMA2X2_MODE_LOWPOWER1);
-		usleep_range(5000, 6000);
-                data = 0x04;
-                comres = bma2x2_smbus_write_byte(client, BMA2X2_EN_INT1_PAD_SLOPE__REG,
-                                                        &data);
-                data = 0x00;
-                comres = bma2x2_smbus_write_byte(client, BMA2X2_SLOPE_DUR__REG,
-                                                        &data);
+		bma2x2_soft_reset(bma2x2->bma2x2_client);
+		mdelay(20);
+		bma2x2_set_mode(bma2x2->bma2x2_client, BMA2X2_MODE_LOWPOWER1);
+		mdelay(20);
+		bma2x2_set_bandwidth(client, BMA2X2_BW_SET);
+		bma2x2_set_range(client, BMA2X2_RANGE_SET);
+		mdelay(5);
+
+		data = 0x04;
+		comres = bma2x2_smbus_write_byte(client, BMA2X2_EN_INT1_PAD_SLOPE__REG,
+                                                    &data);
+		mdelay(3);
+
+		data =  0x02; /*0x02: Count3(Ignore 2 interrupts), 0x03:Count4*/
+		comres = bma2x2_smbus_write_byte(client, BMA2X2_SLOPE_DUR__REG,
+		                                        &data);
+		mdelay(3);
 		if (factorytest){
 			data = 0x00;
 			comres = bma2x2_smbus_write_byte(client, BMA2X2_SLOPE_THRES__REG,
 								&data);
 		}
 		else{
-			data = 0x12;
+		#if defined(CONFIG_MACH_CS02)||defined(CONFIG_MACH_WILCOX)
+			data = 0x0c;
+		#else
+			data = 0x0a; //12->a
+		#endif
 			comres = bma2x2_smbus_write_byte(client, BMA2X2_SLOPE_THRES__REG,
 								&data);
 		}
-                data = 0x07;
-                comres = bma2x2_smbus_write_byte(client, BMA2X2_INT_ENABLE1_REG,
-                                                        &data);
+		mdelay(3);		
+		data = 0x07;
+		comres = bma2x2_smbus_write_byte(client, BMA2X2_INT_ENABLE1_REG,
+		                                        &data);
 	} 
 	else {
-                data = 0x00;
-                comres = bma2x2_smbus_write_byte(client, BMA2X2_EN_INT1_PAD_SLOPE__REG,
-                                                        &data);
-                data = 0x03;
-                comres = bma2x2_smbus_write_byte(client, BMA2X2_SLOPE_DUR__REG,
-                                                        &data);
-                data = 0x00;
-                comres = bma2x2_smbus_write_byte(client, BMA2X2_INT_ENABLE1_REG,
-                                                        &data);
-                data = 0xff;
-                comres = bma2x2_smbus_write_byte(client, BMA2X2_SLOPE_THRES__REG,
-                                                        &data);
-		if(factorytest) /*ArubaTD*/
-			bma2x2_set_mode(bma2x2->bma2x2_client,
-                                BMA2X2_MODE_NORMAL);
-		else
-			bma2x2_set_mode(bma2x2->bma2x2_client,
-                                BMA2X2_MODE_SUSPEND);
-
-		usleep_range(5000, 6000);
+		data = 0x00;
+		comres = bma2x2_smbus_write_byte(client, BMA2X2_EN_INT1_PAD_SLOPE__REG,
+		                                        &data);
+		mdelay(2);		
+		data = 0x03;
+		comres = bma2x2_smbus_write_byte(client, BMA2X2_SLOPE_DUR__REG,
+		                                        &data);
+		mdelay(2);
+		data = 0x00;
+		comres = bma2x2_smbus_write_byte(client, BMA2X2_INT_ENABLE1_REG,
+		                                        &data);
+		mdelay(2);
+		data = 0xff;
+		comres = bma2x2_smbus_write_byte(client, BMA2X2_SLOPE_THRES__REG,
+		                                        &data);
+		mdelay(2);
+		if(atomic_read(&bma2x2->factory_test)){
+			atomic_set(&bma2x2->factory_test, 0);
+			bma2x2_set_mode(bma2x2->bma2x2_client, BMA2X2_MODE_NORMAL);
+		}else{
+			if(atomic_read(&bma2x2->enable))
+				bma2x2_set_mode(bma2x2->bma2x2_client, BMA2X2_MODE_NORMAL);
+			else
+				bma2x2_set_mode(bma2x2->bma2x2_client, BMA2X2_MODE_SUSPEND);
+		}
+		mdelay(5);
 	}
 }
 #endif
@@ -4568,7 +4629,6 @@ static void bma2x2_work_func(struct work_struct *work)
 	schedule_delayed_work(&bma2x2->work, delay);
 }
 
-
 static ssize_t bma2x2_register_store(struct device *dev,
 		struct device_attribute *attr,
 		const char *buf, size_t count)
@@ -4725,6 +4785,7 @@ static ssize_t bma2x2_value_show(struct device *dev,
 	return sprintf(buf, "%d %d %d\n", acc_value.x, acc_value.y,
 			acc_value.z);
 }
+
 /* raw-data for sensor test */
 static ssize_t bma2x2_raw_data_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -4777,7 +4838,6 @@ static ssize_t bma2x2_chip_id_show(struct device *dev,
 
 }
 
-
 static ssize_t bma2x2_place_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
@@ -4794,7 +4854,6 @@ static ssize_t bma2x2_place_show(struct device *dev,
 
 	return sprintf(buf, "%d\n", place);
 }
-
 
 static ssize_t bma2x2_delay_store(struct device *dev,
 		struct device_attribute *attr,
@@ -4838,7 +4897,7 @@ static void bma2x2_set_enable(struct device *dev, int enable)
 			bma2x2_set_mode(bma2x2->bma2x2_client,
 					BMA2X2_MODE_NORMAL);
 			schedule_delayed_work(&bma2x2->work,
-				msecs_to_jiffies(atomic_read(&bma2x2->delay)));
+			msecs_to_jiffies(atomic_read(&bma2x2->delay)));
 			atomic_set(&bma2x2->enable, 1);
 		}
 
@@ -4870,6 +4929,8 @@ static ssize_t bma2x2_enable_store(struct device *dev,
 	error = strict_strtoul(buf, 10, &data);
 	if (error)
 		return error;
+	printk("[ACC] %s  data=%d\n",__func__,data);
+
 	if ((data == 0) || (data == 1))
 		bma2x2_set_enable(dev, data);
 
@@ -5081,9 +5142,9 @@ static ssize_t bma2x2_calibration_show(struct device *dev,
 	}
 	if (((cal_data[0] == 0) &&(cal_data[1] == 0) &&(cal_data[2] == 0)))
 		result = 0;
-	
-	return sprintf(buf, "%d %d %d %d\n", result, cal_data[0],cal_data[1],cal_data[2]);
 
+	printk(KERN_INFO "bma2x2_calibration_show %d  %d %d %d\n",result,cal_data[0],cal_data[1],cal_data[2]);
+	return sprintf(buf, "%d %d %d %d\n", result, cal_data[0],cal_data[1],cal_data[2]);
 }
 
 static ssize_t bma2x2_calibration_store(struct device *dev,
@@ -5092,8 +5153,7 @@ static ssize_t bma2x2_calibration_store(struct device *dev,
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct bma2x2_data *bma2x2 = i2c_get_clientdata(client);
-
-	int cal_data[3];
+	int cal_data[3] = {0,};
         unsigned long data;
 	signed char tmp;
 	unsigned char timeout = 0;
@@ -5107,6 +5167,18 @@ static ssize_t bma2x2_calibration_store(struct device *dev,
 
 	printk(KERN_INFO "bma2x2_calibration_store");
 	if(data){
+#if defined(BMA2X2_MINUS_SIGNED_Z) || defined(CONFIG_MACH_DELOS_CTC) 
+		/* check the current z value and set offset_target_z based on it */
+		short acc_value_z = 0;
+		unsigned char offset_target_z = 0;
+		bma2x2_read_accel_z(bma2x2->bma2x2_client, bma2x2->sensor_type,
+									 &acc_value_z);
+		printk(KERN_INFO "acc_value_z = [%d], while accel calibration\n", acc_value_z);
+		if(acc_value_z > 0)
+			offset_target_z = 1;
+		else
+			offset_target_z = 2;
+#endif
 		/* x axis fast calibration */
 		if (bma2x2_set_offset_target(bma2x2->bma2x2_client, 1, (unsigned
 						char)0) < 0)
@@ -5144,9 +5216,14 @@ static ssize_t bma2x2_calibration_store(struct device *dev,
 		} while (tmp == 0);
 		
 		/* z axis fast calibration */
-		if (bma2x2_set_offset_target(bma2x2->bma2x2_client, 3, (unsigned
-					char)1) < 0)
+#if defined (BMA2X2_MINUS_SIGNED_Z) || defined(CONFIG_MACH_DELOS_CTC)
+		/* check the current z value and set offset_target_z based on it */
+		if (bma2x2_set_offset_target(bma2x2->bma2x2_client, 3, offset_target_z) < 0)
 			return -EINVAL;
+#else
+		if (bma2x2_set_offset_target(bma2x2->bma2x2_client, 3, (unsigned char)1) < 0)
+			return -EINVAL;
+#endif
 
 		if (bma2x2_set_cal_trigger(bma2x2->bma2x2_client, 3) < 0)
 			return -EINVAL;
@@ -5161,10 +5238,10 @@ static ssize_t bma2x2_calibration_store(struct device *dev,
 			};
 		} while (tmp == 0);
 
-		/* calibration */
-        bma2x2_get_offset_x(bma2x2->bma2x2_client, &cal_data[0]);
-        bma2x2_get_offset_y(bma2x2->bma2x2_client, &cal_data[1]);
-        bma2x2_get_offset_z(bma2x2->bma2x2_client, &cal_data[2]);
+	/* calibration */
+		bma2x2_get_offset_x(bma2x2->bma2x2_client, (unsigned char*)&cal_data[0]);
+		bma2x2_get_offset_y(bma2x2->bma2x2_client, (unsigned char*)&cal_data[1]);
+		bma2x2_get_offset_z(bma2x2->bma2x2_client, (unsigned char*)&cal_data[2]);
 
 	printk(KERN_INFO "[ACC] (%d,%d,%d)",cal_data[0],cal_data[1],cal_data[2]);
 
@@ -5224,6 +5301,7 @@ static ssize_t bma2x2_calibration_store(struct device *dev,
 	        bma2x2_set_offset_y(bma2x2->bma2x2_client, (unsigned char)cal_data[1]);
         	bma2x2_set_offset_z(bma2x2->bma2x2_client, (unsigned char)cal_data[2]);		
 	}
+	printk(KERN_INFO "[ACC] cal_data (%d,%d,%d)===== end",cal_data[0],cal_data[1],cal_data[2]);
 
 	return count;
 }
@@ -5598,20 +5676,12 @@ static ssize_t bma2x2_reactive_enable_show(struct device *dev,
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct bma2x2_data *bma2x2 = i2c_get_clientdata(client);
-	int err=1; /*TEMP*/	
+
 	pr_info("%s: state =%d onoff=%d\n", __func__,
 		atomic_read(&bma2x2->reactive_state),atomic_read(&bma2x2->reactive_enable));
-#if 1 /*TEMP*/
-	pr_info("%s: factory_mode=%d\n", __func__, bma2x2->factory_mode);
-	if(bma2x2->factory_mode==true) {	
-	 	return sprintf(buf, "%d\n", err);		
-	}
-	else		
-		return sprintf(buf, "%d\n", atomic_read(&bma2x2->reactive_state));
-#else		
+
  	return sprintf(buf, "%d\n",
 		atomic_read(&bma2x2->reactive_state));
-#endif
 }
 
 static ssize_t bma2x2_reactive_enable_store(struct device *dev,
@@ -5625,15 +5695,18 @@ static ssize_t bma2x2_reactive_enable_store(struct device *dev,
 	bool factory_test = false;
 	unsigned long value = 0;
 	int err = count;
+#if defined(DEFENCE_REACTIVE_ALERT)
+	int this_cpu;
+	unsigned long long t;
+	unsigned long nanosec_rem;
+#endif
+	//unsigned long mfp_pin[2];
 
 	if (strict_strtoul(buf, 10, &value)) {
 		err = -EINVAL;
 		return err;
 	}
-#if defined(CONFIG_MACH_ARUBA_OPEN)
-	if (board_hw_revision < 6)
-		return count;
-#endif
+
 	pr_info("%s: value=%d\n", __func__, value);		
 	switch (value) {
 	case 0:
@@ -5644,6 +5717,7 @@ static ssize_t bma2x2_reactive_enable_store(struct device *dev,
 	case 2:
 		onoff = true;
 		factory_test = true;
+		atomic_set(&bma2x2->factory_test, 1);
 		break;
 	default:
 		err = -EINVAL;
@@ -5651,54 +5725,70 @@ static ssize_t bma2x2_reactive_enable_store(struct device *dev,
 		return count;
 	}
 
+	//mfp_pin[0] = mfp_read(mfp_to_gpio(GPIO010_GPIO_10)); pr_info("===== value=%lx\n", mfp_pin[0]);
 	if (bma2x2->IRQ) {
 		if (!value) {
 			disable_irq_wake(bma2x2->IRQ);
 			disable_irq(bma2x2->IRQ);
-		} else {
+		} //else {
+		//	enable_irq(bma2x2->IRQ);
+		//	enable_irq_wake(bma2x2->IRQ);
+		//}
+	}
+	//mfp_pin[1] = mfp_read(mfp_to_gpio(GPIO010_GPIO_10)); pr_info("===== value=%lx\n", mfp_pin[1]);
+	pr_info("%s: =============2 After IRQ\n", __func__);
+	mutex_lock(&bma2x2->data_mutex);
+	atomic_set(&bma2x2->reactive_enable, onoff);
+	atomic_set(&bma2x2->reactive_state, false);
+	mdelay(1);
+
+#if defined(DEFENCE_REACTIVE_ALERT)
+	this_cpu = raw_smp_processor_id();
+	t = cpu_clock(this_cpu);
+	nanosec_rem = do_div(t, 1000000000);
+	//pr_info("%s: ======this_cpu:%d [%5lu.%06lu] \n", __func__,this_cpu, (unsigned long) t,nanosec_rem / 1000);
+	t_before=t;
+	nanosec_before = nanosec_rem;
+#endif
+	if (bma2x2->IRQ)
+		bma2x2_set_motion_interrupt(bma2x2->bma2x2_client, onoff, factory_test);
+	mdelay(1);
+	pr_info("%s: =============3 After Set Motion\n", __func__);
+	mutex_unlock(&bma2x2->data_mutex);
+
+	pr_info("%s: onoff = %d, state =%d \n", __func__,
+		atomic_read(&bma2x2->reactive_enable),
+		atomic_read(&bma2x2->reactive_state));
+
+	if (bma2x2->IRQ) {
+		if (value) {
 			enable_irq(bma2x2->IRQ);
 			enable_irq_wake(bma2x2->IRQ);
 		}
 	}
-	mutex_lock(&bma2x2->data_mutex);
-	atomic_set(&bma2x2->reactive_enable, onoff);
-	if (bma2x2->IRQ){
-		if(bma2x2->factory_mode)
-			factory_test = true;	 /*ArubaTD*/		
-		bma2x2_set_motion_interrupt(bma2x2->bma2x2_client, onoff, factory_test);
-	}
-	atomic_set(&bma2x2->reactive_state, false);
-	mutex_unlock(&bma2x2->data_mutex);
-
-	if (value== 2)  /*ArubaTD*/
-		bma2x2->factory_mode = true;
-	else
-		bma2x2->factory_mode = false;
-	
-	pr_info("%s: onoff = %d, state =%d factory_mode=%d\n", __func__,
-		atomic_read(&bma2x2->reactive_enable),
-		atomic_read(&bma2x2->reactive_state),bma2x2->factory_mode);
-
 	return count;
 }
 #endif
 
-#if defined(CONFIG_MACH_ARUBA_OPEN)
-static ssize_t bma2x2_layout_show(struct device *dev,
+static ssize_t bma2x2_read_name(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
-	struct i2c_client *client = to_i2c_client(dev);
-	struct bma2x2_data *bma2x2 = i2c_get_clientdata(client);
-	int layout = 0;
+	struct input_dev *input = to_input_dev(dev);
+	struct bma2x2_data *bma2x2 = input_get_drvdata(input);
 
-	if(board_hw_revision < 6)
-		layout = 2;
-	else
-		layout = 0;
-	
-	return sprintf(buf, "%d\n", layout);
+	printk(KERN_INFO "Bosch Sensortec Device! %s registered \n",sensor_name[bma2x2->sensor_type]);
+	return sprintf(buf, "%s\n",sensor_name[bma2x2->sensor_type]);
 }
-#endif
+
+static ssize_t bma2x2_read_vendor(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct input_dev *input = to_input_dev(dev);
+//	struct bma2x2_data *bma2x2 = input_get_drvdata(input);
+
+	printk(KERN_INFO "ACC] %s vendor \n",CHIP_VENDOR);
+	return sprintf(buf, "%s\n",CHIP_VENDOR);
+}
 
 static DEVICE_ATTR(range, S_IRUGO|S_IWUSR|S_IWGRP,
 		bma2x2_range_show, bma2x2_range_store);
@@ -5811,10 +5901,10 @@ static DEVICE_ATTR(calibration, S_IRUGO|S_IWUSR|S_IWGRP,
 static DEVICE_ATTR(reactive_alert, S_IRUGO|S_IWUSR|S_IWGRP,
 		bma2x2_reactive_enable_show, bma2x2_reactive_enable_store);
 #endif
-#if defined(CONFIG_MACH_ARUBA_OPEN)
-static DEVICE_ATTR(layout, S_IRUGO,
-		bma2x2_layout_show, NULL);
-#endif
+static DEVICE_ATTR(name, S_IRUGO,
+		bma2x2_read_name, NULL);
+static DEVICE_ATTR(vendor, S_IRUGO,
+		bma2x2_read_vendor, NULL);
 
 static struct attribute *bma2x2_attributes[] = {
 	&dev_attr_range.attr,
@@ -5869,9 +5959,64 @@ static struct attribute *bma2x2_attributes[] = {
 #ifdef CONFIG_INPUT_BMA2x2_ACC_ALERT_INT
 	&dev_attr_reactive_alert.attr,
 #endif
-#if defined(CONFIG_MACH_ARUBA_OPEN)
-	&dev_attr_layout.attr,
+	NULL
+};
+
+static struct attribute *bma2x2_attributes_sensors[] = {
+	&dev_attr_range.attr,
+	&dev_attr_bandwidth.attr,
+	&dev_attr_mode.attr,
+	&dev_attr_raw_data.attr,
+	&dev_attr_raw_value.attr,
+	&dev_attr_value.attr,
+	&dev_attr_delay.attr,
+	&dev_attr_enable.attr,
+	&dev_attr_SleepDur.attr,
+	&dev_attr_reg.attr,
+	&dev_attr_fast_calibration_x.attr,
+	&dev_attr_fast_calibration_y.attr,
+	&dev_attr_fast_calibration_z.attr,
+	&dev_attr_fifo_mode.attr,
+	&dev_attr_fifo_framecount.attr,
+	&dev_attr_fifo_trig.attr,
+	&dev_attr_fifo_trig_src.attr,
+	&dev_attr_fifo_data_sel.attr,
+	&dev_attr_fifo_data_out_frame.attr,
+	&dev_attr_chip_id.attr,
+	&dev_attr_offset_x.attr,
+	&dev_attr_offset_y.attr,
+	&dev_attr_offset_z.attr,
+	&dev_attr_enable_int.attr,
+	&dev_attr_int_mode.attr,
+	&dev_attr_slope_duration.attr,
+	&dev_attr_slope_threshold.attr,
+	&dev_attr_slope_no_mot_duration.attr,
+	&dev_attr_slope_no_mot_threshold.attr,
+	&dev_attr_high_g_duration.attr,
+	&dev_attr_high_g_threshold.attr,
+	&dev_attr_low_g_duration.attr,
+	&dev_attr_low_g_threshold.attr,
+	&dev_attr_tap_threshold.attr,
+	&dev_attr_tap_duration.attr,
+	&dev_attr_tap_quiet.attr,
+	&dev_attr_tap_shock.attr,
+	&dev_attr_tap_samp.attr,
+	&dev_attr_orient_mode.attr,
+	&dev_attr_orient_blocking.attr,
+	&dev_attr_orient_hyst.attr,
+	&dev_attr_orient_theta.attr,
+	&dev_attr_flat_theta.attr,
+	&dev_attr_flat_hold_time.attr,
+	&dev_attr_selftest.attr,
+	&dev_attr_softreset.attr,
+	&dev_attr_temperature.attr,
+	&dev_attr_place.attr,
+	&dev_attr_calibration.attr,
+#ifdef CONFIG_INPUT_BMA2x2_ACC_ALERT_INT
+	&dev_attr_reactive_alert.attr,
 #endif
+	&dev_attr_name.attr,
+	&dev_attr_vendor.attr,	
 	NULL
 };
 
@@ -5886,15 +6031,37 @@ static void bma2x2_work_func_alert(struct work_struct *work)
 	struct bma2x2_data *bma2x2 = container_of(work,
 			struct bma2x2_data, alert_work);
 	int result;
+#if defined(DEFENCE_REACTIVE_ALERT)
+	int this_cpu;
+	unsigned long long t;
+	unsigned long nanosec_rem;
+#endif
 
 	result = bma2x2_get_motion_interrupt(bma2x2->bma2x2_client);
 	if (result || bma2x2->factory_mode) {
 		/*handle motion recognition*/
+		mdelay(10);
+#if defined(DEFENCE_REACTIVE_ALERT)
+		this_cpu = raw_smp_processor_id();
+		t = cpu_clock(this_cpu);
+		nanosec_rem = do_div(t, 1000000000);
+		//pr_info("%s: ======this_cpu:%d [%5lu.%06lu] \n", __func__,this_cpu, (unsigned long) t,nanosec_rem / 1000);
+		if((t-t_before)<2) {
+			unsigned long long calc;
+			calc =(unsigned long long)((t-t_before)*1000 +(nanosec_rem/1000000))-(unsigned long long)(nanosec_before/1000000);
+			if(calc<750) {
+				pr_info("%s: =============4 But (t-t_before=calc=%lu) is too short!!!!! \n", __func__,calc);
+				return;
+			}
+		}
+#endif
 		atomic_set(&bma2x2->reactive_state, true);
 		bma2x2->factory_mode = false;
 		pr_info("%s: motion interrupt happened\n",	__func__);
-		//wake_lock_timeout(&bma2x2->reactive_wake_lock,	msecs_to_jiffies(2000));
+		wake_lock_timeout(&bma2x2->reactive_wake_lock,	msecs_to_jiffies(2000));
 	}
+	pr_info("%s: =============4\n", __func__);
+	
 }
 
 irqreturn_t bma2x2_acc_irq_thread(int irq, void *dev)
@@ -6120,7 +6287,7 @@ static int bma2x2_setup_irq(struct bma2x2_data *bma2x2)
 	printk(KERN_INFO "%s\n",__func__);
 	gpio = mfp_to_gpio(GPIO010_GPIO_10);
 	
-	rc = gpio_request(gpio, "gpio_proximity_out");
+	rc = gpio_request(gpio, "gpio_acc_irq");
 	if (rc < 0) {
 		pr_err("%s: gpio %d request failed (%d)\n",
 			__func__, gpio, rc);
@@ -6134,12 +6301,10 @@ static int bma2x2_setup_irq(struct bma2x2_data *bma2x2)
 		goto err_gpio_direction_input;
 	}
 
-	irq =MMP_GPIO_TO_IRQ(gpio);
+	irq =gpio_to_irq(gpio); //MMP_GPIO_TO_IRQ(gpio);
 	if (irq > 0) {
-		rc = request_threaded_irq(irq,
-			NULL, bma2x2_acc_irq_thread,
-			IRQF_TRIGGER_RISING | IRQF_ONESHOT/*| IRQF_NO_SUSPEND*/,
-			"accelerometer", bma2x2);
+		rc = request_threaded_irq(irq,	NULL, bma2x2_acc_irq_thread,
+			IRQF_TRIGGER_RISING | IRQF_ONESHOT/*| IRQF_NO_SUSPEND*/,"accelerometer", bma2x2);
 		pr_info("%s: irq = %d\n", __func__, irq);
 	
 		if (rc < 0) {
@@ -6153,7 +6318,6 @@ static int bma2x2_setup_irq(struct bma2x2_data *bma2x2)
 	bma2x2->IRQ = irq;
 	goto done;
 
-err_request_irq:
 err_gpio_direction_input:
 	gpio_free(gpio);
 done:
@@ -6171,8 +6335,7 @@ static int bma2x2_probe(struct i2c_client *client,
 	struct input_dev *dev;
 	struct bma2x2_platform_data *pdata = client->dev.platform_data;
 
-	pr_info("[BMA]%s enter\n", __func__);
-
+	pr_info("[ACC]%s enter\n", __func__);
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
 		printk(KERN_INFO "i2c_check_functionality error\n");
 		goto exit;
@@ -6183,6 +6346,7 @@ static int bma2x2_probe(struct i2c_client *client,
 		goto exit;
 	}
 	/* read chip id */
+	mdelay(5);
 	tempvalue = i2c_smbus_read_word_data(client, BMA2X2_CHIP_ID_REG);
 	tmp_chip_id = tempvalue&0x00ff;
 
@@ -6221,24 +6385,25 @@ static int bma2x2_probe(struct i2c_client *client,
 	mutex_init(&data->mode_mutex);
 	mutex_init(&data->enable_mutex);
 #ifdef CONFIG_INPUT_BMA2x2_ACC_ALERT_INT
-#if defined(CONFIG_MACH_ARUBA_OPEN)
-	if (board_hw_revision >= 6)
-#endif
 	mutex_init(&data->data_mutex);
 #endif
-	bma2x2_set_bandwidth(client, BMA2X2_BW_SET);
-	bma2x2_set_range(client, BMA2X2_RANGE_SET);
+
+	err = bma2x2_set_bandwidth(client, BMA2X2_BW_SET);
+	if (err < 0){
+		printk(KERN_INFO "%s set bandwidth failed!\n",
+			sensor_name[data->sensor_type]);
+	}
+
+	err = bma2x2_set_range(client, BMA2X2_RANGE_SET);
+	if (err < 0){
+		printk(KERN_INFO "%s set g-range failed!\n",
+			sensor_name[data->sensor_type]);
+	}
 
 
 #if defined(BMA2X2_ENABLE_INT1) || defined(BMA2X2_ENABLE_INT2)
 	bma2x2_set_Int_Mode(client, 1);/*latch interrupt 250ms*/
 #endif
-	/*8,single tap
-	  10,orient
-	  11,flat*/
-//	bma2x2_set_Int_Enable(client, 8, 1);
-//	bma2x2_set_Int_Enable(client, 10, 1);
-//	bma2x2_set_Int_Enable(client, 11, 1);
 
 #ifdef BMA2X2_ENABLE_INT1
 	/* maps interrupt to INT1 pin */
@@ -6280,6 +6445,7 @@ static int bma2x2_probe(struct i2c_client *client,
 	}
 	dev->name = SENSOR_NAME;
 	dev->id.bustype = BUS_I2C;
+	dev->dev.parent = &client->dev;
 
 	input_set_capability(dev, EV_REL, SLOW_NO_MOTION_INTERRUPT);
 	input_set_capability(dev, EV_REL, LOW_G_INTERRUPT);
@@ -6294,13 +6460,14 @@ static int bma2x2_probe(struct i2c_client *client,
 	input_set_abs_params(dev, ABS_Z, ABSMIN, ABSMAX, 0, 0);
 
 	input_set_drvdata(dev, data);
+
 	err = input_register_device(dev);
 	if (err < 0) {
 		input_free_device(dev);
 		goto error_input_allocate_device_bma2x2;
 	}
-	data->input = dev;
 
+	data->input = dev;
 	err = sysfs_create_group(&data->input->dev.kobj,
 			&bma2x2_attribute_group);
 	if (err < 0)
@@ -6327,27 +6494,21 @@ static int bma2x2_probe(struct i2c_client *client,
 	atomic_set(&data->enable, 0);
 
 #ifdef CONFIG_INPUT_BMA2x2_ACC_ALERT_INT
-#if defined(CONFIG_MACH_ARUBA_OPEN)
-	if (board_hw_revision >= 6){
-#endif
 	//data->pdata = pdata;
 
 	INIT_WORK(&data->alert_work, bma2x2_work_func_alert);
-//	wake_lock_init(&data->reactive_wake_lock, WAKE_LOCK_SUSPEND, "reactive_wake_lock");
+	wake_lock_init(&data->reactive_wake_lock, WAKE_LOCK_SUSPEND, "reactive_wake_lock");
 
 	err = bma2x2_setup_irq(data);
 	if (err) {
 		pr_err("%s: could not setup irq\n", __func__);
 		goto exit_bma2x2_acc_alert_int;
 	}
-#if defined(CONFIG_MACH_ARUBA_OPEN)
-	}
-#endif
-	data->factory_mode = false;
+	atomic_set(&data->factory_test, 0);
 #endif
 
 	err = sensors_register(&bma2x2_device,
-			data, bma2x2_attributes,"accelerometer_sensor");
+			data, bma2x2_attributes_sensors,"accelerometer_sensor");
 	if (err < 0) {
 	pr_info("%s: could not sensors_register\n", __func__);
 	goto exit_bma2x2_sensors_register;
@@ -6376,6 +6537,12 @@ static int bma2x2_probe(struct i2c_client *client,
 	register_early_suspend(&data->early_suspend);
 #endif
 
+#ifdef CONFIG_PM_RUNTIME
+	pm_runtime_enable(&client->dev);//pm_runtime_enable(&client->adapter->dev);
+	err = pm_runtime_get_sync(&client->dev);
+	pm_runtime_put_sync_suspend(&client->dev);
+	pm_runtime_forbid(&client->dev);
+#endif //CONFIG_PM_RUNTIME
 	return 0;
 
 exit_bma2x2_sensors_register:
@@ -6383,10 +6550,7 @@ exit_bma2x2_sensors_register:
 		&bma2x2_attribute_group);
 exit_bma2x2_acc_alert_int:
 #ifdef CONFIG_INPUT_BMA2x2_ACC_ALERT_INT
-#if defined(CONFIG_MACH_ARUBA_OPEN)
-	if (board_hw_revision >= 6)
-#endif
-        ;//wake_lock_destroy(&data->reactive_wake_lock);
+        wake_lock_destroy(&data->reactive_wake_lock);
 #endif
 error_sysfs:
 	input_unregister_device(data->input);
@@ -6461,6 +6625,10 @@ static void bma2x2_late_resume(struct early_suspend *h)
 static int __devexit bma2x2_remove(struct i2c_client *client)
 {
 	struct bma2x2_data *data = i2c_get_clientdata(client);
+	
+#ifdef CONFIG_PM_RUNTIME
+	pm_runtime_disable(&client->dev);//pm_runtime_disable(&client->adapter->dev);
+#endif
 
 	bma2x2_set_enable(&client->dev, 0);
 #ifdef CONFIG_HAS_EARLYSUSPEND
@@ -6470,7 +6638,7 @@ static int __devexit bma2x2_remove(struct i2c_client *client)
 	input_unregister_device(data->input);
 
 #ifdef CONFIG_BMA_USE_PLATFORM_DATA
-	if ((NULL != data) && (NULL != data->bst_pd)) {
+	if (NULL != data->bst_pd) {
 		kfree(data->bst_pd);
 		data->bst_pd = NULL;
 	}
@@ -6490,7 +6658,7 @@ static int bma2x2_suspend(struct i2c_client *client, pm_message_t mesg)
 	if (atomic_read(&data->enable) == 1) {
 #ifdef CONFIG_INPUT_BMA2x2_ACC_ALERT_INT
 		if(!atomic_read(&data->reactive_enable)){
-			bma2x2_set_mode(data->bma2x2_client, BMA2X2_MODE_SUSPEND);
+		bma2x2_set_mode(data->bma2x2_client, BMA2X2_MODE_SUSPEND);
 		}
 #else		
 		bma2x2_set_mode(data->bma2x2_client, BMA2X2_MODE_SUSPEND);
@@ -6524,6 +6692,48 @@ static int bma2x2_resume(struct i2c_client *client)
 
 #endif /* CONFIG_PM */
 
+#ifdef CONFIG_PM_RUNTIME
+struct gpio_edge_desc acc_sensor_gpio = {
+	.mfp = MFP_PIN_GPIO10, /* GPIO10 ACC svensor */
+};
+static int bma2x2_runtime_suspend(struct device *dev){
+	struct i2c_client *client = to_i2c_client(dev);
+	struct bma2x2_data *data = i2c_get_clientdata(client);
+
+	//printk(KERN_ERR "VVVVVVVVVVVVVVVVVVVVVVVVV bma2x2_runtime_suspend !\n");
+	/* add GPIO10-ACC sensor wakeup */		
+	mmp_gpio_edge_add(&acc_sensor_gpio); //Wonder if is this for both PXA1088 and 988
+
+	mutex_lock(&data->enable_mutex);
+	if (atomic_read(&data->enable) == 1) {
+		if(!atomic_read(&data->reactive_enable)){
+			bma2x2_set_mode(data->bma2x2_client, BMA2X2_MODE_SUSPEND);
+			cancel_delayed_work_sync(&data->work);
+		}
+	}
+	mutex_unlock(&data->enable_mutex);
+	return 0;
+}
+
+static int bma2x2_runtime_resume(struct device *dev){
+	struct i2c_client *client = to_i2c_client(dev);
+	struct bma2x2_data *data = i2c_get_clientdata(client);
+
+	mmp_gpio_edge_del(&acc_sensor_gpio);
+	//printk(KERN_ERR "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVV entry early resume~\n");
+	mutex_lock(&data->enable_mutex);
+	if (atomic_read(&data->enable) == 1) {
+		bma2x2_set_mode(data->bma2x2_client, BMA2X2_MODE_NORMAL);
+		schedule_delayed_work(&data->work,
+				msecs_to_jiffies(atomic_read(&data->delay)));
+	}
+	mutex_unlock(&data->enable_mutex);
+
+	return 0;
+}
+#endif /* CONFIG_PM_RUNTIME */
+
+
 static const struct i2c_device_id bma2x2_id[] = {
 	{ SENSOR_NAME, 0 },
 	{ }
@@ -6531,10 +6741,20 @@ static const struct i2c_device_id bma2x2_id[] = {
 
 MODULE_DEVICE_TABLE(i2c, bma2x2_id);
 
+#ifdef CONFIG_PM_RUNTIME
+static const struct dev_pm_ops bma_pm_ops = {
+	SET_RUNTIME_PM_OPS(bma2x2_runtime_suspend, bma2x2_runtime_resume,
+			   NULL)
+};
+#endif
+
 static struct i2c_driver bma2x2_driver = {
 	.driver = {
 		.owner	= THIS_MODULE,
 		.name	= SENSOR_NAME,
+#ifdef CONFIG_PM_RUNTIME
+		.pm	= &bma_pm_ops,
+#endif
 	},
 //	.suspend	= bma2x2_suspend,
 //	.resume		= bma2x2_resume,
@@ -6554,7 +6774,7 @@ static void __exit BMA2X2_exit(void)
 	i2c_del_driver(&bma2x2_driver);
 }
 
-MODULE_AUTHOR("Albert Zhang <xu.zhang@bosch-sensortec.com>");
+MODULE_AUTHOR("Bosch Sensortec <contact@bosch-sensortec.com>");
 MODULE_DESCRIPTION("BMA2X2 accelerometer sensor driver");
 MODULE_LICENSE("GPL");
 

@@ -9,6 +9,30 @@ config MFD_CORE
 	tristate
 	default n
 
+config MFD_D2199
+	tristate "Dialog D2199 Multifunction DEvice"
+	select I2C
+	select MFD_CORE
+	select RTC_CLASS
+	select REGULATOR
+	select MISC_DEVICES
+	select INPUT_MISC
+	select INPUT_D2199_ONKEY
+	select REGULATOR_D2199
+	select RTC_DRV_D2199
+	select MFD_D2199_BRINGUP_RECHECK
+	select D2199_DVC
+	help
+	  This supports the Dialog D2199 Multifunction Device
+
+config MFD_D2199_BRINGUP_RECHECK
+	tristate "BringUp recheck"
+	depends on MFD_D2199
+
+config D2199_DVC
+	tristate "D2199 DVC"
+	depends on MFD_D2199
+	
 config MFD_88PM860X
 	bool "Support Marvell 88PM8606/88PM8607"
 	depends on I2C=y && GENERIC_HARDIRQS
@@ -19,6 +43,18 @@ config MFD_88PM860X
 	  This includes the I2C driver and the core APIs _only_, you have to
 	  select individual components like voltage regulators, RTC and
 	  battery-charger under the corresponding menus.
+
+config MFD_88PM830
+	tristate "Support Marvell 88PM830"
+	depends on I2C=y && GENERIC_HARDIRQS
+	select REGMAP_I2C
+	select REGMAP_IRQ
+	select MFD_CORE
+	help
+	  This supports for Marvell 88PM830 Power Management IC.
+	  This includes the I2C driver and the core APIs _only_,
+	  you have to select individual components like  battery-charger
+	  under the corresponding menus.
 
 config MFD_88PM800
 	tristate "Support Marvell 88PM800"
@@ -43,6 +79,18 @@ config MFD_88PM805
 	  the I2C driver and the core APIs _only_, you have to select individual
 	  components like codec device, headset/Mic device under the
 	  corresponding menus.
+
+config MFD_88PM822
+	tristate "Support Marvell 88PM822"
+	depends on I2C=y && GENERIC_HARDIRQS
+	select REGMAP_I2C
+	select REGMAP_IRQ
+	select MFD_CORE
+	help
+	  This supports for Marvell 88PM822 Power Management IC.
+	  This includes the I2C driver and the core APIs _only_, you have to
+	  select individual components like voltage regulators, RTC and
+	  battery-charger under the corresponding menus.
 
 config MFD_SM501
 	tristate "Support for Silicon Motion SM501"
@@ -335,6 +383,19 @@ config MFD_STMPE
 		GPIO: stmpe-gpio
 		Keypad: stmpe-keypad
 		Touchscreen: stmpe-ts
+
+config MFD_RT8973
+	tristate "Richtek RT8973 MUIC"
+	depends on I2C
+	default n
+	help
+	  Support RT8973 MUIC
+
+config RTMUSC_INT_GPIO_NUMBER
+	int "Used GPIO number"
+	default "93"
+	---help---
+	Decimal number (See schematic of mainboard and SoC datasheet)
 
 menu "STMPE Interface Drivers"
 depends on MFD_STMPE
@@ -734,14 +795,6 @@ config AB8500_GPADC
 	help
 	  AB8500 GPADC driver used to convert Acc and battery/ac/usb voltage
 
-config GPADC0_CURRENT_SINK_MODE
-	bool "Enable current sink mode for GPADC0"
-	depends on MFD_88PM800
-	default n
-	help
-	  Select this option if GPADC0 is used as current sink mode in 88PM800
-	  Power Management IC.
-
 config MFD_DB8500_PRCMU
 	bool "ST-Ericsson DB8500 Power Reset Control Management Unit"
 	depends on UX500_SOC_DB8500
@@ -931,6 +984,25 @@ config MFD_ANATOP
 
 endmenu
 endif
+
+config MFD_STBC
+        tristate "Support for STMirco I/F PMIC"
+	depends on I2C
+	select MFD_CORE
+	default n
+	help
+	  If you say yes to this option, support will be included for the
+	  STM I/F PMIC chip.
+
+
+config MFD_RT5033
+        tristate "Support for Richtek RT5033 I/F PMIC"
+	depends on I2C
+	select MFD_CORE
+	default n
+	help
+	  If you say yes to this option, support will be included for the
+	  RT5033 I/F PMIC chip.
 
 menu "Multimedia Capabilities Port drivers"
 	depends on ARCH_SA1100

@@ -580,4 +580,13 @@ config KEYBOARD_W90P910
 	  To compile this driver as a module, choose M here: the
 	  module will be called w90p910_keypad.
 
+config KEYBOARD_TC360
+        tristate "CORERIVER TC360 touchkey support"
+        depends on I2C
+        help
+          Say Y here if you want to use the CORERIVER TC360 touchkey.
+
+          To compile this driver as a module, choose M here: the
+          module will be called touchcore.
+
 endif

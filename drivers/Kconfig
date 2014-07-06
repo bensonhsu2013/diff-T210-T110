@@ -2,8 +2,6 @@ menu "Device Drivers"
 
 source "drivers/base/Kconfig"
 
-source "drivers/marvell/Kconfig"
-
 source "drivers/connector/Kconfig"
 
 source "drivers/mtd/Kconfig"
@@ -49,6 +47,8 @@ source "drivers/input/Kconfig"
 source "drivers/char/Kconfig"
 
 source "drivers/i2c/Kconfig"
+
+source "drivers/sensor/Kconfig"
 
 source "drivers/spi/Kconfig"
 
@@ -104,8 +104,6 @@ source "drivers/switch/Kconfig"
 
 source "drivers/accessibility/Kconfig"
 
-source "drivers/accessory/Kconfig"
-
 source "drivers/infiniband/Kconfig"
 
 source "drivers/edac/Kconfig"
@@ -148,5 +146,6 @@ source "drivers/virt/Kconfig"
 
 source "drivers/devfreq/Kconfig"
 
-source "drivers/sensors/Kconfig"
+source "drivers/nfc/Kconfig"
+
 endmenu

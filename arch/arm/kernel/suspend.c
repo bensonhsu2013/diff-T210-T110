@@ -28,7 +28,7 @@ void __cpu_suspend_save(u32 *ptr, u32 ptrsz, u32 sp, u32 *save_ptr)
 
 	cpu_do_suspend(ptr);
 
-#ifndef CONFIG_CPU_PXA988
+#if !defined(CONFIG_CPU_PXA988) && !defined(CONFIG_CPU_PXA1088) && !defined(CONFIG_CPU_EDEN)
 	flush_cache_louis();
 #endif
 

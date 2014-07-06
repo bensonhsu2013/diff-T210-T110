@@ -213,6 +213,11 @@ enum {
 #define PM800_SLEEP_BUCK1	(0x30)
 
 /* BUCK Sleep Mode Register 1: BUCK[1..4] */
+#define PM800_BUCK_SLP_PWR_OFF	0x0	/* power off */
+#define PM800_BUCK_SLP_PWR_ACT1	0x1	/* auto & VBUCK_SET_SLP */
+#define PM800_BUCK_SLP_PWR_LOW	0x2	/* VBUCK_SET_SLP */
+#define PM800_BUCK_SLP_PWR_ACT2	0x3	/* auto & VBUCK_SET */
+
 #define PM800_BUCK_SLP1		(0x5A)
 #define PM800_BUCK1_SLP1_SHIFT	0
 #define PM800_BUCK1_SLP1_MASK	(0x3 << PM800_BUCK1_SLP1_SHIFT)
@@ -224,6 +229,7 @@ enum {
 
 /* BUCK4 with DVC[0..3] */
 #define PM800_AUDIO_MODE_CONFIG1	(0x38)
+#define PM800_BUCK3		(0x41)
 #define PM800_BUCK4		(0x42)
 #define PM800_BUCK4_1		(0x43)
 #define PM800_BUCK4_2		(0x44)
@@ -260,6 +266,7 @@ enum {
 #define PM800_LDO_SLP2		(0x5d)
 #define PM800_LDO_SLP3		(0x5e)
 #define PM800_LDO_SLP4		(0x5f)
+
 /* LDO Sleep Mode Register 5: LDO[17..19] */
 #define PM800_LDO_SLP5		(0x60)
 #define PM800_LDO17_SLP5_SHIFT	0
@@ -268,9 +275,10 @@ enum {
 #define PM800_LDO18_SLP5_MASK	(0x3 << PM800_LDO18_SLP5_SHIFT)
 #define PM800_LDO19_SLP5_SHIFT	4
 #define PM800_LDO19_SLP5_MASK	(0x3 << PM800_LDO19_SLP5_SHIFT)
+#define PM800_LDO_MISC6    (0X95)
 
-/* store boot reason to general_use register(0x85) */
 unsigned char pm80x_get_power_on_reason(void);
+#define PMIC_GENERAL_USE_REGISTER PM800_USER_DATA1
 #define PMIC_GENERAL_USE_BOOT_BY_NONE		0
 #define PMIC_GENERAL_USE_BOOT_BY_ONKEY	(0x1 << 0)
 #define PMIC_GENERAL_USE_BOOT_BY_CHG		(0x1 << 1)
@@ -283,6 +291,8 @@ unsigned char pm80x_get_power_on_reason(void);
 #define PMIC_GENERAL_USE_BOOT_BY_DEBUGLEVEL_LOW	(0x1 << 7) | 0x1
 #define PMIC_GENERAL_USE_BOOT_BY_DEBUGLEVEL_MID	(0x1 << 6) | 0x1
 #define PMIC_GENERAL_USE_BOOT_BY_DEBUGLEVEL_HIGH	(0x1 << 5) | 0x1
+#define PMIC_GENERAL_USE_BOOT_BY_RECOVERY_DONE	(0x1 << 4) | 0x1
+#define PMIC_GENERAL_USE_BOOT_BY_SET_SWITCH_SEL	(0x5 << 4)	/* used as mask */
 
 /* page 2 GPADC: slave adder 0x02 */
 #define PM800_GPADC_MEAS_EN1		(0x01)
@@ -300,8 +310,12 @@ unsigned char pm80x_get_power_on_reason(void);
 #define PM800_GPADC_MISC_GPFSM_EN	(1 << 0)
 #define PM800_GPADC_SLOW_MODE(x)	(x << 3)
 
-#define PM800_GPADC_BIAS1				(0x0B)
-#define PM800_GPADC_BIAS2				(0x0C)
+#define PM800_GPADC_MEASURE_OFF1	(0x07)
+#define PM800_GPADC_MEASURE_OFF2	(0x08)
+#define PM800_BD_PREBIAS		(1 << 4)
+#define PM800_BD_EN			(1 << 5)
+#define PM800_BD_GP1_EN			(1 << 6)
+#define PM800_BD_GP3_EN			(1 << 7)
 
 #define PM800_GPADC_MISC_CONFIG3		(0x09)
 #define PM800_GPADC_MISC_CONFIG4		(0x0A)
@@ -322,6 +336,10 @@ unsigned char pm80x_get_power_on_reason(void);
 #define PM800_GPADC_GP_BIAS_EN1			(1 << 1)
 #define PM800_GPADC_GP_BIAS_EN2			(1 << 2)
 #define PM800_GPADC_GP_BIAS_EN3			(1 << 3)
+#define PM800_GPADC_GP_BIAS_OUT0		(1 << 4)
+#define PM800_GPADC_GP_BIAS_OUT1		(1 << 5)
+#define PM800_GPADC_GP_BIAS_OUT2		(1 << 6)
+#define PM800_GPADC_GP_BIAS_OUT3		(1 << 7)
 
 #define PM800_GP_BIAS_OUT1		(0x15)
 #define PM800_BIAS_OUT_GP0		(1 << 0)
@@ -375,10 +393,11 @@ unsigned char pm80x_get_power_on_reason(void);
 
 #define PM800_GPADC4_AVG1		0xA8
 #define PM800_GPADC4_AVG2		0xA9
-#define PM800_VBAT_AVG			0xA0
-#define PM800_VBAT_AVG2			0xA1
+#define PM800_VBAT_AVG                  0xA0
+#define PM800_VBAT_AVG2                 0xA1
 #define PM800_VBAT_SLP			0xB0
 
+#define PM800_GPADC_BIAS1_D0				(0x0C)
 #define PM800_GPADC_GP_BIAS_SHIFT1_D0	0
 /* 88PM805 Registers */
 #define PM805_MAIN_POWERUP		(0x01)
@@ -482,10 +501,6 @@ struct pm80x_headset_pdata {
 	int		vol_down_press_th;
 	int		mic_det_th;
 	int		press_release_th;
-	int		hook_press_bottom;
-	int		vol_up_press_bottom;
-	int		vol_down_press_bottom;
-	int		mic_det_bottom;
 };
 
 struct pm80x_vibrator_pdata {
@@ -494,6 +509,9 @@ struct pm80x_vibrator_pdata {
 };
 
 struct pm80x_bat_pdata {
+	int bat_ntc; /* bat det by GPADC1 */
+	int capacity; /* mAh */
+	int r_int; /* mOhm */
 };
 
 struct pm80x_usb_pdata {
@@ -544,6 +562,7 @@ struct pm80x_platform_data {
 	struct pm80x_dvc_pdata *dvc;
 	struct pm80x_bat_pdata *bat;
 	struct pm80x_usb_pdata *usb;
+
 	unsigned short power_page_addr;	/* power page I2C address */
 	unsigned short gpadc_page_addr;	/* gpadc page I2C address */
 	unsigned short test_page_addr;	/* test page I2C address */
@@ -553,11 +572,9 @@ struct pm80x_platform_data {
 	int (*plat_config)(struct pm80x_chip *chip,
 				struct pm80x_platform_data *pdata);
 };
-#if defined(CONFIG_SPA) || defined(CONFIG_MACH_LT02)
+
 extern int pm80x_read_temperature(int *tbat);
-extern int pm80x_rf_read_temperature(int *tbat);
-extern int pm80x_read_vf(int *vfbat);
-#endif
+extern int pm80x_read_gpadc(int *tbat, unsigned int channel);
 
 extern const struct dev_pm_ops pm80x_pm_ops;
 extern const struct regmap_config pm80x_regmap_config;

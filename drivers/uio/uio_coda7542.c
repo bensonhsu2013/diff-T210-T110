@@ -22,7 +22,7 @@
 #include <linux/uio_coda7542.h>
 
 #include <mach/hardware.h>
-#ifdef CONFIG_CPU_PXA988
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 #include <plat/pm.h>
 #endif
 
@@ -46,6 +46,7 @@ struct uio_coda7542_dev {
 	int filehandle_ins_num;
 	int firmware_download;
 	struct semaphore sema;
+	unsigned int coda_features;
 };
 
 /*
@@ -60,10 +61,6 @@ struct coda7542_instance {
 	unsigned int codectypeid;
 };
 static struct coda7542_instance fd_codecinst_arr[MAX_NUM_VPUSLOT];
-#ifdef CONFIG_CPU_PXA988
-/* used for vpu lpm constraints */
-static struct pm_qos_request vpu_qos_idle;
-#endif
 
 struct vpu_info {
 	unsigned int off;
@@ -86,9 +83,6 @@ static int coda7542_clk_on(struct uio_coda7542_dev *cdev)
 	if (cdev->clk_status != 0)
 		return 0;
 
-#ifdef CONFIG_CPU_PXA988
-	pm_qos_update_request(&vpu_qos_idle, PM_QOS_CPUIDLE_BLOCK_AXI_VALUE);
-#endif
 	clk_enable(cdev->clk);
 	cdev->clk_status = 1;
 
@@ -111,10 +105,6 @@ static int coda7542_clk_off(struct uio_coda7542_dev *cdev)
 		return 0;
 
 	clk_disable(cdev->clk);
-#ifdef CONFIG_CPU_PXA988
-	pm_qos_update_request(&vpu_qos_idle,
-			PM_QOS_CPUIDLE_BLOCK_DEFAULT_VALUE);
-#endif
 	cdev->clk_status = 0;
 
 	return 0;
@@ -373,6 +363,14 @@ static int coda7542_ioctl(struct uio_info *info, unsigned int cmd,
 			if (pinst->vpuslotidx < MAX_NUM_VPUSLOT)
 				pinst->slotusing = 0;
 			break;
+		case 4:
+			if (copy_to_user(vpu_info.value, &cdev->coda_features,
+				sizeof(cdev->coda_features)))
+				return -EFAULT;
+			break;
+		case 6:
+			pinst->codectypeid = (unsigned int)(vpu_info.value);
+			break;
 		default:
 			return -EFAULT;
 		}
@@ -479,6 +477,10 @@ static int coda7542_probe(struct platform_device *pdev)
 	cdev->uio_info.ioctl = coda7542_ioctl;
 	cdev->uio_info.mmap = NULL;
 
+	if (pdev->dev.platform_data)
+		cdev->coda_features =
+			*((unsigned int *)(pdev->dev.platform_data));
+
 	mutex_init(&(cdev->mutex));
 	cdev->filehandle_ins_num = 0;
 	for (i = 0; i < MAX_NUM_VPUSLOT; i++)
@@ -489,11 +491,6 @@ static int coda7542_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "failed to register uio device\n");
 		goto err_uio_register;
 	}
-#ifdef CONFIG_CPU_PXA988
-	vpu_qos_idle.name = pdev->name;
-	pm_qos_add_request(&vpu_qos_idle, PM_QOS_CPUIDLE_BLOCK,
-			PM_QOS_CPUIDLE_BLOCK_DEFAULT_VALUE);
-#endif
 
 	return 0;
 
@@ -514,9 +511,6 @@ static int coda7542_remove(struct platform_device *pdev)
 {
 	struct uio_coda7542_dev *cdev = platform_get_drvdata(pdev);
 
-#ifdef CONFIG_CPU_PXA988
-	pm_qos_remove_request(&vpu_qos_idle);
-#endif
 	uio_unregister_device(&cdev->uio_info);
 	free_pages((unsigned long)cdev->uio_info.mem[1].internal_addr,
 			get_order(VDEC_WORKING_BUFFER_SIZE));
@@ -529,9 +523,59 @@ static int coda7542_remove(struct platform_device *pdev)
 	return 0;
 }
 
+static bool is_suspend;
+
+static int coda7542_suspend(struct device *dev)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct uio_coda7542_dev *cdev = platform_get_drvdata(pdev);
+	int i;
+	bool cannot_off = 0;
+
+	if (cdev->filehandle_ins_num <= 0)
+		return 0;
+	if (cdev->clk_status != 0)
+		return 0;
+
+	for (i = 0; i < MAX_NUM_VPUSLOT; i++) {
+		if ((fd_codecinst_arr[i].occupied == 1) &&
+			((fd_codecinst_arr[i].codectypeid & VPU_CODEC_TYPEID_ENC_MASK)
+			 || fd_codecinst_arr[i].codectypeid == 0)) {
+			cannot_off = 1;
+			break;
+		}
+	}
+
+	if (!cannot_off) {
+		printk(KERN_INFO "coda7542 poweroff in suspend\n");
+		coda7542_power_off(cdev);
+		is_suspend = 1;
+	}
+
+	return 0;
+}
+
+static int coda7542_resume(struct device *dev)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct uio_coda7542_dev *cdev = platform_get_drvdata(pdev);
+
+	if (is_suspend) {
+		printk(KERN_INFO "coda7542 poweron in resume\n");
+		coda7542_power_on(cdev);
+		is_suspend = 0;
+	}
+	return 0;
+}
+
 static void coda7542_shutdown(struct platform_device *dev)
 {
 }
+
+static const struct dev_pm_ops coda7542_pm_ops = {
+	.suspend = coda7542_suspend,
+	.resume	= coda7542_resume,
+};
 
 static struct platform_driver coda7542_driver = {
 	.probe = coda7542_probe,
@@ -540,9 +584,9 @@ static struct platform_driver coda7542_driver = {
 	.driver = {
 		.name = UIO_CODA7542_NAME,
 		.owner = THIS_MODULE,
+		.pm	= &coda7542_pm_ops,
 	},
 };
-
 
 module_platform_driver(coda7542_driver);
 

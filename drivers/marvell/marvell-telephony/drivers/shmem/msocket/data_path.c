@@ -242,9 +242,19 @@ void data_path_broadcast_msg(int proc)
 			if (proc == MsocketLinkdownProcId
 			    && dp->cbs && dp->cbs->link_down)
 				dp->cbs->link_down();
-			else if (proc == MsocketLinkupProcId
-				 && dp->cbs && dp->cbs->link_up)
-				dp->cbs->link_up();
+			else if (proc == MsocketLinkupProcId) {
+				/*
+				* Now both AP and CP will not send packet
+				* to ring buffer or receive packet from ring
+				* buffer, so cleanup any packetin ring buffer
+				* and initialize some key data structure to
+				* the beginning state otherwise user space
+				* process and CP may occur error
+				*/
+				shm_rb_data_init(dp->rbctl);
+				if (dp->cbs && dp->cbs->link_up)
+					dp->cbs->link_up();
+			}
 		}
 	}
 

@@ -118,7 +118,6 @@ struct sr130pc10_sensor {
 	//u8 flash_capture;
 	//u8 flash_movie;
 	u8 quality;
-	u8 vtmode;
 	//s32 zoom;
 	u32 thumb_offset;
 	u32 yuv_offset;
@@ -129,8 +128,6 @@ struct sr130pc10_sensor {
 	u32 jpeg_postview_offset;
 	u32 jpeg_capture_w;
 	u32 jpeg_capture_h;
-	u32 record_width;
-	u32 record_height;
 	struct v4l2_pix_format thumbnail;
 	v4l2_exif_info_t exif_info;
 	u8 initial;
@@ -142,8 +139,7 @@ struct sr130pc10_sensor {
 /* State */
 #define SR130PC10_STATE_PREVIEW	  0x0000	/*  preview state */
 #define SR130PC10_STATE_CAPTURE	  0x0001	/*  capture state */
-#define SR130PC10_STATE_CAMCORDER	0x0002	/*  capture state */
-#define SR130PC10_STATE_INVALID		0x0003	/*  invalid state */
+#define SR130PC10_STATE_INVALID	  0x0002	/*  invalid state */
 
 /* Mode */
 #define SR130PC10_MODE_CAMERA     1

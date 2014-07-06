@@ -15,6 +15,7 @@
 #include <linux/sched.h>
 #include <linux/wait.h>
 #include <linux/workqueue.h>
+#include <linux/suspend.h>
 
 #define SYSOFF	"sysoff"
 #define SYSPREPARE "sysprepare"
@@ -60,6 +61,7 @@ void fake_sysoff_set_block_onkey(int block)
 
 static void system_poweroff(struct work_struct *ignored)
 {
+	print_active_wakeup_events();
 	printk(KERN_ALERT "Sysoff failed after %ds!\n", MONITOR_WORK_EXPIRE/HZ);
 	atomic_set(&systemoff_work_status, 0);
 	kernel_power_off();

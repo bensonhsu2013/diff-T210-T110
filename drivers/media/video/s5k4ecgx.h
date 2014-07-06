@@ -131,6 +131,7 @@ struct s5k4ecgx_sensor {
 	v4l2_exif_info_t exif_info;
 	u8 initial;
 	u8 main_flash_mode;
+	u8 cam_mode;
 };
 
 #define S5K4ECGX_STATE_INITIAL		0x0000
@@ -223,6 +224,9 @@ enum {
 	PREVIEW_SIZE_480_320,	
 	PREVIEW_SIZE_640_480,	
 	PREVIEW_SIZE_720_480,
+	PREVIEW_SIZE_720_540,
+	PREVIEW_SIZE_960_540,
+	PREVIEW_SIZE_1280_720,
 };	
 
 struct s5k4ecgx_preview_size {
@@ -237,6 +241,9 @@ const static struct s5k4ecgx_preview_size s5k4ecgx_preview_sizes[] = {
 	{480,320},	// XVGA
 	{640,480},	// VGA
 	{720,480},	// D1
+	{720,540},	// QHD(4:3)
+	{960,540},	// QHD
+	{1280,720},	// HD
 };
 
 /* Image Size */
@@ -408,7 +415,7 @@ enum{
 enum{
 	AWB_AE_LOCK,      		
 	AWB_AE_UNLOCK, 
-}; 	
+}; 		
 
 enum{
 	MAIN_FLASH_OFF,      		
@@ -439,6 +446,14 @@ enum{
 	ESD_NONE, 
 };
 
+/* Preview Mode */
+enum{
+	CAMERA_MODE,
+	CAMCORDER_MODE,
+	VT_MODE
+};
+
+
 typedef enum
 {
 	CAMERA_SENSOR_LIGHT_STATUS_LOW,
@@ -461,6 +476,8 @@ typedef enum
 	SET_FOCUS_STEP3,
 	SET_FOCUS_ALL
 } camera_set_focus_type;
+
+static int s5k4ecgx_t_brightness(struct i2c_client *client, int value);
 
 #endif /* ifndef S5K4ECGX_H */
 

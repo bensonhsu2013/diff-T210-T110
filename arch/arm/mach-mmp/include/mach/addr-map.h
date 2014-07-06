@@ -59,9 +59,13 @@
 #if defined(CONFIG_CPU_PXA988)
 #define PERI_PHYS_BASE		0xd1dfe000
 #define SL2C_PHYS_BASE		0xd1dfb000
+#elif defined(CONFIG_CPU_PXA1088)
+#define PERI_PHYS_BASE		0xd1df8000
 #elif defined(CONFIG_CPU_MMP3)
 #define PERI_PHYS_BASE		0xe0000000
 #define SL2C_PHYS_BASE		0xd0020000
+#elif defined(CONFIG_CPU_EDEN)
+#define PERI_PHYS_BASE		0xd1e00000
 #endif
 #define PERI_VIRT_BASE		IOMEM(0xfe400000)
 
@@ -78,18 +82,20 @@
 #define PERI_PHYS_SIZE		0x00008000
 #endif
 
-#ifdef CONFIG_CPU_PXA988
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 #define DMCU_PHYS_BASE		0xc0100000
 #define DMCU_VIRT_BASE		0xfe500000
 #define DMCU_PHYS_SIZE		0x00010000
 #endif
 
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_MMP3)
 #define SL2C_VIRT_BASE		0xfe800000
 #define SL2C_PHYS_SIZE		SZ_8K
+#endif
 
 #define SRAM_PHYS_BASE		0xd1000000
 
-#ifdef CONFIG_CPU_PXA988
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 #define SRAM_CP_BASE		SRAM_PHYS_BASE
 #define SRAM_CP_SIZE		0x4000
 

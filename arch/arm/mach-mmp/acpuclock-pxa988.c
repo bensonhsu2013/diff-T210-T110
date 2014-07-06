@@ -22,14 +22,13 @@
 #include <linux/hrtimer.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
-#include <linux/kernel_stat.h>
 #include <linux/module.h>
 #include <linux/slab.h>
-#include <linux/tick.h>
 #include <linux/uaccess.h>
 
 #include <asm/io.h>
 #include <mach/cputype.h>
+#include <mach/features.h>
 #include <mach/clock-pxa988.h>
 #include <mach/pxa988_ddr.h>
 #include <mach/pxa988_lowpower.h>
@@ -40,16 +39,14 @@
 #include <plat/debugfs.h>
 
 #ifdef CONFIG_EOF_FC_WORKAROUND
-#include <mach/pxa168fb.h>
+#include <video/mmpdisp_export_funcs.h>
 #endif
+#include <mach/pxa168fb.h>
 
 #define CREATE_TRACE_POINTS
 #include <plat/pxa_trace.h>
 
-static inline int has_feat_dll_bypass_opti(void)
-{
-	return cpu_is_pxa988() || cpu_is_pxa986();
-}
+#define PANIC_SCALING_CORE_DDRAXI_TO_MIN
 
 /* core,ddr,axi clk src sel set register desciption */
 union pmum_fccr {
@@ -171,6 +168,11 @@ union pmua_dm_cc2 {
 #define KHZ_TO_HZ		(1000)
 #define MAX_OP_NUM		8
 
+enum ddr_core_fc_type {
+	DDR_FC = 0,
+	CORE_FC,
+};
+
 /*
  * AP clock source:
  * 0x0 = PLL1 624 MHz
@@ -207,11 +209,13 @@ enum ddr_type {
 	DDR3,
 };
 
+/* RTC/WTC table used for solution change rtc/wtc on the fly */
 struct cpu_rtcwtc {
 	unsigned int max_pclk;	/* max rate could be used by this rtc/wtc */
 	unsigned int l1_rtc;
 	unsigned int l2_rtc;
 };
+
 struct pxa988_cpu_opt {
 	unsigned int pclk;		/* core clock */
 	unsigned int l2clk;		/* L2 cache interface clock */
@@ -228,7 +232,8 @@ struct pxa988_cpu_opt {
 	unsigned int periphclk_div;	/* PERIPHCLK divider */
 	unsigned int l1_rtc;		/* L1 cache RTC/WTC */
 	unsigned int l2_rtc;		/* L2 cache RTC/WTC */
-#ifdef Z1_MCK4_SYNC_WORKAROUND
+	struct list_head node;
+#ifdef DDR_COMBINDEDCLK_SOLUTION
 	unsigned int cp_pclk;		/* cp core clock */
 	unsigned int cp_busmc_clk;	/* cp bus mc clock */
 	enum ap_clk_sel cp_clk_sel;	/* cp core src sel val */
@@ -273,6 +278,10 @@ struct platform_opt {
 	char *cpu_name;
 	struct pxa988_cpu_opt *cpu_opt;
 	unsigned int cpu_opt_size;
+	/* the default max cpu rate could be supported */
+	unsigned int df_max_cpurate;
+	/* the plat rule for filter core ops */
+	bool (*is_cpuop_invalid_plt)(struct pxa988_cpu_opt *cop);
 	struct pxa988_ddr_axi_opt *ddr_axi_opt;
 	unsigned int ddr_axi_opt_size;
 };
@@ -298,6 +307,8 @@ static DEFINE_SPINLOCK(fc_seq_lock);
 /* current platform OP struct */
 static struct platform_opt *cur_platform_opt;
 
+static LIST_HEAD(core_op_list);
+
 /* current core OP */
 static struct pxa988_cpu_opt *cur_cpu_op;
 
@@ -314,12 +325,15 @@ static struct clk pxa988_ddr_clk;
 
 static unsigned int uichipProfile;
 int is_pxa988a0svc;
+int is_pxa986a0svc;
 
 #ifdef CONFIG_DEBUG_FS
 static DEFINE_PER_CPU(struct clk_dc_stat_info, cpu_dc_stat);
-static void pxa988_cpu_dcstat_event(unsigned int cpu,
-	enum clk_stat_msg msg, unsigned int tgtop);
 static unsigned int pm_dro_status;
+static struct idle_dcstat_info idle_dcstat_info;
+static spinlock_t allidle_lock;
+static spinlock_t c1c2_enter_lock;
+static spinlock_t c1c2_exit_lock;
 #endif
 
 #ifdef CONFIG_EOF_FC_WORKAROUND
@@ -328,8 +342,19 @@ static struct pxa988_ddr_axi_opt *md_new_eof, *md_old_eof;
 DECLARE_COMPLETION(ddr_eof_complete);
 atomic_t ddr_fc_trigger = ATOMIC_INIT(0);
 atomic_t disable_c2 = ATOMIC_INIT(0);
-extern atomic_t displayon;
 #endif
+
+#ifdef PANIC_SCALING_CORE_DDRAXI_TO_MIN
+static atomic_t panic_disable_fc = ATOMIC_INIT(0);
+#endif
+
+/* parameter passed from cmdline to identify DDR mode */
+int ddr_mode;
+
+/* parameter passed from cmdline to ignore some PPs */
+#define MAX_PP_NUM	10
+static unsigned int pp_disable[MAX_PP_NUM];
+static unsigned int pp_discnt;
 
 /*
  * For 988:
@@ -365,7 +390,7 @@ static struct pxa988_cpu_opt pxa988_op_array_z1z2[] = {
 		.baclk = 75,
 		.periphclk = 18,
 		.ap_clk_sel = AP_CLK_SRC_PLL2,
-#ifdef Z1_MCK4_SYNC_WORKAROUND
+#ifdef DDR_COMBINDEDCLK_SOLUTION
 		.combined_dclk = 150,
 		.cp_pclk = 300,
 		.cp_busmc_clk = 150,
@@ -379,7 +404,7 @@ static struct pxa988_cpu_opt pxa988_op_array_z1z2[] = {
 		.baclk = 150,
 		.periphclk = 37,
 		.ap_clk_sel = AP_CLK_SRC_PLL2,
-#ifdef Z1_MCK4_SYNC_WORKAROUND
+#ifdef DDR_COMBINDEDCLK_SOLUTION
 		.combined_dclk = 150,
 		.cp_pclk = 300,
 		.cp_busmc_clk = 150,
@@ -393,7 +418,7 @@ static struct pxa988_cpu_opt pxa988_op_array_z1z2[] = {
 		.baclk = 150,
 		.periphclk = 75,
 		.ap_clk_sel = AP_CLK_SRC_PLL2,
-#ifdef Z1_MCK4_SYNC_WORKAROUND
+#ifdef DDR_COMBINDEDCLK_SOLUTION
 		.combined_dclk = 300,
 		.cp_pclk = 300,
 		.cp_busmc_clk = 150,
@@ -407,7 +432,7 @@ static struct pxa988_cpu_opt pxa988_op_array_z1z2[] = {
 		.baclk = 200,
 		.periphclk = 100,
 		.ap_clk_sel = AP_CLK_SRC_PLL2P,
-#ifdef Z1_MCK4_SYNC_WORKAROUND
+#ifdef DDR_COMBINDEDCLK_SOLUTION
 		.combined_dclk = 400,
 		.cp_pclk = 400,
 		.cp_busmc_clk = 200,
@@ -435,7 +460,7 @@ static struct pxa988_cpu_opt pxa988_op_array_z1z2[] = {
 		.baclk = 300,
 		.periphclk = 150,
 		.ap_clk_sel = AP_CLK_SRC_PLL2,
-#ifdef Z1_MCK4_SYNC_WORKAROUND
+#ifdef DDR_COMBINDEDCLK_SOLUTION
 		.combined_dclk = 300,
 		.cp_pclk = 300,
 		.cp_busmc_clk = 150,
@@ -444,7 +469,8 @@ static struct pxa988_cpu_opt pxa988_op_array_z1z2[] = {
 	},
 };
 
-static struct pxa988_cpu_opt pxa988_op_array_z3ax_lpddr400[] = {
+/* The PP table only list the possible op here */
+static struct pxa988_cpu_opt pxa988_op_array_z3ax[] = {
 	{
 		.pclk = 312,
 		.l2clk = 312,
@@ -461,6 +487,11 @@ static struct pxa988_cpu_opt pxa988_op_array_z3ax_lpddr400[] = {
 		.periphclk = 78,
 		.ap_clk_sel = AP_CLK_SRC_PLL1_624,
 	},
+	/*
+	* pll2 vco frequency is determined by DDR, so for core,
+	* only one of 800M/1066M could be valid according to the
+	* pll2 rate
+	*/
 	{
 		.pclk = 800,
 		.l2clk = 400,
@@ -470,33 +501,6 @@ static struct pxa988_cpu_opt pxa988_op_array_z3ax_lpddr400[] = {
 		.ap_clk_sel = AP_CLK_SRC_PLL2,
 	},
 	{
-		.pclk = 1205,
-		.l2clk = 602,
-		.pdclk = 602,
-		.baclk = 301,
-		.periphclk = 150,
-		.ap_clk_sel = AP_CLK_SRC_PLL3P,
-	},
-};
-
-static struct pxa988_cpu_opt pxa988_op_array_z3ax_lpddr533[] = {
-	{
-		.pclk = 312,
-		.l2clk = 312,
-		.pdclk = 156,
-		.baclk = 156,
-		.periphclk = 39,
-		.ap_clk_sel = AP_CLK_SRC_PLL1_624,
-	},
-	{
-		.pclk = 624,
-		.l2clk = 312,
-		.pdclk = 312,
-		.baclk = 156,
-		.periphclk = 78,
-		.ap_clk_sel = AP_CLK_SRC_PLL1_624,
-	},
-	{
 		.pclk = 1066,
 		.l2clk = 533,
 		.pdclk = 533,
@@ -504,6 +508,11 @@ static struct pxa988_cpu_opt pxa988_op_array_z3ax_lpddr533[] = {
 		.periphclk = 133,
 		.ap_clk_sel = AP_CLK_SRC_PLL2,
 	},
+	/*
+	* As pll3 master frequency change is not supported, so
+	* will filter pp from pll3 according to pll3 frequency
+	*/
+#if !defined(CONFIG_CORE_1248)
 	{
 		.pclk = 1205,
 		.l2clk = 602,
@@ -511,8 +520,79 @@ static struct pxa988_cpu_opt pxa988_op_array_z3ax_lpddr533[] = {
 		.baclk = 301,
 		.periphclk = 150,
 		.ap_clk_sel = AP_CLK_SRC_PLL3P,
+		},		
+#else
+	
+	{
+		.pclk = 1248,
+		.l2clk = 624,
+		.pdclk = 624,
+		.baclk = 312,
+		.periphclk = 156,
+		.ap_clk_sel = AP_CLK_SRC_PLL1_1248,
 	},
+#endif	
 };
+
+static struct pxa988_cpu_opt pxa1088_op_array[] = {
+	{
+		.pclk = 156,
+		.pdclk = 78,
+		.baclk = 78,
+		.ap_clk_sel = AP_CLK_SRC_PLL1_624,
+	},
+	{
+		.pclk = 312,
+		.pdclk = 156,
+		.baclk = 156,
+		.ap_clk_sel = AP_CLK_SRC_PLL1_624,
+	},
+	{
+		.pclk = 624,
+		.pdclk = 312,
+		.baclk = 156,
+		.ap_clk_sel = AP_CLK_SRC_PLL1_624,
+	},
+	{
+		.pclk = 800,
+		.pdclk = 400,
+		.baclk = 200,
+		.ap_clk_sel = AP_CLK_SRC_PLL2,
+	},
+	{
+		.pclk = 1066,
+		.pdclk = 533,
+		.baclk = 266,
+		.ap_clk_sel = AP_CLK_SRC_PLL2,
+	},
+	{
+		.pclk = 1101,
+		.pdclk = 550,
+		.baclk = 275,
+		.ap_clk_sel = AP_CLK_SRC_PLL3P,
+	},
+	{
+		.pclk = 1183,
+		.pdclk = 591,
+		.baclk = 295,
+		.ap_clk_sel = AP_CLK_SRC_PLL3P,
+	},
+	{
+		.pclk = 1283,
+		.pdclk = 641,
+		.baclk = 320,
+		.ap_clk_sel = AP_CLK_SRC_PLL3P,
+	},
+
+};
+
+static bool is_invalid_pp_1088(struct pxa988_cpu_opt *cop)
+{
+	if (cop->pclk == 156)
+		return true;
+	return false;
+}
+
 /*
  * 1) On Emei Z0, only support three ddr rates, be careful
  * when changing the PP table. The table should only have
@@ -545,9 +625,9 @@ static struct pxa988_ddr_axi_opt lpddr400_axi_oparray_z1z2[] = {
 	{
 		.dclk = 400,
 		.ddr_tbl_index = 5,
-		.aclk = 200,
+		.aclk = 208,
 		.ddr_clk_sel = DDR_AXI_CLK_SRC_PLL2P,
-		.axi_clk_sel = DDR_AXI_CLK_SRC_PLL2P,
+		.axi_clk_sel = DDR_AXI_CLK_SRC_PLL1_416,
 	},
 };
 
@@ -568,13 +648,62 @@ static struct pxa988_ddr_axi_opt lpddr400_axi_oparray_z3ax[] = {
 	},
 	{
 		.dclk = 400,
-		.aclk = 200,
 		.ddr_tbl_index = 5,
+		.aclk = 200,
 		.ddr_clk_sel = DDR_AXI_CLK_SRC_PLL2P,
 		.axi_clk_sel = DDR_AXI_CLK_SRC_PLL2P,
 	},
 };
+
 static struct pxa988_ddr_axi_opt lpddr533_axi_oparray_z3ax[] = {
+	{
+		.dclk = 156,
+		.ddr_tbl_index = 1,
+		.aclk = 78,
+		.ddr_clk_sel = DDR_AXI_CLK_SRC_PLL1_624,
+		.axi_clk_sel = DDR_AXI_CLK_SRC_PLL1_624,
+	},
+	{
+		.dclk = 312,
+		.ddr_tbl_index = 3,
+		.aclk = 156,
+		.ddr_clk_sel = DDR_AXI_CLK_SRC_PLL1_624,
+		.axi_clk_sel = DDR_AXI_CLK_SRC_PLL1_624,
+	},
+	{
+		.dclk = 533,
+		.ddr_tbl_index = 5,
+		.aclk = 208,
+		.ddr_clk_sel = DDR_AXI_CLK_SRC_PLL2P,
+		.axi_clk_sel = DDR_AXI_CLK_SRC_PLL1_416,
+	},
+};
+
+static struct pxa988_ddr_axi_opt lpddr400_axi_oparray_1088[] = {
+	{
+		.dclk = 156,
+		.ddr_tbl_index = 1,
+		.aclk = 78,
+		.ddr_clk_sel = DDR_AXI_CLK_SRC_PLL1_624,
+		.axi_clk_sel = DDR_AXI_CLK_SRC_PLL1_624,
+	},
+	{
+		.dclk = 312,
+		.ddr_tbl_index = 3,
+		.aclk = 156,
+		.ddr_clk_sel = DDR_AXI_CLK_SRC_PLL1_624,
+		.axi_clk_sel = DDR_AXI_CLK_SRC_PLL1_624,
+	},
+	{
+		.dclk = 400,
+		.ddr_tbl_index = 5,
+		.aclk = 200,
+		.ddr_clk_sel = DDR_AXI_CLK_SRC_PLL2P,
+		.axi_clk_sel = DDR_AXI_CLK_SRC_PLL2P,
+	},
+};
+
+static struct pxa988_ddr_axi_opt lpddr533_axi_oparray_1088[] = {
 	{
 		.dclk = 156,
 		.ddr_tbl_index = 1,
@@ -597,7 +726,6 @@ static struct pxa988_ddr_axi_opt lpddr533_axi_oparray_z3ax[] = {
 		.axi_clk_sel = DDR_AXI_CLK_SRC_PLL2P,
 	},
 };
-
 static struct platform_opt platform_op_arrays[] = {
 	{
 		.cpuid = 0xc09,
@@ -614,8 +742,13 @@ static struct platform_opt platform_op_arrays[] = {
 		.chipid = 0xc9281,	/* dummy chipid for Z3Ax */
 		.ddrtype = LPDDR2_400M,
 		.cpu_name = "PXA988_Z3Ax",
-		.cpu_opt = pxa988_op_array_z3ax_lpddr400,
-		.cpu_opt_size = ARRAY_SIZE(pxa988_op_array_z3ax_lpddr400),
+		.cpu_opt = pxa988_op_array_z3ax,
+		.cpu_opt_size = ARRAY_SIZE(pxa988_op_array_z3ax),
+#if !defined(CONFIG_CORE_1248)
+		.df_max_cpurate = 1205,
+#else
+		.df_max_cpurate = 1248,
+#endif
 		.ddr_axi_opt = lpddr400_axi_oparray_z3ax,
 		.ddr_axi_opt_size = ARRAY_SIZE(lpddr400_axi_oparray_z3ax),
 	},
@@ -624,12 +757,84 @@ static struct platform_opt platform_op_arrays[] = {
 		.chipid = 0xc9281,	/* dummy chipid for Z3Ax */
 		.ddrtype = LPDDR2_533M,
 		.cpu_name = "PXA988_Z3Ax",
-		.cpu_opt = pxa988_op_array_z3ax_lpddr533,
-		.cpu_opt_size = ARRAY_SIZE(pxa988_op_array_z3ax_lpddr533),
+		.cpu_opt = pxa988_op_array_z3ax,
+		.cpu_opt_size = ARRAY_SIZE(pxa988_op_array_z3ax),
+#if !defined(CONFIG_CORE_1248)
+		.df_max_cpurate = 1205,
+#else
+		.df_max_cpurate = 1248,
+#endif
 		.ddr_axi_opt = lpddr533_axi_oparray_z3ax,
 		.ddr_axi_opt_size = ARRAY_SIZE(lpddr533_axi_oparray_z3ax),
 	},
+	{
+		.cpuid = 0xc07,
+		.chipid = 0xa01088,
+		.ddrtype = LPDDR2_400M,
+		.cpu_name = "PXA1088",
+		.cpu_opt = pxa1088_op_array,
+		.cpu_opt_size = ARRAY_SIZE(pxa1088_op_array),
+		.df_max_cpurate = 1183,
+		.ddr_axi_opt = lpddr400_axi_oparray_1088,
+		.ddr_axi_opt_size = ARRAY_SIZE(lpddr400_axi_oparray_1088),
+		.is_cpuop_invalid_plt = is_invalid_pp_1088,
+	},
+	{
+		.cpuid = 0xc07,
+		.chipid = 0xa01088,
+		.ddrtype = LPDDR2_533M,
+		.cpu_name = "PXA1088",
+		.cpu_opt = pxa1088_op_array,
+		.cpu_opt_size = ARRAY_SIZE(pxa1088_op_array),
+		.df_max_cpurate = 1183,
+		.ddr_axi_opt = lpddr533_axi_oparray_1088,
+		.ddr_axi_opt_size = ARRAY_SIZE(lpddr533_axi_oparray_1088),
+		.is_cpuop_invalid_plt = is_invalid_pp_1088,
+	},
 };
+
+static int __init __init_ddr_mode(char *arg)
+{
+	int n;
+	if (!get_option(&arg, &n))
+		return 0;
+	ddr_mode = n;
+	if ((ddr_mode != 0) && (ddr_mode != 1))
+		pr_info("WARNING: unknown DDR type!");
+	return 1;
+}
+__setup("ddr_mode=", __init_ddr_mode);
+
+static int removepp(char *s)
+{
+	int tbl_size = platform_op_arrays->cpu_opt_size;
+	int i, j, re_range = 0;
+	unsigned int tmp;
+
+	for (pp_discnt = 0; pp_discnt < tbl_size; pp_discnt++) {
+		pp_disable[pp_discnt] = simple_strtol(s, &s, 10);
+		s++;
+		if (!pp_disable[pp_discnt])
+			break;
+		if (pp_discnt)
+			if (pp_disable[pp_discnt] <
+				pp_disable[pp_discnt - 1])
+				re_range = 1;
+	}
+	if (!re_range)
+		return 1;
+	for (i = 0; i < pp_discnt; i++) {
+		for (j = 0; j < pp_discnt - i - 1; j++) {
+			if (pp_disable[j] > pp_disable[j + 1]) {
+				tmp = pp_disable[j];
+				pp_disable[j] = pp_disable[j + 1];
+				pp_disable[j + 1] = tmp;
+			}
+	       }
+	}
+	return 1;
+}
+__setup("core_nopp=", removepp);
 
 static struct clk *cpu_sel2parent(enum ap_clk_sel ap_sel)
 {
@@ -661,23 +866,43 @@ static struct clk *ddr_axi_sel2parent(enum ddr_axi_clk_sel ddr_axi_sel)
 		return ERR_PTR(-ENOENT);
 }
 
-static void __init __init_platform_opt(int ddr_mode)
+/*
+ * Sim card num
+ * 0: no card
+ * 1/2 one card
+ * 3: dual cards
+ */
+int simcard_num;
+static int __init simcard_num_setup(char *str)
+{
+	int n;
+	if (!get_option(&str, &n))
+		return 0;
+	simcard_num = n;
+	return 1;
+}
+__setup("simcard=", simcard_num_setup);
+static int __init __init_platform_opt(void)
 {
 	unsigned int i, chipid = 0;
 	enum ddr_type ddrtype = LPDDR2_400M;
 	struct platform_opt *proc;
 
-	if (cpu_is_z1z2())
-		chipid = 0xc9280;
-	else
-		chipid = 0xc9281;
+	if (cpu_is_pxa988() || cpu_is_pxa986()) {
+		if (cpu_is_z1z2())
+			chipid = 0xc9280;
+		else
+			chipid = 0xc9281;
+	} else if (cpu_is_pxa1088()) {
+		chipid = 0xa01088;
+	}
 
 	/*
 	 * FIXME: ddr type is hacked here as it can not be read from
 	 * HW, but FC code needs this info to identify DDR OPs.
 	 */
 	if (ddr_mode == 0)
-	ddrtype = LPDDR2_400M;
+		ddrtype = LPDDR2_400M;
 	else if (ddr_mode == 1)
 		ddrtype = LPDDR2_533M;
 
@@ -689,37 +914,105 @@ static void __init __init_platform_opt(int ddr_mode)
 	}
 	BUG_ON(i == ARRAY_SIZE(platform_op_arrays));
 	cur_platform_opt = proc;
+
+	/* TD dual sim card */
+	if ((simcard_num == 3) && cpu_is_pxa1088())
+		cur_platform_opt->ddr_axi_opt[0].aclk = 156;
+
+	if (max_freq > cur_platform_opt->df_max_cpurate)
+		cur_platform_opt->df_max_cpurate = max_freq;
+	pr_info("Platform default max frequency: %dMHZ\n",
+		cur_platform_opt->df_max_cpurate);
+	return 0;
+}
+pure_initcall(__init_platform_opt);
+
+int get_max_cpurate(void)
+{
+	return cur_platform_opt->df_max_cpurate;
 }
 
 static struct cpu_rtcwtc cpu_rtcwtc_z3[] = {
 	{.max_pclk = 800, .l1_rtc = 0x88888888, .l2_rtc = 0x00008444,},
 	{.max_pclk = 1205, .l1_rtc = 0x99999999, .l2_rtc = 0x00009555,},
 };
+
 static struct cpu_rtcwtc cpu_rtcwtc_ax[] = {
 	{.max_pclk = 800, .l1_rtc = 0x88888888, .l2_rtc = 0x00008444,},
 	{.max_pclk = 1066, .l1_rtc = 0x99999999, .l2_rtc = 0x00009555,},
 	{.max_pclk = 1205, .l1_rtc = 0xAAAAAAAA, .l2_rtc = 0x0000A555,},
 };
+
+static struct cpu_rtcwtc cpu_rtcwtc_1088[] = {
+	{.max_pclk = 312, .l1_rtc = 0x02222222, .l2_rtc = 0x00002221,},
+	{.max_pclk = 800, .l1_rtc = 0x02666666, .l2_rtc = 0x00006265,},
+	{.max_pclk = 1183, .l1_rtc = 0x2AAAAAA, .l2_rtc = 0x0000A2A9,},
+	{.max_pclk = 1300, .l1_rtc = 0x02EEEEEE, .l2_rtc = 0x0000E2ED,},
+	/*
+	 * 1283M will also use 1300 setting, if we use 1300Mhz later,
+	 * the code doesn't need to be changed.
+	*/
+};
+
 static void __init __init_cpu_rtcwtc(struct pxa988_cpu_opt *cpu_opt)
 {
 	struct cpu_rtcwtc *cpu_rtcwtc;
 	unsigned int size, index;
+
 	if (cpu_is_pxa988_z3() || cpu_is_pxa986_z3()) {
 		cpu_rtcwtc = cpu_rtcwtc_z3;
 		size = ARRAY_SIZE(cpu_rtcwtc_z3);
 	} else if (cpu_is_pxa988_a0() || cpu_is_pxa986_a0()) {
 		cpu_rtcwtc = cpu_rtcwtc_ax;
 		size = ARRAY_SIZE(cpu_rtcwtc_ax);
+	} else if (cpu_is_pxa1088()) {
+		cpu_rtcwtc = cpu_rtcwtc_1088;
+		size = ARRAY_SIZE(cpu_rtcwtc_1088);
 	} else
 		return;
+
 	for (index = 0; index < size; index++)
 		if (cpu_opt->pclk <= cpu_rtcwtc[index].max_pclk)
 			break;
+
 	if (index == size)
 		index = size - 1;
+
 	cpu_opt->l1_rtc = cpu_rtcwtc[index].l1_rtc;
 	cpu_opt->l2_rtc = cpu_rtcwtc[index].l2_rtc;
 };
+
+/* Add condition here if you want to filter the core ops */
+static bool __init __is_cpu_op_invalid(struct pxa988_cpu_opt *cop)
+{
+	unsigned int df_max_cpurate =
+		cur_platform_opt->df_max_cpurate;
+	unsigned int index;
+
+	/* If pclk could not drive from src, invalid it */
+	if (cop->ap_clk_src % cop->pclk)
+		return true;
+
+	/*
+	 * If pclk > default support max core frequency, invalid it
+	 */
+	if (df_max_cpurate && \
+		(cop->pclk > df_max_cpurate))
+		return true;
+
+	/*
+	 * Also ignore the PP if it is disabled from uboot cmd.
+	 */
+	for (index = 0; index < pp_discnt; index++)
+		if (pp_disable[index] == cop->pclk)
+			return true;
+	/* platform special requirement */
+	if (cur_platform_opt->is_cpuop_invalid_plt)
+		return cur_platform_opt->is_cpuop_invalid_plt(cop);
+
+	return false;
+};
+
 static void __init __init_cpu_opt(void)
 {
 	struct clk *parent = NULL;
@@ -735,11 +1028,20 @@ static void __init __init_cpu_opt(void)
 
 	for (i = 0; i < cpu_opt_size; i++) {
 		cop = &cpu_opt[i];
-		__init_cpu_rtcwtc(cop);
 		parent = cpu_sel2parent(cop->ap_clk_sel);
 		BUG_ON(IS_ERR(parent));
 		cop->parent = parent;
-		cop->ap_clk_src = clk_get_rate(parent) / MHZ;
+		if (!cop->ap_clk_src)
+			cop->ap_clk_src =
+				clk_get_rate(parent) / MHZ;
+		/* check the invalid condition of this op */
+		if (__is_cpu_op_invalid(cop))
+			continue;
+		/* add it into core op list */
+		list_add_tail(&cop->node, &core_op_list);
+
+		/* fill the opt related setting */
+		__init_cpu_rtcwtc(cop);
 		cop->pclk_div =
 			cop->ap_clk_src / cop->pclk - 1;
 		if (cop->l2clk) {
@@ -756,12 +1058,12 @@ static void __init __init_cpu_opt(void)
 				cop->pclk / cop->baclk - 1;
 		}
 		if (cop->periphclk) {
-			if (cpu_pxa98x_stepping() < PXA98X_A0)
-				cop->periphclk_div =
-					cop->pclk / (2 * cop->periphclk) - 1;
-			else
+			if (!has_feat_periclk_mult2())
 				cop->periphclk_div =
 					cop->pclk / (4 * cop->periphclk) - 1;
+			else
+				cop->periphclk_div =
+					cop->pclk / (2 * cop->periphclk) - 1;
 		}
 
 		pr_info("%d(%d:%d,%d)\t%d([%s],%d)\t"\
@@ -781,7 +1083,7 @@ static void __init __init_cpu_opt(void)
 			cop->periphclk_div,
 			cop->l1_rtc, cop->l2_rtc);
 
-#ifdef Z1_MCK4_SYNC_WORKAROUND
+#ifdef DDR_COMBINDEDCLK_SOLUTION
 		if (mck4_wr_enabled) {
 			parent = cpu_sel2parent(cop->cp_clk_sel);
 			BUG_ON(IS_ERR(parent));
@@ -885,22 +1187,21 @@ static void __init __init_fc_setting(void)
 	__raw_writel(cc_ap.v, APMU_CCR);
 }
 
-static unsigned int cpu_rate2_op_index(unsigned int rate)
+static struct pxa988_cpu_opt *cpu_rate2_op_ptr
+	(unsigned int rate, unsigned int *index)
 {
-	unsigned int index;
-	struct pxa988_cpu_opt *op_array =
-		cur_platform_opt->cpu_opt;
-	unsigned int op_array_size =
-		cur_platform_opt->cpu_opt_size;
+	unsigned int idx = 0;
+	struct pxa988_cpu_opt *cop;
 
-	if (unlikely(rate > op_array[op_array_size - 1].pclk))
-		return op_array_size - 1;
-
-	for (index = 0; index < op_array_size; index++)
-		if (op_array[index].pclk >= rate)
+	list_for_each_entry(cop, &core_op_list, node) {
+		if ((cop->pclk >= rate) || \
+			list_is_last(&cop->node, &core_op_list))
 			break;
+		idx++;
+	}
 
-	return index;
+	*index = idx;
+	return cop;
 }
 
 static unsigned int ddr_rate2_op_index(unsigned int rate)
@@ -1021,12 +1322,12 @@ static void get_cur_cpu_op(struct pxa988_cpu_opt *cop)
 		cop->baclk = cop->pclk / (dm_cc_ap.b.biu_clk_div + 1);
 	}
 	if (cop->periphclk) {
-		if (cpu_pxa98x_stepping() < PXA98X_A0)
-			cop->periphclk =
-				cop->pclk / (dm_cc2_ap.b.peri_clk_div + 1) / 2;
-		else
+		if (!has_feat_periclk_mult2())
 			cop->periphclk =
 				cop->pclk / (dm_cc2_ap.b.peri_clk_div + 1) / 4;
+		else
+			cop->periphclk =
+				cop->pclk / (dm_cc2_ap.b.peri_clk_div + 1) / 2;
 	}
 
 	put_fc_lock();
@@ -1074,11 +1375,19 @@ static void get_cur_ddr_axi_op(struct pxa988_ddr_axi_opt *cop)
 	put_fc_lock();
 }
 
-static void wait_for_fc_done(void)
+static void wait_for_fc_done(int flag)
 {
 	int timeout = 1000;
-	while (!((1 << 1) & __raw_readl(APMU_ISR)) && timeout)
+	while (!((1 << 1) & __raw_readl(APMU_ISR)) && timeout) {
 		timeout--;
+	/*	pmu hardware can trigger DDR freq-chg in lcd v-blank
+	 *	in pxa1088, ddr poll time wait a period of time.we test
+	 *	17ms, the freq change may timeout, so decide to use 20ms.
+	 */
+		if (is_fhd_lcd() && has_feat_enable_hw_vblank_DFC()
+			&& (flag == DDR_FC))
+			udelay(20);
+	}
 	if (timeout <= 0) {
 		WARN(1, "AP frequency change timeout!\n");
 		pr_err("APMU_ISR %x\n", __raw_readl(APMU_ISR));
@@ -1087,7 +1396,7 @@ static void wait_for_fc_done(void)
 	__raw_writel(__raw_readl(APMU_ISR) & ~(1 << 1), APMU_ISR);
 }
 
-#ifdef Z1_MCK4_SYNC_WORKAROUND
+#ifdef DDR_COMBINDEDCLK_SOLUTION
 static void wait_for_cp_fc_done(void)
 {
 	int timeout = 1000;
@@ -1189,7 +1498,7 @@ static void set_ddr_tbl_index(unsigned int index)
 	pmu_register_unlock();
 }
 
-#ifdef Z1_MCK4_SYNC_WORKAROUND
+#ifdef DDR_COMBINDEDCLK_SOLUTION
 static void cp_core_fc_seq(struct pxa988_cpu_opt *cop,
 			    struct pxa988_cpu_opt *top)
 {
@@ -1233,8 +1542,8 @@ static void cp_core_fc_seq(struct pxa988_cpu_opt *cop,
 }
 #endif
 
-#if defined(CONFIG_CPU_PXA988) && defined(CONFIG_SMP)
 atomic_t freqchg_disable_c2 = ATOMIC_INIT(0);
+#if defined(CONFIG_CPU_PXA988)
 
 static void do_nothing(void *data)
 {
@@ -1243,18 +1552,17 @@ static void do_nothing(void *data)
 
 static void smp_freqchg_pre(void)
 {
-	if (cpu_pxa98x_stepping() < PXA98X_A0)
-		return ;
-	atomic_set(&freqchg_disable_c2, 1);
-	/* send ipi to all others online cpu */
-	smp_call_function(do_nothing, NULL, 1);
+	if (has_feat_freqchg_disable_c2()) {
+		atomic_set(&freqchg_disable_c2, 1);
+		/* send ipi to all others online cpu */
+		smp_call_function(do_nothing, NULL, 1);
+	}
 }
 
 static void smp_freqchg_post(void)
 {
-	if (cpu_pxa98x_stepping() < PXA98X_A0)
-		return ;
-	atomic_set(&freqchg_disable_c2, 0);
+	if (has_feat_freqchg_disable_c2())
+		atomic_set(&freqchg_disable_c2, 0);
 }
 #endif
 
@@ -1287,14 +1595,16 @@ static void core_fc_seq(struct pxa988_cpu_opt *cop,
 {
 	union pmua_cc cc_ap, cc_cp;
 
+	trace_pxa_core_clk_chg(CLK_CHG_ENTRY, cop->pclk, top->pclk);
+
 	/* low -> high */
 	if ((!cpu_is_z1z2()) && \
 		(cop->pclk < top->pclk) && \
 		(top->l1_rtc != cop->l1_rtc)) {
 		writel_relaxed(top->l1_rtc, \
-			CIU_CA9_CPU_CONF_SRAM_0);
+			CIU_CPU_CONF_SRAM_0);
 		writel_relaxed(top->l2_rtc, \
-			CIU_CA9_CPU_CONF_SRAM_1);
+			CIU_CPU_CONF_SRAM_1);
 	}
 
 	/* 0) Pre FC : check CP allow AP FC voting */
@@ -1327,14 +1637,12 @@ static void core_fc_seq(struct pxa988_cpu_opt *cop,
 	/* used only for core FC, will NOT trigger fc_sm */
 	/* cc_ap.b.core_dyn_fc = 1; */
 
-	trace_pxa_core_clk_chg(CLK_CHG_ENTRY, cop->pclk, top->pclk);
 	/* 2.4) set div and FC req trigger core FC */
 	pr_debug("CORE FC APMU_CCR[%x]\n", cc_ap.v);
 	__raw_writel(cc_ap.v, APMU_CCR);
-	wait_for_fc_done();
-	trace_pxa_core_clk_chg(CLK_CHG_EXIT, cop->pclk, top->pclk);
+	wait_for_fc_done(CORE_FC);
 
-#ifdef Z1_MCK4_SYNC_WORKAROUND
+#ifdef DDR_COMBINDEDCLK_SOLUTION
 	/* change CP clock here if mck4 wr enabled */
 	if (mck4_wr_enabled)
 		cp_core_fc_seq(cop, top);
@@ -1350,10 +1658,12 @@ static void core_fc_seq(struct pxa988_cpu_opt *cop,
 		(cop->pclk > top->pclk) && \
 		(top->l1_rtc != cop->l1_rtc)) {
 		writel_relaxed(top->l1_rtc, \
-			CIU_CA9_CPU_CONF_SRAM_0);
+			CIU_CPU_CONF_SRAM_0);
 		writel_relaxed(top->l2_rtc, \
-			CIU_CA9_CPU_CONF_SRAM_1);
+			CIU_CPU_CONF_SRAM_1);
 	}
+
+	trace_pxa_core_clk_chg(CLK_CHG_EXIT, cop->pclk, top->pclk);
 }
 
 static int set_core_freq(struct pxa988_cpu_opt *old, struct pxa988_cpu_opt *new)
@@ -1390,7 +1700,7 @@ static int set_core_freq(struct pxa988_cpu_opt *old, struct pxa988_cpu_opt *new)
 	old_parent = cop.parent;
 	clk_enable(new->parent);
 
-#if defined(CONFIG_CPU_PXA988) && defined(CONFIG_SMP)
+#if defined(CONFIG_CPU_PXA988)
 	smp_freqchg_pre();
 #endif
 	/* Get lock in irq disable status to short AP hold lock time */
@@ -1399,14 +1709,14 @@ static int set_core_freq(struct pxa988_cpu_opt *old, struct pxa988_cpu_opt *new)
 	if (ret) {
 		local_irq_restore(flags);
 		clk_disable(new->parent);
-#if defined(CONFIG_CPU_PXA988) && defined(CONFIG_SMP)
+#if defined(CONFIG_CPU_PXA988)
 		smp_freqchg_post();
 #endif
 		goto out;
 	}
 	core_fc_seq(&cop, new);
 	local_irq_restore(flags);
-#if defined(CONFIG_CPU_PXA988) && defined(CONFIG_SMP)
+#if defined(CONFIG_CPU_PXA988)
 	smp_freqchg_post();
 #endif
 
@@ -1452,39 +1762,38 @@ out:
 static void pxa988_cpu_init(struct clk *clk)
 {
 	unsigned int op_index;
-	struct pxa988_cpu_opt cur_op;
-	struct pxa988_cpu_opt *op_array;
+	struct pxa988_cpu_opt cur_op, *op;
 #ifdef CONFIG_DEBUG_FS
 	struct clk_dc_stat_info *cpu_dcstat;
-	unsigned int opt_size, i, cpu;
+	unsigned int opt_size, i = 0, cpu;
 #endif
 	BUG_ON(!cur_platform_opt);
 
 	/* get cur core rate */
-	op_array = cur_platform_opt->cpu_opt;
-	memcpy(&cur_op, &op_array[0], sizeof(struct pxa988_cpu_opt));
+	op = list_first_entry(&core_op_list,\
+		struct pxa988_cpu_opt, node);
+	memcpy(&cur_op, op, sizeof(struct pxa988_cpu_opt));
 	get_cur_cpu_op(&cur_op);
-	op_index = cpu_rate2_op_index(cur_op.pclk);
-	cur_cpu_op = &op_array[op_index];
+	cur_cpu_op = cpu_rate2_op_ptr(cur_op.pclk, &op_index);
 
-	clk->rate = op_array[op_index].pclk * MHZ;
-	clk->parent = op_array[op_index].parent;
+	clk->rate = cur_cpu_op->pclk * MHZ;
+	clk->parent = cur_cpu_op->parent;
 	clk->dynamic_change = 1;
 
 	/* config the wtc/rtc value according to current frequency */
 	if (!cpu_is_z1z2()) {
-		writel_relaxed(op_array[op_index].l1_rtc, \
-			CIU_CA9_CPU_CONF_SRAM_0);
-		writel_relaxed(op_array[op_index].l2_rtc, \
-			CIU_CA9_CPU_CONF_SRAM_1);
+		writel_relaxed(cur_cpu_op->l1_rtc, \
+			CIU_CPU_CONF_SRAM_0);
+		writel_relaxed(cur_cpu_op->l2_rtc, \
+			CIU_CPU_CONF_SRAM_1);
 	}
 
 	pr_info(" CPU boot up @%luHZ\n", clk->rate);
 
-#ifdef Z1_MCK4_SYNC_WORKAROUND
+#ifdef DDR_COMBINDEDCLK_SOLUTION
 	if (mck4_wr_enabled)
 		clk_set_rate(&pxa988_ddr_clk,\
-			op_array[op_index].combined_dclk * MHZ);
+			cur_cpu_op->combined_dclk * MHZ);
 #endif
 
 #ifdef CONFIG_DEBUG_FS
@@ -1498,12 +1807,13 @@ static void pxa988_cpu_init(struct clk *clk)
 				__func__, clk->name);
 			return;
 		}
-		for (i = 0; i < opt_size; i++) {
+		i = 0;
+		list_for_each_entry(op, &core_op_list, node) {
 			cpu_dcstat->ops_dcstat[i].ppindex = i;
-			cpu_dcstat->ops_dcstat[i].pprate =
-				op_array[i].pclk * MHZ;
+			cpu_dcstat->ops_dcstat[i].pprate = op->pclk;
+			i++;
 		}
-		cpu_dcstat->ops_stat_size = opt_size;
+		cpu_dcstat->ops_stat_size = i;
 		cpu_dcstat->stat_start = false;
 		cpu_dcstat->curopindex = op_index;
 	}
@@ -1512,21 +1822,15 @@ static void pxa988_cpu_init(struct clk *clk)
 
 static long pxa988_cpu_round_rate(struct clk *clk, unsigned long rate)
 {
-	struct pxa988_cpu_opt *op_array =
-		cur_platform_opt->cpu_opt;
-	unsigned int op_array_size =
-		cur_platform_opt->cpu_opt_size, index;
+	struct pxa988_cpu_opt *cop;
 
 	rate /= MHZ;
-
-	if (unlikely(rate > op_array[op_array_size - 1].pclk))
-		return op_array[op_array_size - 1].pclk * MHZ;
-
-	for (index = 0; index < op_array_size; index++)
-		if (op_array[index].pclk >= rate)
+	list_for_each_entry(cop, &core_op_list, node) {
+		if ((cop->pclk >= rate) || \
+			list_is_last(&cop->node, &core_op_list))
 			break;
-
-	return op_array[index].pclk * MHZ;
+	}
+	return cop->pclk * MHZ;
 }
 
 static int pxa988_cpu_setrate(struct clk *clk, unsigned long rate)
@@ -1535,13 +1839,10 @@ static int pxa988_cpu_setrate(struct clk *clk, unsigned long rate)
 	struct cpufreq_freqs freqs;
 	unsigned int index, cpu;
 	int ret = 0;
-	struct pxa988_cpu_opt *op_array =
-		cur_platform_opt->cpu_opt;
+	static struct pxa988_cpu_opt *bridge_op;
 
 	rate /= MHZ;
-	index = cpu_rate2_op_index(rate);
-
-	md_new = &op_array[index];
+	md_new = cpu_rate2_op_ptr(rate, &index);
 	if (md_new == cur_cpu_op)
 		return 0;
 
@@ -1566,6 +1867,13 @@ static int pxa988_cpu_setrate(struct clk *clk, unsigned long rate)
 	/* clk_enable(md_new->parent); */
 
 	spin_lock(&fc_seq_lock);
+#ifdef PANIC_SCALING_CORE_DDRAXI_TO_MIN
+	if (has_feat_panic_freqscaling() && \
+		atomic_read(&panic_disable_fc)) {
+		spin_unlock(&fc_seq_lock);
+		goto out;
+	}
+#endif
 
 	/*
 	 * Switching pll1_1248 and pll3p may generate glitch
@@ -1575,14 +1883,19 @@ static int pxa988_cpu_setrate(struct clk *clk, unsigned long rate)
 		(md_new->ap_clk_sel == AP_CLK_SRC_PLL1_1248)) || \
 		((md_old->ap_clk_sel == AP_CLK_SRC_PLL1_1248) && \
 		(md_new->ap_clk_sel == AP_CLK_SRC_PLL3P))) {
-		/* 1) use startup op(op0) as a bridge */
-		ret = set_core_freq(md_old, &op_array[0]);
+		/* 1) op0 as bridge, must from pll1_624 */
+		if (unlikely(!bridge_op))
+			bridge_op = list_first_entry(&core_op_list,\
+			 struct pxa988_cpu_opt, node);
+		BUG_ON(bridge_op->ap_clk_sel != AP_CLK_SRC_PLL1_624);
+		/* 2) use startup op(op0) as a bridge */
+		ret = set_core_freq(md_old, bridge_op);
 		if (ret)
 			goto tmpout;
-		/* 2) change PLL3_CR[18] to select pll1_1248 or pll3p */
+		/* 3) change PLL3_CR[18] to select pll1_1248 or pll3p */
 		pll1_pll3_switch(md_new->ap_clk_sel);
-		/* 3) switch to op which uses pll1_1248/pll3p */
-		ret = set_core_freq(&op_array[0], md_new);
+		/* 4) switch to op which uses pll1_1248/pll3p */
+		ret = set_core_freq(bridge_op, md_new);
 	} else {
 		ret = set_core_freq(md_old, md_new);
 	}
@@ -1595,15 +1908,14 @@ tmpout:
 
 	clk_reparent(clk, md_new->parent);
 	/*clk_disable(md_old->parent);*/
-#ifdef CONFIG_DEBUG_FS
+
 	for_each_possible_cpu(cpu)
-		pxa988_cpu_dcstat_event(cpu, CLK_RATE_CHANGE,
-			index);
-#endif
-#ifdef Z1_MCK4_SYNC_WORKAROUND
+		pxa988_cpu_dcstat_event(cpu, CLK_RATE_CHANGE, index);
+
+#ifdef DDR_COMBINDEDCLK_SOLUTION
 	if (mck4_wr_enabled)
 		clk_set_rate(&pxa988_ddr_clk,\
-			op_array[index].combined_dclk * MHZ);
+			cur_cpu_op->combined_dclk * MHZ);
 #endif
 
 out:
@@ -1659,6 +1971,8 @@ static void ddr_axi_fc_seq(struct pxa988_ddr_axi_opt *cop,
 {
 	union pmua_cc cc_ap, cc_cp;
 
+	trace_pxa_ddraxi_clk_chg(CLK_CHG_ENTRY, cop->dclk, top->dclk);
+
 	/* 0) Pre FC : check CP allow AP FC voting */
 	cc_cp.v = __raw_readl(APMU_CP_CCR);
 	if (unlikely(!cc_cp.b.core_allow_spd_chg)) {
@@ -1696,18 +2010,18 @@ static void ddr_axi_fc_seq(struct pxa988_ddr_axi_opt *cop,
 		cc_ap.b.bus_freq_chg_req = 1;
 	}
 
-	trace_pxa_ddraxi_clk_chg(CLK_CHG_ENTRY, cop->dclk, top->dclk);
 	/* 4) set div and FC req bit trigger DDR/AXI FC */
 	pr_debug("DDR FC APMU_CCR[%x]\n", cc_ap.v);
 	__raw_writel(cc_ap.v, APMU_CCR);
-	wait_for_fc_done();
-	trace_pxa_ddraxi_clk_chg(CLK_CHG_EXIT, cop->dclk, top->dclk);
+	wait_for_fc_done(DDR_FC);
 
 	/* 5) Post FC : AP clear allow FC REQ */
 	cc_ap.v = __raw_readl(APMU_CCR);
 	cc_ap.b.ddr_freq_chg_req = 0;
 	cc_ap.b.bus_freq_chg_req = 0;
 	__raw_writel(cc_ap.v, APMU_CCR);
+
+	trace_pxa_ddraxi_clk_chg(CLK_CHG_EXIT, cop->dclk, top->dclk);
 }
 
 static int set_ddr_axi_freq(struct pxa988_ddr_axi_opt *old,
@@ -1741,7 +2055,7 @@ static int set_ddr_axi_freq(struct pxa988_ddr_axi_opt *old,
 	axi_old_parent = cop.axi_parent;
 	clk_enable(new->ddr_parent);
 	clk_enable(new->axi_parent);
-#if defined(CONFIG_CPU_PXA988) && defined(CONFIG_SMP)
+#if defined(CONFIG_CPU_PXA988)
 	smp_freqchg_pre();
 #endif
 	/* Get lock in irq disable status to short AP hold lock time */
@@ -1751,14 +2065,14 @@ static int set_ddr_axi_freq(struct pxa988_ddr_axi_opt *old,
 		local_irq_restore(flags);
 		clk_disable(new->ddr_parent);
 		clk_disable(new->axi_parent);
-#if defined(CONFIG_CPU_PXA988) && defined(CONFIG_SMP)
+#if defined(CONFIG_CPU_PXA988)
 		smp_freqchg_post();
 #endif
 		goto out;
 	}
 	ddr_axi_fc_seq(&cop, new);
 	local_irq_restore(flags);
-#if defined(CONFIG_CPU_PXA988) && defined(CONFIG_SMP)
+#if defined(CONFIG_CPU_PXA988)
 	smp_freqchg_post();
 #endif
 
@@ -1826,6 +2140,9 @@ static void pxa988_ddraxi_init(struct clk *clk)
 #ifdef CONFIG_DEBUG_FS
 	unsigned int op_array_size, i;
 	unsigned long op[MAX_OP_NUM];
+#ifdef CONFIG_DDR_FC_HARDWARE
+	unsigned int value;
+#endif
 #endif
 	BUG_ON(!cur_platform_opt);
 
@@ -1861,6 +2178,16 @@ static void pxa988_ddraxi_init(struct clk *clk)
 	pr_info(" DDR boot up @%luHZ\n", clk->rate);
 	pr_info(" AXI boot up @%luHZ\n", axi_rate);
 
+#ifdef CONFIG_DDR_FC_HARDWARE
+	/* default disable the hardware feature */
+	value = __raw_readl(APMU_DEBUG);
+	if (is_fhd_lcd() && has_feat_enable_hw_vblank_DFC())
+		value &= ~(MASK_LCD_BLANK_CHECK);
+	else
+		value |= (MASK_LCD_BLANK_CHECK);
+	__raw_writel(value, APMU_DEBUG);
+#endif
+
 #ifdef CONFIG_DEBUG_FS
 	op_array_size = cur_platform_opt->ddr_axi_opt_size;
 	for (i = 0; i < op_array_size; i++)
@@ -1880,7 +2207,7 @@ static long pxa988_ddraxi_round_rate(struct clk *clk, unsigned long rate)
 	rate /= MHZ;
 
 	if (unlikely(rate > op_array[op_array_size - 1].dclk))
-		return op_array[op_array_size - 1].dclk * MHZ;
+		return op_array[op_array_size - 1].dclk;
 
 	for (index = 0; index < op_array_size; index++)
 		if (op_array[index].dclk >= rate)
@@ -1959,11 +2286,11 @@ static int pxa988_ddraxi_setrate(struct clk *clk, unsigned long rate)
 
 	if ((cpu_is_pxa988_z3() || cpu_is_pxa986_z3())
 			&& ((md_new->dclk == 156) || (md_new->dclk == 312))
-			&& atomic_read(&displayon)) {
+			&& disp_is_on()) {
 		md_old_eof = md_old;
 		md_new_eof = md_new;
 		/* Enable LCD panel path EOF interrupt before DDR freq-chg */
-		irq_unmask_eof(0);
+		disp_eofintr_onoff(1);
 		atomic_set(&disable_c2, 1);
 		atomic_set(&ddr_fc_trigger, 1);
 		/*
@@ -1991,9 +2318,16 @@ static int pxa988_ddraxi_setrate(struct clk *clk, unsigned long rate)
 			pr_debug("EOF_FC: wait eof done!\n");
 		atomic_set(&disable_c2, 0);
 		/* Disable LCD panel path EOF interrupt after DDR freq-chg */
-		irq_mask_eof(0);
+		disp_eofintr_onoff(0);
 	} else {
 		spin_lock(&fc_seq_lock);
+#ifdef PANIC_SCALING_CORE_DDRAXI_TO_MIN
+		if (has_feat_panic_freqscaling() && \
+			atomic_read(&panic_disable_fc)) {
+			spin_unlock(&fc_seq_lock);
+			goto out;
+		}
+#endif
 		ret = set_ddr_axi_freq(md_old, md_new);
 		if (!ret)
 			ddr_lpm_tbl_optimize(md_old->dclk,
@@ -2023,7 +2357,7 @@ static int pxa988_ddraxi_setrate(struct clk *clk, unsigned long rate)
 	pxa988_clk_dcstat_event(clk, CLK_RATE_CHANGE, index);
 #endif
 
-#ifdef Z1_MCK4_SYNC_WORKAROUND
+#ifdef DDR_COMBINDEDCLK_SOLUTION
 	trigger_bind2ddr_clk_rate(rate * MHZ);
 #endif
 out:
@@ -2058,19 +2392,45 @@ static struct clk pxa988_ddr_clk = {
 	.ops = &ddr_clk_ops,
 	.is_combined_fc = 1,
 };
-
-int ddr_mode = 0;
-static int __init __init_ddr_mode(char *arg)
+#ifdef PANIC_SCALING_CORE_DDRAXI_TO_MIN
+static int panic_scale_coreddraxi_freq2min(struct notifier_block *this,
+	unsigned long event, void *ptr)
 {
-	int n;
-	if (!get_option(&arg, &n))
-		return 0;
-	ddr_mode = n;
-	if ((ddr_mode != 0) && (ddr_mode != 1))
-		pr_info("WARNING: unknown DDR type!");
-	return 1;
+	struct pxa988_cpu_opt *cpucop = NULL, *cputop = NULL;
+	struct pxa988_ddr_axi_opt *ddraxiop_array = cur_platform_opt->ddr_axi_opt;
+	struct pxa988_ddr_axi_opt *ddraxicop = NULL, *ddraxitop = NULL;
+	unsigned int index = 0;
+	unsigned long flag;
+
+	if (!has_feat_panic_freqscaling())
+		return NOTIFY_DONE;
+
+	/* core scaling to 312, ddr scaling to 156 */
+	cpucop = cur_cpu_op;
+	cputop = cpu_rate2_op_ptr(312, &index);
+	ddraxicop = cur_ddraxi_op;
+	ddraxitop = &ddraxiop_array[ddr_rate2_op_index(156)];
+	spin_lock_irqsave(&fc_seq_lock, flag);
+	atomic_set(&panic_disable_fc, 1);
+	if (cpucop != cputop)
+		set_core_freq(cpucop, cputop);
+	if (ddraxicop != ddraxitop)
+		set_ddr_axi_freq(ddraxicop, ddraxitop);
+	spin_unlock_irqrestore(&fc_seq_lock, flag);
+
+	printk(KERN_EMERG "%s core %d->%d, ddr/axi %d->%d/%d->%d\n",
+		__func__, cpucop->pclk, cputop->pclk,
+		ddraxicop->dclk, ddraxitop->dclk,
+		ddraxicop->aclk, ddraxitop->aclk);
+	return NOTIFY_OK;
 }
-__setup("ddr_mode=", __init_ddr_mode);
+
+static struct notifier_block panic_freqscaling_notifier = {
+	.notifier_call = panic_scale_coreddraxi_freq2min,
+	.priority = 100,
+};
+#endif
+
 /*
  * Every ddr/axi FC, fc_sm will halt AP,CP and
  * wait for the halt_ack from AP and CP.
@@ -2127,74 +2487,29 @@ unsigned int pxa988_get_ddr_op_rate(unsigned int index)
 	return ddr_opt[index].dclk * MHZ_TO_KHZ;
 }
 
-#define MAX_PP_STR_LEN	10
-#define MAX_PP_NUM	10
-static unsigned int pp_disable[MAX_PP_NUM];
-static unsigned int pp_discnt;
-static int removepp(char *s)
-{
-	int tbl_size = platform_op_arrays->cpu_opt_size;
-	int i, j, re_range = 0;
-
-	for (pp_discnt = 0; pp_discnt < tbl_size; pp_discnt++) {
-		pp_disable[pp_discnt] = simple_strtol(s, &s, 10);
-		s++;
-		if (!pp_disable[pp_discnt])
-			break;
-		if (pp_discnt)
-			if (pp_disable[pp_discnt] < pp_disable[pp_discnt - 1])
-				re_range = 1;
-	}
-	if (!re_range)
-		return 1;
-	for (i = 0; i < pp_discnt; i++) {
-		for (j = 0; j < pp_discnt - i - 1; j++) {
-			if (pp_disable[j] > pp_disable[j + 1]) {
-				unsigned int tmp = pp_disable[j];
-				pp_disable[j] = pp_disable[j + 1];
-				pp_disable[j + 1] = tmp;
-			}
-		}
-	}
-
-	return 1;
-}
-__setup("core_nopp=", removepp);
 
 #ifdef CONFIG_CPU_FREQ_TABLE
 static struct cpufreq_frequency_table *cpufreq_tbl;
 
 static void __init_cpufreq_table(void)
 {
-	struct pxa988_cpu_opt *cpu_opt;
-	unsigned int cpu_opt_size = 0, i, j, k;
+	struct pxa988_cpu_opt *cop;
+	unsigned int cpu_opt_size = 0, i = 0;
 
-	cpu_opt = cur_platform_opt->cpu_opt;
 	cpu_opt_size = cur_platform_opt->cpu_opt_size;
-
 	cpufreq_tbl =
 		kmalloc(sizeof(struct cpufreq_frequency_table) * \
 					(cpu_opt_size + 1), GFP_KERNEL);
 	if (!cpufreq_tbl)
 		return;
 
-	for (i = 0, j = 0, k = 0; \
-		i < cpu_opt_size; i++) {
-		if (pp_disable[j] && j < pp_discnt) {
-			if (pp_disable[j] == cpu_opt[i].pclk) {
-				j++;
-				continue;
-			}
-		}
-		cpufreq_tbl[k].index = k;
-		cpufreq_tbl[k].frequency = cpu_opt[i].pclk * MHZ_TO_KHZ;
-		pr_info("Actual cpufreq table [%d]'s freq : %u\n",\
-			cpufreq_tbl[k].index, cpufreq_tbl[k].frequency);
-		k++;
+	list_for_each_entry(cop, &core_op_list, node) {
+		cpufreq_tbl[i].index = i;
+		cpufreq_tbl[i].frequency = cop->pclk * MHZ_TO_KHZ;
+		i++;
 	}
-
-	cpufreq_tbl[k].index = k;
-	cpufreq_tbl[k].frequency = CPUFREQ_TABLE_END;
+	cpufreq_tbl[i].index = i;
+	cpufreq_tbl[i].frequency = CPUFREQ_TABLE_END;
 
 	for_each_possible_cpu(i)
 		cpufreq_frequency_table_get_attr(cpufreq_tbl, i);
@@ -2243,8 +2558,9 @@ static int __init __init_read_droinfo(void)
 	unsigned int uiDRO_Avg;
 	unsigned int uiGeuStatus;
 	unsigned int uiFuses;
-
 	is_pxa988a0svc = 0;
+
+	is_pxa986a0svc = 0;
 
 	/*
 	* Read out DRO value, need enable GEU clock, if already disable,
@@ -2286,12 +2602,16 @@ static int __init __init_read_droinfo(void)
 		pr_info("is_pxa988a0svc = %d\n", is_pxa988a0svc);
 	}
 
+	if (cpu_is_pxa986_a0()) {
+		is_pxa986a0svc = (((uiFuses >> 14) & 0x3) == 0x3) ? 1 : 0;
+		pr_info("is_pxa986a0svc = %d\n", is_pxa986a0svc);
+	}
+
 	if (!cpu_is_z1z2()) {
 		/* bit 240 ~ 255 for Profile information */
 		uiFuses = (uiFuses >> 16) & 0x0000FFFF;
 		uichipProfile = convert_FusesToProfile(uiFuses);
 	}
-
 
 	pm_dro_status = uiDRO_Avg;
 
@@ -2317,12 +2637,10 @@ static int __init __init_read_droinfo(void)
 
 	return uiDRO_Avg;
 }
-core_initcall(__init_read_droinfo);
+pure_initcall(__init_read_droinfo);
 
 static int __init pxa988_freq_init(void)
 {
-	__init_platform_opt(ddr_mode);
-
 	__init_cpu_opt();
 	__init_ddr_axi_opt();
 	__init_fc_setting();
@@ -2332,10 +2650,15 @@ static int __init pxa988_freq_init(void)
 	pxa988_init_one_clock(&pxa988_cpu_clk);
 	clk_enable(&pxa988_cpu_clk);
 
-#ifdef Z1_MCK4_SYNC_WORKAROUND
+#ifdef DDR_COMBINDEDCLK_SOLUTION
 	trigger_bind2ddr_clk_rate(clk_get_rate(&pxa988_ddr_clk));
 #endif
 	__init_cpufreq_table();
+
+#ifdef PANIC_SCALING_CORE_DDRAXI_TO_MIN
+	atomic_notifier_chain_register(&panic_notifier_list,
+		&panic_freqscaling_notifier);
+#endif
 
 	return 0;
 }
@@ -2400,6 +2723,50 @@ static int dump_ddr_axi_op(char *buf, size_t size,
 			q->dclk, q->aclk, q->ddr_clk_src,
 			q->axi_clk_src);
 }
+
+#ifdef CONFIG_DDR_FC_HARDWARE
+static ssize_t lcd_blank_check_read(struct file *filp,
+	char __user *buffer, size_t count, loff_t *ppos)
+{
+	char buf[256] = { 0 };
+	int len = 0;
+	unsigned int value;
+	size_t size = sizeof(buf) - 1;
+	value = __raw_readl(APMU_DEBUG);
+	if (value & (MASK_LCD_BLANK_CHECK))
+		len = snprintf(buf, size,
+		"pxa1088 HW DFC in LCD v-Blank is disabled\n");
+	else
+		len = snprintf(buf, size,
+		"pxa1088 HW DFC in LCD v-Blank is enabled\n");
+	return simple_read_from_buffer(buffer, count, ppos, buf, len);
+}
+
+static ssize_t lcd_blank_check_write(struct file *filp,
+		const char __user *buffer, size_t count, loff_t *ppos)
+{
+	int start;
+	unsigned int value;
+	char buf[10] = { 0 };
+
+	if (copy_from_user(buf, buffer, count))
+		return -EFAULT;
+
+	sscanf(buf, "%d", &start);
+	value = __raw_readl(APMU_DEBUG);
+	if (start == 1)
+		value &= ~(MASK_LCD_BLANK_CHECK);
+	else if (start == 0)
+		value |= (MASK_LCD_BLANK_CHECK);
+	__raw_writel(value, APMU_DEBUG);
+	return count;
+}
+
+static const struct file_operations lcd_blank_check_fops = {
+	.read = lcd_blank_check_read,
+	.write = lcd_blank_check_write,
+};
+#endif
 
 /* Display current operating point */
 static ssize_t cur_cpu_op_show(struct file *filp, char __user *buffer,
@@ -2493,50 +2860,57 @@ const struct file_operations cp_block_ddr_fc_fops = {
 	.read = cp_block_ddr_fc_show,
 };
 
-static inline u64 get_cpu_idle_time_jiffy(unsigned int cpu,
-			u64 *wall)
+/* detect the cpu is c1,c2 or active */
+static int pxa_powermode(u32 cpu)
 {
-	u64 idle_time;
-	u64 cur_wall_time;
-	u64 busy_time;
-
-	cur_wall_time = jiffies64_to_cputime64(get_jiffies_64());
-
-	busy_time  = kcpustat_cpu(cpu).cpustat[CPUTIME_USER];
-	busy_time += kcpustat_cpu(cpu).cpustat[CPUTIME_SYSTEM];
-	busy_time += kcpustat_cpu(cpu).cpustat[CPUTIME_IRQ];
-	busy_time += kcpustat_cpu(cpu).cpustat[CPUTIME_SOFTIRQ];
-	busy_time += kcpustat_cpu(cpu).cpustat[CPUTIME_STEAL];
-	busy_time += kcpustat_cpu(cpu).cpustat[CPUTIME_NICE];
-
-	idle_time = cur_wall_time - busy_time;
-	if (wall)
-		*wall = jiffies_to_usecs(cur_wall_time);
-
-	return jiffies_to_usecs(idle_time);
+	unsigned status_temp = 0;
+	if (cpu_is_pxa988()) {
+		if (has_feat_legacy_apmu_core_status()) {
+			status_temp = ((__raw_readl(APMU_CORE_STATUS)) &
+			((1 << (2 + 2 * cpu)) | (1 << (3 + 2 * cpu))));
+			if (!status_temp)
+				return PXA988_MAX_LPM_INDEX;
+			else if (status_temp & (1 << (2 + 2 * cpu)))
+				return PXA988_LPM_C1;
+			else if (status_temp & (1 << (3 + 2 * cpu)))
+				return PXA988_LPM_C2;
+		} else {
+			status_temp = ((__raw_readl(APMU_CORE_STATUS)) &
+			((1 << (3 + 3 * cpu)) | (1 << (4 + 3 * cpu))));
+			if (!status_temp)
+				return PXA988_MAX_LPM_INDEX;
+			if (status_temp & (1 << (3 + 3 * cpu)))
+				return PXA988_LPM_C1;
+			else if (status_temp & (1 << (4 + 3 * cpu)))
+				return PXA988_LPM_C2;
+		}
+	} else if (cpu_is_pxa1088()) {
+		status_temp = ((__raw_readl(APMU_CORE_STATUS)) &
+		((1 << (6 + 3 * cpu)) | (1 << (7 + 3 * cpu))));
+		if (!status_temp)
+			return PXA988_MAX_LPM_INDEX;
+		if (status_temp & (1 << (6 + 3 * cpu)))
+			return PXA988_LPM_C1;
+		else if (status_temp & (1 << (7 + 3 * cpu)))
+			return PXA988_LPM_C2;
+	}
+	return PXA988_MAX_LPM_INDEX;
 }
 
-static inline cputime64_t get_cpu_idle_time(unsigned int cpu,
-			cputime64_t *wall)
-{
-	u64 idle_time = get_cpu_idle_time_us(cpu, NULL);
 
-	if (idle_time == -1ULL)
-		return get_cpu_idle_time_jiffy(cpu, wall);
-	else
-		idle_time += get_cpu_iowait_time_us(cpu, wall);
-
-	return idle_time;
-}
-
-static void pxa988_cpu_dcstat_event(unsigned int cpu,
+void pxa988_cpu_dcstat_event(unsigned int cpu,
 	enum clk_stat_msg msg, unsigned int tgtop)
 {
+#ifdef CONFIG_DEBUG_FS
 	struct clk_dc_stat_info *dc_stat_info = NULL;
 	cputime64_t cur_wall, cur_idle;
 	cputime64_t prev_wall, prev_idle;
 	u32 idle_time_ms, total_time_ms;
 	struct op_dcstat_info *cur, *tgt;
+	unsigned int cpu_i;
+	bool mark_keytime;
+	ktime_t ktime_temp, ktime_temp1;
+	u32 i, temp_time = 0;
 
 	dc_stat_info = &per_cpu(cpu_dc_stat, cpu);
 	cur = &dc_stat_info->ops_dcstat[dc_stat_info->curopindex];
@@ -2555,29 +2929,306 @@ static void pxa988_cpu_dcstat_event(unsigned int cpu,
 	total_time_ms = (u32)(cur_wall - prev_wall);
 	idle_time_ms /= 1000;
 	total_time_ms /= 1000;
+	if (idle_time_ms > total_time_ms)
+		idle_time_ms = total_time_ms;
 
 	switch (msg) {
 	case CLK_STAT_START:
 		cur->prev_cpu_wall = cur_wall;
 		cur->prev_cpu_idle = cur_idle;
+		if (0 == cpu) {
+			memset(&idle_dcstat_info, 0, sizeof(idle_dcstat_info));
+			ktime_temp = ktime_get();
+			idle_dcstat_info.all_idle_start = ktime_temp;
+			idle_dcstat_info.all_idle_end = ktime_temp;
+			idle_dcstat_info.all_active_start = ktime_temp;
+			idle_dcstat_info.all_active_end = ktime_temp;
+			idle_dcstat_info.cal_duration = ktime_to_us(ktime_temp);
+			ktime_temp = ktime_set(0, 0);
+			idle_dcstat_info.M2_idle_start = ktime_temp;
+			idle_dcstat_info.D1P_idle_start = ktime_temp;
+			idle_dcstat_info.D1_idle_start = ktime_temp;
+			idle_dcstat_info.D2_idle_start = ktime_temp;
+			for_each_possible_cpu(cpu_i) {
+				dc_stat_info = &per_cpu(cpu_dc_stat, cpu_i);
+				dc_stat_info->power_mode = pxa_powermode(cpu_i);
+				dc_stat_info->breakdown_start = ktime_temp;
+				for (i = 0; i < MAX_BREAKDOWN_TIME; i++) {
+					dc_stat_info->breakdown_time_total[i]\
+					= 0;
+					dc_stat_info->breakdown_time_count[i]\
+					= 0;
+				}
+				dc_stat_info->C1_idle_start = ktime_temp;
+				dc_stat_info->C2_idle_start = ktime_temp;
+				for (i = 0; i < MAX_LPM_INDEX_DC; i++) {
+					dc_stat_info->C1_op_total[i] = 0;
+					dc_stat_info->C1_count[i] = 0;
+					dc_stat_info->C2_op_total[i] = 0;
+					dc_stat_info->C2_count[i] = 0;
+				}
+			}
+			for (i = 0; i < MAX_LPM_INDEX_DC; i++) {
+				idle_dcstat_info.all_idle_op_total[i] = 0;
+				idle_dcstat_info.all_idle_count[i] = 0;
+			}
+		}
 		break;
 	case CLK_STAT_STOP:
-		cur->busy_time += (total_time_ms - idle_time_ms);
+		if (idle_time_ms > total_time_ms)
+			cur->busy_time = 0;
+		else
+			cur->busy_time += (total_time_ms - idle_time_ms);
 		cur->idle_time += idle_time_ms;
+		if (0 == cpu) {
+			idle_dcstat_info.cal_duration = ktime_to_us(ktime_get())
+				- idle_dcstat_info.cal_duration;
+		}
 		break;
 	case CLK_RATE_CHANGE:
+
 		/* rate change from old->new */
 		cur->prev_cpu_idle = cur_idle;
 		cur->prev_cpu_wall = cur_wall;
-		cur->busy_time += (total_time_ms - idle_time_ms);
+		if (idle_time_ms > total_time_ms)
+			cur->busy_time = 0;
+		else
+			cur->busy_time += (total_time_ms - idle_time_ms);
 		cur->idle_time += idle_time_ms;
 		tgt = &dc_stat_info->ops_dcstat[tgtop];
 		tgt->prev_cpu_idle = cur_idle;
 		tgt->prev_cpu_wall = cur_wall;
+		ktime_temp = ktime_get();
+
+		for_each_possible_cpu(cpu_i) {
+			if (cpu == cpu_i)
+				continue;
+			dc_stat_info = &per_cpu(cpu_dc_stat, cpu_i);
+			spin_lock(&c1c2_exit_lock);
+			if ((dc_stat_info->idle_flag == PXA988_LPM_C1) &&
+				((s64)0 !=
+				ktime_to_us(dc_stat_info->C1_idle_start))) {
+				dc_stat_info->C1_idle_end = ktime_temp;
+				dc_stat_info->C1_op_total\
+				[dc_stat_info->C1_op_index] +=
+				ktime_to_us(ktime_sub(dc_stat_info->C1_idle_end,
+				dc_stat_info->C1_idle_start));
+				dc_stat_info->C1_count\
+				[dc_stat_info->C1_op_index]++;
+				dc_stat_info->C1_idle_start = ktime_temp;
+				dc_stat_info->C1_op_index = tgtop;
+			} else if ((dc_stat_info->idle_flag == PXA988_LPM_C2) &&
+				((s64)0 !=
+				ktime_to_us(dc_stat_info->C2_idle_start))) {
+				dc_stat_info->C2_idle_end = ktime_temp;
+				dc_stat_info->C2_op_total\
+				[dc_stat_info->C2_op_index] +=
+				ktime_to_us(ktime_sub(dc_stat_info->C2_idle_end,
+				dc_stat_info->C2_idle_start));
+				dc_stat_info->C2_count\
+				[dc_stat_info->C2_op_index]++;
+				dc_stat_info->C2_idle_start = ktime_temp;
+				dc_stat_info->C2_op_index = tgtop;
+			}
+			spin_unlock(&c1c2_exit_lock);
+		}
+		break;
+	case CPU_IDLE_ENTER:
+		ktime_temp = ktime_get();
+		spin_lock(&c1c2_enter_lock);
+		if (PXA988_LPM_C1 == tgtop) {
+			dc_stat_info->C1_op_index = dc_stat_info->curopindex;
+			dc_stat_info->C1_idle_start = ktime_temp;
+			dc_stat_info->idle_flag = PXA988_LPM_C1;
+		} else if (tgtop >= PXA988_LPM_C2 &&
+			tgtop <= PXA988_LPM_D2_UDR) {
+			dc_stat_info->C2_op_index = dc_stat_info->curopindex;
+			dc_stat_info->C2_idle_start = ktime_temp;
+			dc_stat_info->idle_flag = PXA988_LPM_C2;
+		}
+		if ((tgtop >= PXA988_LPM_C1) && (tgtop <= PXA988_LPM_D2_UDR))
+			dc_stat_info->breakdown_start = ktime_temp;
+		spin_unlock(&c1c2_enter_lock);
+		dc_stat_info->power_mode = tgtop;
+		/*	this mark_keytime is flag indicate enter all idle mode,
+		 *	if two core both enter the idle,and power mode isn't
+		 *  eaqual to PXA988_MAX_LPM_INDEX, mean the other core don't
+		 *  exit idle.
+		 */
+		mark_keytime = true;
+		for_each_possible_cpu(cpu_i) {
+			if (cpu == cpu_i)
+				continue;
+			dc_stat_info = &per_cpu(cpu_dc_stat, cpu_i);
+			if (PXA988_MAX_LPM_INDEX == dc_stat_info->power_mode) {
+				mark_keytime = false;
+				break;
+			}
+		}
+
+		if (mark_keytime) {
+			idle_dcstat_info.all_idle_start = ktime_temp;
+			idle_dcstat_info.all_idle_op_index =
+			dc_stat_info->curopindex;
+		}
+
+		/*	this mark_keytime is flag indicate enter all active
+		 *	mode,if two core both exit the idle,and power mode
+		 *	is both eaqual to PXA988_MAX_LPM_INDEX, mean the other
+		 *	core both exit idle.
+		 */
+
+		mark_keytime = true;
+		for_each_possible_cpu(cpu_i) {
+			if (cpu == cpu_i)
+				continue;
+			dc_stat_info = &per_cpu(cpu_dc_stat, cpu_i);
+			if (PXA988_MAX_LPM_INDEX != dc_stat_info->power_mode) {
+				mark_keytime = false;
+				break;
+			}
+		}
+		if (mark_keytime) {
+			idle_dcstat_info.all_active_end = ktime_temp;
+			idle_dcstat_info.total_all_active += ktime_to_us
+			(ktime_sub(idle_dcstat_info.all_active_end,
+				idle_dcstat_info.all_active_start));
+			idle_dcstat_info.total_all_active_count++;
+		}
+		break;
+	case CPU_IDLE_EXIT:
+		ktime_temp = ktime_get();
+		spin_lock(&c1c2_exit_lock);
+		if ((dc_stat_info->idle_flag == PXA988_LPM_C1) &&
+		((s64)0 != ktime_to_us(dc_stat_info->C1_idle_start))) {
+			dc_stat_info->C1_idle_end = ktime_temp;
+			dc_stat_info->C1_op_total[dc_stat_info->C1_op_index] +=
+			ktime_to_us(ktime_sub(dc_stat_info->C1_idle_end,
+			dc_stat_info->C1_idle_start));
+			dc_stat_info->C1_count[dc_stat_info->C1_op_index]++;
+			dc_stat_info->C1_idle_start = ktime_set(0, 0);
+		} else if ((dc_stat_info->idle_flag == PXA988_LPM_C2) &&
+		((s64)0 != ktime_to_us(dc_stat_info->C2_idle_start))) {
+			dc_stat_info->C2_idle_end = ktime_temp;
+			dc_stat_info->C2_op_total[dc_stat_info->C2_op_index] +=
+			ktime_to_us(ktime_sub(dc_stat_info->C2_idle_end,
+			dc_stat_info->C2_idle_start));
+			dc_stat_info->C2_count[dc_stat_info->C2_op_index]++;
+			dc_stat_info->C2_idle_start = ktime_set(0, 0);
+		}
+		spin_unlock(&c1c2_exit_lock);
+		dc_stat_info->idle_flag = PXA988_MAX_LPM_INDEX;
+		if ((s64)0 != ktime_to_us(dc_stat_info->breakdown_start)) {
+			dc_stat_info->breakdown_end = ktime_temp;
+			temp_time = ktime_to_us(ktime_sub
+			(dc_stat_info->breakdown_end,
+			dc_stat_info->breakdown_start));
+			if (temp_time) {
+				if (temp_time >= 100 * 1000) {
+					dc_stat_info->breakdown_time_count\
+					[MAX_BREAKDOWN_TIME - 1]++;
+					dc_stat_info->breakdown_time_total\
+					[MAX_BREAKDOWN_TIME - 1] += temp_time;
+				} else {
+					i = (temp_time / (10 * 1000));
+					dc_stat_info->breakdown_time_count[i]++;
+					dc_stat_info->breakdown_time_total[i]\
+					+= temp_time;
+				}
+			}
+		}
+
+		dc_stat_info->power_mode = tgtop;
+		mark_keytime = true;
+		for_each_possible_cpu(cpu_i) {
+			if (cpu == cpu_i)
+				continue;
+			dc_stat_info = &per_cpu(cpu_dc_stat, cpu_i);
+			if (PXA988_MAX_LPM_INDEX == dc_stat_info->power_mode) {
+				mark_keytime = false;
+				break;
+			}
+		}
+		spin_lock(&allidle_lock);
+		if (mark_keytime) {
+			idle_dcstat_info.all_idle_end = ktime_temp;
+				idle_dcstat_info.total_all_idle += ktime_to_us
+				(ktime_sub(idle_dcstat_info.all_idle_end,
+					idle_dcstat_info.all_idle_start));
+				idle_dcstat_info.total_all_idle_count++;
+
+				if ((s64)0 != ktime_to_us
+					(idle_dcstat_info.all_idle_start)) {
+					idle_dcstat_info.all_idle_op_total\
+					[idle_dcstat_info.all_idle_op_index] +=
+					ktime_to_us(ktime_sub
+					(idle_dcstat_info.all_idle_end,
+					idle_dcstat_info.all_idle_start));
+					idle_dcstat_info.all_idle_count\
+					[idle_dcstat_info.all_idle_op_index]++;
+				}
+
+			if ((s64)0 != ktime_to_us
+				(idle_dcstat_info.M2_idle_start)) {
+				idle_dcstat_info.M2_idle_total +=
+				ktime_to_us(ktime_sub(
+				idle_dcstat_info.all_idle_end,
+				idle_dcstat_info.M2_idle_start));
+				idle_dcstat_info.M2_count++;
+			} else if ((s64)0 != ktime_to_us
+				(idle_dcstat_info.D1P_idle_start)) {
+				idle_dcstat_info.D1P_idle_total += ktime_to_us
+				(ktime_sub(idle_dcstat_info.all_idle_end,
+				idle_dcstat_info.D1P_idle_start));
+				idle_dcstat_info.D1p_count++;
+			} else if ((s64)0 != ktime_to_us
+				(idle_dcstat_info.D1_idle_start)) {
+				idle_dcstat_info.D1_idle_total += ktime_to_us
+				(ktime_sub(idle_dcstat_info.all_idle_end,
+				idle_dcstat_info.D1_idle_start));
+				idle_dcstat_info.D1_count++;
+			} else if ((s64)0 != ktime_to_us
+				(idle_dcstat_info.D2_idle_start)) {
+				idle_dcstat_info.D2_idle_total += ktime_to_us
+				(ktime_sub(idle_dcstat_info.all_idle_end,
+				idle_dcstat_info.D2_idle_start));
+				idle_dcstat_info.D2_count++;
+				}
+			ktime_temp1 = ktime_set(0, 0);
+			idle_dcstat_info.M2_idle_start = ktime_temp1;
+			idle_dcstat_info.D1P_idle_start = ktime_temp1;
+			idle_dcstat_info.D1_idle_start = ktime_temp1;
+			idle_dcstat_info.D2_idle_start = ktime_temp1;
+		}
+		spin_unlock(&allidle_lock);
+		mark_keytime = true;
+		for_each_possible_cpu(cpu_i) {
+			if (cpu == cpu_i)
+				continue;
+			dc_stat_info = &per_cpu(cpu_dc_stat, cpu_i);
+			if (PXA988_MAX_LPM_INDEX != dc_stat_info->power_mode) {
+				mark_keytime = false;
+				break;
+			}
+		}
+		if (mark_keytime)
+			idle_dcstat_info.all_active_start = ktime_temp;
+		break;
+	case CPU_M2_OR_DEEPER_ENTER:
+		ktime_temp = ktime_get();
+		if (PXA988_LPM_C2 == tgtop)
+			idle_dcstat_info.M2_idle_start = ktime_temp;
+		else if (PXA988_LPM_D1P == tgtop)
+			idle_dcstat_info.D1P_idle_start = ktime_temp;
+		else if (PXA988_LPM_D1 == tgtop)
+			idle_dcstat_info.D1_idle_start = ktime_temp;
+		else if (PXA988_LPM_D2 == tgtop)
+			idle_dcstat_info.D2_idle_start = ktime_temp;
 		break;
 	default:
 		break;
 	}
+#endif
 }
 
 static ssize_t pxa988_cpu_dc_read(struct file *filp,
@@ -2585,13 +3236,19 @@ static ssize_t pxa988_cpu_dc_read(struct file *filp,
 {
 	char *buf;
 	int len = 0;
-	size_t ret, size = PAGE_SIZE - 1;
+	size_t ret, size = 2 * PAGE_SIZE - 1;
 	unsigned int cpu, i, dc_int = 0, dc_fra = 0;
 	struct clk_dc_stat_info *percpu_stat = NULL;
-	unsigned int total_time, run_total, idle_total, busy_time;
+	u64 total_time, run_total, idle_total, busy_time;
 	u64 av_mips;
+	u32 av_mips_l, av_mips_h;
+	u64 temp_total_time = 0, temp_total_count = 0;
+	char *lpm_time_string[12] = {"<10 ms", "<20 ms", "<30 ms",
+	"<40 ms", "<50 ms", "<60 ms", "<70 ms", "<80 ms",
+	"<90 ms", "<100 ms", ">100 ms"};
 
-	buf = (char *)__get_free_pages(GFP_NOIO, 0);
+
+	buf = (char *)__get_free_pages(GFP_NOIO, get_order(size));
 	if (!buf)
 		return -ENOMEM;
 
@@ -2608,24 +3265,41 @@ static ssize_t pxa988_cpu_dc_read(struct file *filp,
 		for (i = 0; i < percpu_stat->ops_stat_size; i++) {
 			idle_total += percpu_stat->ops_dcstat[i].idle_time;
 			run_total += percpu_stat->ops_dcstat[i].busy_time;
-			av_mips += (u64)(percpu_stat->ops_dcstat[i].pprate / MHZ *\
+			av_mips += (u64)(percpu_stat->ops_dcstat[i].pprate *\
 				percpu_stat->ops_dcstat[i].busy_time);
 		}
 		total_time = idle_total + run_total;
-		av_mips = total_time ? div_u64(av_mips * MHZ, total_time) : 0;
-		dc_int = total_time ? \
-			calculate_dc(run_total, total_time, &dc_fra) : 0;
-		dc_fra = total_time ? dc_fra : 0;
+		if (!total_time) {
+			len += snprintf(buf + len, size - len,
+				"No stat information! ");
+			len += snprintf(buf + len, size - len,
+				"Help information :\n");
+			len += snprintf(buf + len, size - len,
+				"1. echo 1 to start duty cycle stat:\n");
+			len += snprintf(buf + len, size - len,
+				"2. echo 0 to stop duty cycle stat:\n");
+			len += snprintf(buf + len, size - len,
+				"3. cat to check duty cycle info from start to stop:\n\n");
+			goto out;
+		}
+		av_mips_l = 0;
+		av_mips_h = div_u64_rem(av_mips, total_time, &av_mips_l);
+		av_mips_l = div_u64(av_mips_l * 100, total_time);
+		dc_int = calculate_dc(run_total, total_time, &dc_fra);
+		dc_fra = dc_fra;
 		len += snprintf(buf + len, size - len,
-			"\n| CPU %u | %10s %ums| %10s %ums| %10s %2u.%2u%%|"\
-			" %10s %luHZ |\n", cpu, "idle time", idle_total,
-			"total time",  total_time,
+			"\n| CPU %u | %10s %lldms| %10s %lldms|"\
+			"%10s %2u.%2u%%|%10s %u.%02uMHz |\n", cpu, "idle time",
+			idle_total, "total time", total_time,
 			"duty cycle", dc_int, dc_fra,
-			"average mips", (unsigned long)av_mips);
+			"average mips", av_mips_h, av_mips_l);
 		len += snprintf(buf + len, size - len,
-			"| %3s | %12s | %15s | %15s | %15s |\n",
-			"OP#", "rate(HZ)", "run time(ms)",
-			"idle time(ms)", "rt ratio");
+			"| %3s | %5s | %8s | %8s | %8s | %8s |"\
+			" %8s | %8s | %8s | %8s | %8s |\n",
+			"OP#", "rate", "run time",
+			"idle time", "rt ratio",
+			"All idle", "Aidle count",
+			"C1 ratio", "C1 count" , "C2 ratio", "C2 count");
 		for (i = 0; i < percpu_stat->ops_stat_size; i++) {
 			if (total_time) {
 				busy_time =
@@ -2634,21 +3308,100 @@ static ssize_t pxa988_cpu_dc_read(struct file *filp,
 							&dc_fra);
 			}
 			len += snprintf(buf + len, size - len,
-				"| %3u | %12lu | %15ld | %15ld | %12u.%2u%%|\n",
+				"| %3u | %5lu | %8lu | %9lu | %4u.%2u%% |"\
+				" %7lld%% | %11lld | %7lld%% | %8lld |"\
+				" %7lld%% | %8lld |\n",
 				percpu_stat->ops_dcstat[i].ppindex,
 				percpu_stat->ops_dcstat[i].pprate,
 				percpu_stat->ops_dcstat[i].busy_time,
 				percpu_stat->ops_dcstat[i].idle_time,
-				dc_int, dc_fra);
+				dc_int, dc_fra,
+				div64_u64
+				(idle_dcstat_info.all_idle_op_total[i] *
+				(u64)(100), idle_dcstat_info.cal_duration),
+				idle_dcstat_info.all_idle_count[i],
+				div64_u64(percpu_stat->C1_op_total[i] *
+				(u64)(100), idle_dcstat_info.cal_duration),
+				percpu_stat->C1_count[i],
+				div64_u64(percpu_stat->C2_op_total[i] *
+				(u64)(100), idle_dcstat_info.cal_duration),
+				percpu_stat->C2_count[i]
+				);
 		}
+	}
 
+	len += snprintf(buf + len, size - len, "| %10s | %15s |"\
+	" %15s | %15s |\n", "state", "ratio", "time(ms)", "count");
+	len += snprintf(buf + len, size - len, "| %10s | %14lld%% |"\
+	" %15lld | %15lld | === > Both core active\n", "All active",
+	div64_u64(idle_dcstat_info.total_all_active*(u64)(100),
+	idle_dcstat_info.cal_duration),
+	div64_u64(idle_dcstat_info.total_all_active, (u64)1000),
+	idle_dcstat_info.total_all_active_count);
+	len += snprintf(buf + len, size - len, "| %10s | %14lld%% |"\
+	" %15lld | %15lld | === > Both core idle\n", "All idle",
+	div64_u64(idle_dcstat_info.total_all_idle*(u64)(100),
+	idle_dcstat_info.cal_duration),
+	div64_u64(idle_dcstat_info.total_all_idle, (u64)1000),
+	idle_dcstat_info.total_all_idle_count);
+	len += snprintf(buf + len, size - len, "| %10s | %14lld%% | %15lld |"\
+	" %15lld |\n", "M2", div64_u64(idle_dcstat_info.M2_idle_total*
+	(u64)(100), idle_dcstat_info.cal_duration),
+	div64_u64(idle_dcstat_info.M2_idle_total,
+	(u64)1000), idle_dcstat_info.M2_count);
+	len += snprintf(buf + len, size - len, "| %10s | %14lld%% | %15lld |"\
+	" %15lld |\n", "D1P", div64_u64(idle_dcstat_info.D1P_idle_total*
+	(u64)(100), idle_dcstat_info.cal_duration),
+	div64_u64(idle_dcstat_info.D1P_idle_total,
+	(u64)1000), idle_dcstat_info.D1p_count);
+	len += snprintf(buf + len, size - len, "| %10s | %14lld%% | %15lld |"\
+	" %15lld |\n", "D1", div64_u64(idle_dcstat_info.D1_idle_total*
+	(u64)(100), idle_dcstat_info.cal_duration),
+	div64_u64(idle_dcstat_info.D1_idle_total,
+	(u64)1000), idle_dcstat_info.D1_count);
+	len += snprintf(buf + len, size - len, "| %10s | %14lld%% | %15lld |"\
+	" %15lld |\n", "D2", div64_u64(idle_dcstat_info.D2_idle_total*
+	(u64)(100), idle_dcstat_info.cal_duration),
+	div64_u64(idle_dcstat_info.D2_idle_total,
+	(u64)1000), idle_dcstat_info.D2_count);
+	len += snprintf(buf + len, size - len,
+	"| %10s | %14lld%% | %15lld |"\
+	" === > Total test time\n", "All time", (u64)100,
+	div64_u64(idle_dcstat_info.cal_duration, (u64)1000));
+
+	for_each_possible_cpu(cpu) {
+		percpu_stat = &per_cpu(cpu_dc_stat, cpu);
+		len += snprintf(buf + len, size - len,
+		"|  cpu%d idle | %15s |"\
+		" %15s |\n", cpu, "all time(ms)", "count");
+		temp_total_time = temp_total_count = 0;
+		for (i = 0; i < MAX_BREAKDOWN_TIME; i++) {
+			if (0 != percpu_stat->breakdown_time_total[i] ||
+			0 != percpu_stat->breakdown_time_count[i]) {
+				len += snprintf(buf + len, size - len,
+				"| %10s | %15lld | %15lld |\n",
+				lpm_time_string[i],
+				div64_u64(percpu_stat->breakdown_time_total[i],
+				(u64)1000),
+				percpu_stat->breakdown_time_count[i]);
+				temp_total_time += div64_u64
+				(percpu_stat->breakdown_time_total[i],
+				(u64)1000);
+				temp_total_count +=
+				percpu_stat->breakdown_time_count[i];
+			}
+		}
+		len += snprintf(buf + len, size - len,
+		"| %10s | %15lld | %15lld |"\
+		" === > Total 10~100ms time\n", "All time",
+		temp_total_time, temp_total_count);
 	}
 out:
 	if (len == size)
 		pr_warn("%s The dump buf is not large enough!\n", __func__);
 
 	ret = simple_read_from_buffer(buffer, count, ppos, buf, len);
-	free_pages((unsigned long)buf, 0);
+	free_pages((unsigned long)buf, get_order(size));
 	return ret;
 }
 
@@ -2671,7 +3424,6 @@ static ssize_t pxa988_cpu_dc_write(struct file *filp,
 			"started" : "stopped");
 		return -EINVAL;
 	}
-
 	/*
 	 * hold the same lock of clk_enable, disable, set_rate ops
 	 * here to avoid the status change when start/stop and lead
@@ -2718,6 +3470,10 @@ static ssize_t pxa988_ddr_dc_read(struct file *filp,
 		return -ENOMEM;
 
 	len = pxa988_show_dc_stat_info(&pxa988_ddr_clk, p, size);
+	if (len < 0) {
+		free_pages((unsigned long)p, 0);
+		return -EINVAL;
+	}
 	if (len == size)
 		pr_warn("%s The dump buf is not large enough!\n", __func__);
 
@@ -2731,7 +3487,7 @@ static ssize_t pxa988_ddr_dc_write(struct file *filp,
 {
 	unsigned int start;
 	char buf[10] = { 0 };
-	size_t ret = 0;
+	int ret = 0;
 
 	if (copy_from_user(buf, buffer, count))
 		return -EFAULT;
@@ -2757,7 +3513,9 @@ static int __init __init_cpu_ddr_dcstat_node(void)
 		stat, NULL, &pxa988_cpu_dc_ops);
 	if (!cpu_dc_stat)
 		return -ENOENT;
-
+	spin_lock_init(&allidle_lock);
+	spin_lock_init(&c1c2_enter_lock);
+	spin_lock_init(&c1c2_exit_lock);
 	ddr_dc_stat = debugfs_create_file("ddr_dc_stat", 0664,
 		stat, NULL, &pxa988_ddr_dc_ops);
 	if (!ddr_dc_stat)
@@ -2775,6 +3533,9 @@ static int __init __init_create_fc_debugfs_node(void)
 	struct dentry *dp_cur_cpu_op, *dp_cur_ddraxi_op, *dp_ops;
 	struct dentry *dp_cp_block_ddr_fc;
 	int ret = 0;
+#ifdef CONFIG_DDR_FC_HARDWARE
+	struct dentry *dp_lcd_blank_check;
+#endif
 
 	fc = debugfs_create_dir("fc", pxa);
 	if (!fc)
@@ -2800,9 +3561,23 @@ static int __init __init_create_fc_debugfs_node(void)
 	if (!dp_cp_block_ddr_fc)
 		goto err_dp_cp_block_ddr_fc;
 
+#ifdef CONFIG_DDR_FC_HARDWARE
+	/* ddr_dfc_inlcdblk the interface is for hw control
+	 * DDR freq-chg in lcd v-blank
+	 */
+	dp_lcd_blank_check = debugfs_create_file("ddr_dfc_inlcdblk", 0664,
+		fc, NULL, &lcd_blank_check_fops);
+	if (!dp_lcd_blank_check)
+		goto err_lcd_blank_check;
+#endif
 	ret = __init_cpu_ddr_dcstat_node();
 	return ret;
 
+#ifdef CONFIG_DDR_FC_HARDWARE
+err_lcd_blank_check:
+	debugfs_remove(dp_cp_block_ddr_fc);
+	dp_lcd_blank_check = NULL;
+#endif
 err_dp_cp_block_ddr_fc:
 	debugfs_remove(dp_ops);
 	dp_ops = NULL;

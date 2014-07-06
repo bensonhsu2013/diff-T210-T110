@@ -46,7 +46,7 @@
  * On boot up, the ring buffer is set to the minimum size, so that
  * we do not waste memory on systems that are not using tracing.
  */
-int ring_buffer_expanded;
+int ring_buffer_expanded = 0;
 
 /*
  * We need to change this state when a selftest is running.
@@ -83,7 +83,7 @@ static int dummy_set_flag(u32 old_flags, u32 bit, int set)
  * of the tracer is successful. But that is the only place that sets
  * this back to zero.
  */
-static int tracing_disabled = 1;
+static int tracing_disabled = 0;
 
 DEFINE_PER_CPU(int, ftrace_cpu_disabled);
 
@@ -5016,7 +5016,7 @@ __init static int tracer_alloc_buffers(void)
 	if (ring_buffer_expanded)
 		ring_buf_size = trace_buf_size;
 	else
-		ring_buf_size = 1;
+		ring_buf_size = 1048576;
 
 	rb_flags = trace_flags & TRACE_ITER_OVERWRITE ? RB_FL_OVERWRITE : 0;
 

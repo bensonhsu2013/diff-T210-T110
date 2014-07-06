@@ -143,7 +143,7 @@ static const enum acipc_events
 	ACIPC_SHM_PACKET_NOTIFY,
 	ACIPC_IPM
 };
-#elif defined(CONFIG_CPU_PXA988)
+#elif defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 static const enum acipc_events
 	acipc_priority_table_dkb[ACIPC_NUMBER_OF_EVENTS] = {
 	ACIPC_RINGBUF_TX_STOP,
@@ -160,7 +160,7 @@ static const enum acipc_events
 #endif
 
 /* PXA910 specific define */
-#if defined(CONFIG_CPU_PXA910) || defined(CONFIG_CPU_PXA988)
+#if defined(CONFIG_CPU_PXA910) || defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 #define acipc_writel_withdummy(off, v)	acipc_writel((off), (v))
 #endif
 
@@ -643,7 +643,7 @@ static u32 acipc_kernel_callback(u32 events_status)
 #endif /* CONFIG_CPU_PXA910 */
 #endif /* CONFIG_PXA95X_DVFM */
 
-#if defined(CONFIG_CPU_PXA910) || defined(CONFIG_CPU_PXA988)
+#if defined(CONFIG_CPU_PXA910) || defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 static void register_pm_events(void)
 {
 	return;
@@ -767,12 +767,12 @@ static int __devinit pxa9xx_acipc_probe(struct platform_device *pdev)
 		ret = -ENODEV;
 		goto failed_deregmisc;
 	}
-#if defined(CONFIG_CPU_PXA910) || defined(CONFIG_CPU_PXA988)
+#if defined(CONFIG_CPU_PXA910) || defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 	set_constraint();
 #endif
 	/* init driver database */
 	for (i = 0; i < ACIPC_NUMBER_OF_EVENTS; i++) {
-#if defined(CONFIG_CPU_PXA910) || defined(CONFIG_CPU_PXA988)
+#if defined(CONFIG_CPU_PXA910) || defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 		acipc->acipc_db.event_db[i].IIR_bit =
 		    acipc_priority_table_dkb[i];
 		acipc->acipc_db.event_db[i].mask = acipc_priority_table_dkb[i];

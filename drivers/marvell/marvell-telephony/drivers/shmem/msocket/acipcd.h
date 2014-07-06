@@ -96,7 +96,15 @@ static inline void acipc_notify_ap_psd_tx_stopped(void)
 	ACIPCEventSet(ACIPC_RINGBUF_PSD_TX_STOP);
 }
 
+/*notify cp that ap will reset cp to let cp exit WFI state */
+static inline void acipc_notify_reset_cp_request(void)
+{
+	printk(KERN_WARNING
+		"MSOCK: acipc_notify_reset_cp_request!!!\n");
+	ACIPCEventSet(ACIPC_MODEM_DDR_UPDATE_REQ);
+}
+
 extern int acipc_init(void);
 extern void acipc_exit(void);
-
+extern void acipc_reset_cp_request(void);
 #endif /* ACIPCD_H_ */

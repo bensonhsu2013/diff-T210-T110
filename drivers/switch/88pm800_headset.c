@@ -21,12 +21,13 @@
 #include <linux/uaccess.h>
 #include <linux/miscdevice.h>
 #include <linux/input.h>
-#include <linux/proc_fs.h>
-#include <linux/uaccess.h>
+#include <linux/mutex.h>
 
-#define	PM800_HEADSET_PROC_FILE		"driver/pm800_headset"
-static int voice_call_enable;
-
+#if !defined(CONFIG_MACH_DELOS3GVIA)
+/* add for control AP gpio - ffkaka */
+#include <mach/mfp-pxa1088-delos.h>
+#include <linux/gpio.h>
+#endif
 #define PM800_MIC_DET_TH				300
 #define PM800_PRESS_RELEASE_TH			300
 #define PM800_HOOK_PRESS_TH			20
@@ -55,7 +56,13 @@ struct pm800_headset_info {
 	struct regmap *map_gpadc;
 	int irq_headset;
 	int irq_hook;
-	struct work_struct work_headset, work_hook;
+#if !defined(CONFIG_MACH_DELOS3GVIA)	
+	/* AP GPIO Control - ffkaka */
+	unsigned long gpio_com;
+	unsigned long gpio_fet_en;
+	/* ffkaka */
+#endif	
+	struct work_struct work_headset, work_hook, work_release;
 	struct headset_switch_data *psw_data_headset;
 	void (*mic_set_power) (int on);
 	int headset_flag;
@@ -65,8 +72,9 @@ struct pm800_headset_info {
 	int vol_down_press_th;
 	int mic_det_th;
 	int press_release_th;
-	struct proc_dir_entry *proc_file;
 	u32 hook_count;
+	struct mutex hs_mutex;
+	struct timer_list hook_timer;
 };
 
 struct headset_switch_data {
@@ -80,6 +88,15 @@ struct headset_switch_data {
 };
 static struct device *hsdetect_dev;
 static struct PM8XXX_HS_IOCTL hs_detect;
+#if !defined(CONFIG_MACH_DELOS3GVIA)
+/* add more variable for meeting sec requirement - ffkaka */
+#define COM_DET_GPIO	MFP_PIN_GPIO12
+#define FET_EN_GPIO		MFP_PIN_GPIO5
+#endif
+static struct pm800_headset_info *local_info;  // add for handling info
+struct class *sec_audio_earjack_class;
+struct device *sec_earjack_dev;
+
 
 enum {
 	VOLTAGE_AVG,
@@ -87,6 +104,20 @@ enum {
 	VOLTAGE_MAX,
 	VOLTAGE_INS,
 };
+
+#if !defined(CONFIG_MACH_DELOS3GVIA)
+/* To get gpio value of AP - ffkaka */
+static unsigned int headset_get_gpio_value(unsigned int mfp_pin)
+{
+#define GPIO_GET_VAL_MASK(x)	(1<<(x%32))
+#define GPIO_GET_VAL_BIT(x)	(x%32)
+
+	unsigned int value;
+	value = gpio_get_value(mfp_to_gpio(mfp_pin));
+
+	return value;
+}
+#endif
 
 static int gpadc4_measure_voltage(struct pm800_headset_info *info, int which)
 {
@@ -140,6 +171,7 @@ static void gpadc4_set_threshold(struct pm800_headset_info *info, int min,
 
 static void pm800_hook_int(struct pm800_headset_info *info, int enable)
 {
+	mutex_lock(&info->hs_mutex);
 	if (enable && info->hook_count == 0) {
 		enable_irq(info->irq_hook);
 		info->hook_count = 1;
@@ -147,11 +179,13 @@ static void pm800_hook_int(struct pm800_headset_info *info, int enable)
 		disable_irq(info->irq_hook);
 		info->hook_count = 0;
 	}
+	mutex_unlock(&info->hs_mutex);
 }
 
 static int pm800_handle_voltage(struct pm800_headset_info *info, int voltage)
 {
 	int state;
+	pr_info("[headset] hook detecting ADC [%d]!!\n",voltage);
 	if (voltage < info->press_release_th) {
 		/* press event */
 		if (info->hook_vol_status <= HOOK_VOL_ALL_RELEASED) {
@@ -184,7 +218,7 @@ static int pm800_handle_voltage(struct pm800_headset_info *info, int voltage)
 				break;
 			}
 			input_sync(info->idev);
-			gpadc4_set_threshold(info, 8, info->press_release_th);
+			gpadc4_set_threshold(info, 0, info->press_release_th);
 		} else
 			return -EINVAL;
 	} else {
@@ -218,8 +252,28 @@ static int pm800_handle_voltage(struct pm800_headset_info *info, int voltage)
 		} else
 			return -EINVAL;
 	}
-	pr_info("hook_vol switch to %d\n", info->hook_vol_status);
+	pr_info("[headset]hook_vol switch to %d\n", info->hook_vol_status);
 	return 0;
+}
+
+static void pm800_hook_timer_handler(unsigned long data)
+{
+	struct pm800_headset_info *info = (struct pm800_headset_info *)data;
+
+	queue_work(system_wq, &info->work_release);
+}
+
+static void pm800_hook_release_work(struct work_struct *work)
+{
+	struct pm800_headset_info *info =
+	    container_of(work, struct pm800_headset_info, work_release);
+	unsigned int voltage;
+
+	if (info->hook_vol_status >= HOOK_PRESSED) {
+		voltage = gpadc4_measure_voltage(info, VOLTAGE_AVG);
+		if (voltage >= info->press_release_th)
+			pm800_handle_voltage(info, voltage);
+	}
 }
 
 static void pm800_hook_switch_work(struct work_struct *work)
@@ -249,7 +303,7 @@ static void pm800_hook_switch_work(struct work_struct *work)
 	if (!value) {
 		/* in case of headset unpresent, disable hook interrupt */
 		pm800_hook_int(info, 0);
-		pr_info("fake hook interupt\n");
+		pr_info("[headset] fake hook interupt\n");
 		return;
 	}
 	voltage = gpadc4_measure_voltage(info, VOLTAGE_AVG);
@@ -263,8 +317,12 @@ static void pm800_headset_switch_work(struct work_struct *work)
 	struct pm800_headset_info *info =
 	    container_of(work, struct pm800_headset_info, work_headset);
 	unsigned int value, voltage;
-	int ret;
-	struct headset_switch_data *switch_data;
+	int ret;	
+	struct headset_switch_data *switch_data;	
+
+#if !defined(CONFIG_MACH_DELOS3GVIA)
+	unsigned int com_value;
+#endif
 
 	if (info == NULL) {
 		pr_debug("Invalid headset info!\n");
@@ -289,6 +347,12 @@ static void pm800_headset_switch_work(struct work_struct *work)
 		value = !value;
 
 	if (value) {
+
+#if !defined(CONFIG_MACH_DELOS3GVIA)		
+		/* FET CONTROL to be 'Low'(SEC Requirement)- ffkaka */
+		gpio_direction_output(info->gpio_fet_en,0);
+#endif
+		
 		switch_data->state = PM8XXX_HEADSET_ADD;
 		/* for telephony */
 		kobject_uevent(&hsdetect_dev->kobj, KOBJ_ADD);
@@ -300,6 +364,24 @@ static void pm800_headset_switch_work(struct work_struct *work)
 				   PM800_MICDET_EN);
 		msleep(200);
 		voltage = gpadc4_measure_voltage(info, VOLTAGE_AVG);
+
+#if !defined(CONFIG_MACH_DELOS3GVIA)
+		com_value = headset_get_gpio_value(COM_DET_GPIO); /* get com detecting status - ffkaka */
+		pr_info("[headset] Detecting Com[%u] ADC[%umV]\n",com_value? 0 : 1,voltage);
+		if(com_value != 0){
+			switch_data->state = PM8XXX_HEADSET_REMOVE;
+			hs_detect.hsmic_status = PM8XXX_HS_MIC_ADD;
+			if (info->mic_set_power)
+				info->mic_set_power(0);
+			/* disable MIC detection and measurement */
+			regmap_update_bits(info->map, PM800_MIC_CNTRL,
+					   PM800_MICDET_EN, 0);
+			pr_info("[headset] Jack is not completely inserted L_DET[%d] COM_DET[%d]\n",value, com_value? 0 : 1);
+			queue_work(system_wq, &info->work_headset);
+			return;
+		}
+#endif		
+		
 		if (voltage < info->mic_det_th) {
 			switch_data->state = PM8XXX_HEADPHONE_ADD;
 			hs_detect.hsmic_status = PM8XXX_HS_MIC_REMOVE;
@@ -308,9 +390,14 @@ static void pm800_headset_switch_work(struct work_struct *work)
 			/* disable MIC detection and measurement */
 			regmap_update_bits(info->map, PM800_MIC_CNTRL,
 					   PM800_MICDET_EN, 0);
-		} else
+		} else {
 			gpadc4_set_threshold(info, info->press_release_th, 0);
+		}
 	} else {
+#if !defined(CONFIG_MACH_DELOS3GVIA)	
+		gpio_direction_output(info->gpio_fet_en,1);  // FET CONTROL to be 'High'(SEC Requirement)- ffkaka
+#endif		
+		
 		/* we already disable mic power when it is headphone */
 		if ((switch_data->state == PM8XXX_HEADSET_ADD)
 		    && info->mic_set_power)
@@ -328,7 +415,7 @@ static void pm800_headset_switch_work(struct work_struct *work)
 		hs_detect.hsmic_status = PM8XXX_HS_MIC_ADD;
 	}
 
-	pr_info("headset_switch_work to %d\n", switch_data->state);
+	pr_info("[headset]headset_switch_work to %d\n", switch_data->state);
 	switch_set_state(&switch_data->sdev, switch_data->state);
 	/* enable hook irq if headset is present */
 	if (switch_data->state == PM8XXX_HEADSET_ADD)
@@ -365,7 +452,7 @@ static long pm800_hsdetect_ioctl(struct file *file, unsigned int cmd,
 		hs_ioctl.hsmic_status = hs_detect.hsmic_status;
 #endif
 
-		pr_info("hsdetect_ioctl PM8XXX_HSDETECT_STATUS\n");
+		pr_info("[headset]hsdetect_ioctl PM8XXX_HSDETECT_STATUS\n");
 		break;
 	case PM8XXX_HOOKSWITCH_STATUS:
 		hs_ioctl.hookswitch_status = hs_detect.hookswitch_status;
@@ -375,7 +462,7 @@ static long pm800_hsdetect_ioctl(struct file *file, unsigned int cmd,
 		hs_ioctl.hsmic_status = hs_detect.hsmic_status;
 
 #endif /* */
-		pr_info("hsdetect_ioctl PM8XXX_HOOKSWITCH_STATUS\n");
+		pr_info("[headset]hsdetect_ioctl PM8XXX_HOOKSWITCH_STATUS\n");
 		break;
 	default:
 		return -ENOTTY;
@@ -399,6 +486,7 @@ static irqreturn_t pm800_headset_handler(int irq, void *data)
 			queue_work(system_wq, &info->work_headset);
 		}
 	} else if (irq == info->irq_hook) {
+		mod_timer(&info->hook_timer, jiffies + msecs_to_jiffies(150));
 		/* hook interrupt */
 		if (info->idev != NULL) {
 			regmap_update_bits(info->map, PM800_INT_ENA_3,
@@ -410,42 +498,61 @@ static irqreturn_t pm800_headset_handler(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
-static ssize_t pm800_headset_proc_read(char *buf, char **start, off_t off,
-		int count, int *eof, void *data)
+/*************************************
+  * add sysfs for factory test. ffkaka 130324
+  * 
+ *************************************/
+/* sysfs for hook key status - ffkaka */
+static ssize_t switch_sec_get_key_state(struct device *dev, struct device_attribute *attr, char *buf)
 {
-	int len = 0;
-
-	len = sprintf(buf, "headset detect voice call case is  %s\n", voice_call_enable?"enabled":"disabled");
-
-	return len;
+	return sprintf(buf, "%s\n", (hs_detect.hookswitch_status)? "1":"0");
 }
 
-static ssize_t pm800_headset_proc_write(struct file *filp, const char *buff,
-		size_t len, void *data)
+/* sysfs for measure ADC by using shell command - ffkaka */
+static ssize_t switch_sec_get_voltage(struct device *dev, struct device_attribute *attr, char *buf)
 {
-	char is_voice_call[2];
+	int voltage=0;
+	unsigned int reg=0;
 
-	if (len > 2)
-		return -EFAULT;
-
-	if (copy_from_user(is_voice_call, buff, len))
-		return -EFAULT;
-
-	if('0' == is_voice_call[0]) {
-		voice_call_enable = 0;
-	} else {
-		voice_call_enable = 1;
+	if(local_info->mic_set_power){
+		local_info->mic_set_power(1);
+		pr_info("[headset] Mic Bias On!!!\n");
 	}
-
-	return len;
+	regmap_read(local_info->map_gpadc,PM800_GPADC_MEAS_EN2, &reg);
+	regmap_write(local_info->map_gpadc, PM800_GPADC_MEAS_EN2, (unsigned char)reg |PM800_MEAS_GP4_EN);
+	
+	voltage = gpadc4_measure_voltage(local_info, VOLTAGE_AVG);
+	
+	pr_info("[headset] %s: voltage = %d\n", __func__, voltage);
+			
+	return sprintf(buf, "%dmV\n", voltage);
 }
+
+/* sysfs for headset state - ffkaka */
+static ssize_t switch_sec_get_state(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	return sprintf(buf, "%d\n", hs_detect.hsdetect_status);
+}
+static DEVICE_ATTR(key_state, S_IRUGO, switch_sec_get_key_state, NULL);
+static DEVICE_ATTR(voltage, S_IRUGO, switch_sec_get_voltage, NULL);
+static DEVICE_ATTR(state, S_IRUGO, switch_sec_get_state, NULL);
+
+#if !defined(CONFIG_MACH_DELOS3GVIA)
+/* sysfs for headset GND state - ffkaka */
+static ssize_t switch_sec_get_comstate(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	unsigned int com;
+	com = headset_get_gpio_value(COM_DET_GPIO);
+	return sprintf(buf,"com=%u \n",com);
+}
+static DEVICE_ATTR(com_state, S_IRUGO, switch_sec_get_comstate, NULL);
+#endif 
 
 
 #define MIC_DET_DBS		(3 << 1)
 #define MIC_DET_PRD		(3 << 3)
 #define MIC_DET_DBS_32MS	(3 << 1)
 #define MIC_DET_PRD_CTN		(3 << 3)
-#define MIC_DET_PRD_CTN_256MS		(1 << 3)
 
 static int pm800_headset_switch_probe(struct platform_device *pdev)
 {
@@ -560,6 +667,35 @@ static int pm800_headset_switch_probe(struct platform_device *pdev)
 	ret = switch_dev_register(&switch_data_headset->sdev);
 	if (ret < 0)
 		goto err_switch_dev_register;
+		
+	mutex_init(&info->hs_mutex);		
+
+#if !defined(CONFIG_MACH_DELOS3GVIA)
+	/* AP GPIO initialization - ffkaka */
+	info->gpio_com = mfp_to_gpio(COM_DET_GPIO);
+	info->gpio_fet_en = mfp_to_gpio(FET_EN_GPIO);
+	ret = gpio_request(info->gpio_com,"Com Detetc GPIO");
+	if(ret){
+		gpio_free(info->gpio_com);
+		pr_info("[headset] COM GPIO Request Fail!!\n");
+	}
+	gpio_direction_input(info->gpio_com);
+	
+	ret = gpio_request(info->gpio_fet_en,"FET EN GPIO");
+	if(ret){
+		gpio_free(info->gpio_fet_en);
+		pr_info("[headset] FET EN GPIO Request Fail!!\n");
+	}
+	gpio_direction_output(info->gpio_fet_en,0);
+#endif
+
+	INIT_WORK(&info->work_headset, pm800_headset_switch_work);
+	INIT_WORK(&info->work_hook, pm800_hook_switch_work);
+	INIT_WORK(&info->work_release, pm800_hook_release_work);
+
+	/* init timer for hook release */
+	setup_timer(&info->hook_timer, pm800_hook_timer_handler,
+		    (unsigned long)info);
 
 	ret =
 	    request_threaded_irq(info->irq_headset, NULL, pm800_headset_handler,
@@ -579,18 +715,6 @@ static int pm800_headset_switch_probe(struct platform_device *pdev)
 		goto out_irq_hook;
 	}
 
-	voice_call_enable = 0;
-	if (info->proc_file == NULL) {
-		info->proc_file =
-			create_proc_entry(PM800_HEADSET_PROC_FILE, 0644, NULL);
-		if (info->proc_file) {
-			info->proc_file->read_proc = pm800_headset_proc_read;
-			info->proc_file->write_proc = (write_proc_t  *)pm800_headset_proc_write;
-			info->proc_file->data = info;
-		} else
-			pr_info("pm800 headset proc file create failed!\n");
-	}
-
 	/*
 	 * disable hook irq to ensure this irq will be enabled
 	 * after plugging in headset
@@ -602,8 +726,6 @@ static int pm800_headset_switch_probe(struct platform_device *pdev)
 		goto err_input_dev_register;
 
 	platform_set_drvdata(pdev, info);
-	INIT_WORK(&info->work_headset, pm800_headset_switch_work);
-	INIT_WORK(&info->work_hook, pm800_hook_switch_work);
 	hsdetect_dev = &pdev->dev;
 	hs_detect.hsdetect_status = 0;
 	hs_detect.hookswitch_status = 0;
@@ -613,9 +735,9 @@ static int pm800_headset_switch_probe(struct platform_device *pdev)
 	/* Hook:32 ms debounce time */
 	regmap_update_bits(info->map, PM800_MIC_CNTRL, MIC_DET_DBS,
 			   MIC_DET_DBS_32MS);
-	/* Hook:256ms period duty cycle */
+	/* Hook:continue duty cycle */
 	regmap_update_bits(info->map, PM800_MIC_CNTRL, MIC_DET_PRD,
-			   MIC_DET_PRD_CTN_256MS);
+			   MIC_DET_PRD_CTN);
 	/* set GPADC_DIR to 1, set to 0 cause pop noise in recording */
 	regmap_update_bits(info->map_gpadc, PM800_GPADC_MISC_CONFIG1,
 			   PM800_GPADC4_DIR, PM800_GPADC4_DIR);
@@ -624,16 +746,45 @@ static int pm800_headset_switch_probe(struct platform_device *pdev)
 			   PM800_HEADSET_DET_EN);
 	pm800_headset_switch_work(&info->work_headset);
 
+	/* Pointer for handling info in this driver - ffkaka */
+	local_info = info;
+	/* sys fs for factory test - ffkaka */
+	sec_audio_earjack_class = class_create(THIS_MODULE, "audio");
+	if(sec_audio_earjack_class < 0)
+		pr_info("[headset] Failed to create audio class!!!\n");
+	
+	sec_earjack_dev = device_create(sec_audio_earjack_class, NULL, 0, NULL, "earjack");
+	if(IS_ERR(sec_earjack_dev))
+		pr_err("[headset] Failed to create earjack device!!!\n");
+	
+	ret = device_create_file(sec_earjack_dev, &dev_attr_voltage);
+	if (ret < 0)
+		device_remove_file(sec_earjack_dev, &dev_attr_voltage);
+	
+	ret = device_create_file(sec_earjack_dev, &dev_attr_key_state);
+	if (ret < 0)
+		device_remove_file(sec_earjack_dev, &dev_attr_key_state);
+	
+	ret = device_create_file(sec_earjack_dev, &dev_attr_state);
+	if (ret < 0)
+		device_remove_file(sec_earjack_dev, &dev_attr_state);	
+
+#if !defined(CONFIG_MACH_DELOS3GVIA)
+	ret = device_create_file(sec_earjack_dev, &dev_attr_com_state);
+	if (ret < 0)
+		device_remove_file(sec_earjack_dev, &dev_attr_com_state);
+#endif
+
 	return 0;
 
-err_input_dev_register:
-	free_irq(info->irq_hook, info);
 out_irq_hook:
-	free_irq(info->irq_headset, info);
+	free_irq(info->irq_hook, info);
 out_irq_headset:
-	switch_dev_unregister(&switch_data_headset->sdev);
-err_switch_dev_register:
+	free_irq(info->irq_headset, info);
+err_input_dev_register:
 	devm_kfree(&pdev->dev, switch_data_headset);
+err_switch_dev_register:
+	switch_dev_unregister(&switch_data_headset->sdev);	
 headset_allocate_fail:
 	input_free_device(info->idev);
 input_allocate_fail:
@@ -658,9 +809,15 @@ static int __devexit pm800_headset_switch_remove(struct platform_device *pdev)
 	free_irq(info->irq_hook, info);
 	free_irq(info->irq_headset, info);
 
+#if !defined(CONFIG_MACH_DELOS3GVIA)
+	gpio_free(info->gpio_fet_en);	
+	gpio_free(info->gpio_com);
+#endif
+
 	switch_dev_unregister(&switch_data_headset->sdev);
 	input_unregister_device(info->idev);
 
+	input_free_device(info->idev);
 	devm_kfree(&pdev->dev, switch_data_headset);
 	devm_kfree(&pdev->dev, info);
 
@@ -671,37 +828,17 @@ static int pm800_headset_switch_suspend(struct platform_device *pdev,
 					pm_message_t state)
 {
 	struct pm800_headset_info *info = platform_get_drvdata(pdev);
-	struct headset_switch_data *switch_data;
-
-	switch_data = info->psw_data_headset;
-
 	/* enable low power mode headset detection */
 	regmap_update_bits(info->map, PM800_HEADSET_CNTRL, PM800_HSDET_SLP,
-                          PM800_HSDET_SLP);
-
-	/* LDO2(mic) power off when headset inserted except voice call case*/
-	  if (switch_data->state == 1 && !(voice_call_enable))
-		info->mic_set_power(0);
-
+			   PM800_HSDET_SLP);
 	return 0;
 }
 
 static int pm800_headset_switch_resume(struct platform_device *pdev)
 {
 	struct pm800_headset_info *info = platform_get_drvdata(pdev);
-	struct headset_switch_data *switch_data;
-
-	switch_data = info->psw_data_headset;
-
 	/* disable low power mode headset detection */
 	regmap_update_bits(info->map, PM800_HEADSET_CNTRL, PM800_HSDET_SLP, 0);
-
-	/* Enable LDO2 again if we detect headset(not headphone).
-	 * since we use LDO2 for mic detect in active mode.
-	 */
-	if (switch_data->state == 1 &&  !(voice_call_enable))
-		info->mic_set_power(1);
-
 	return 0;
 }
 

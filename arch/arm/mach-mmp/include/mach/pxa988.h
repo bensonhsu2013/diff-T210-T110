@@ -11,8 +11,14 @@ extern void __init pxa988_reserve(void);
 extern void pxa988_ripc_lock(void);
 extern void pxa988_ripc_unlock(void);
 extern int pxa988_ripc_trylock(void);
+extern int pxa988_ripc_status(void);
+extern spinlock_t ripc_lock;
 
+#if defined(CONFIG_D2199_DVC)
+int d2199_dvc_set_voltage(int buck_id, int level);
+#else
 extern int dvc_set_voltage(int buck_id, int volt);
+#endif
 
 #include <linux/i2c.h>
 #include <linux/i2c/pxa-i2c.h>
@@ -62,7 +68,7 @@ extern void pxa988_clear_keypad_wakeup(void);
 extern void pxa988_clear_sdh_wakeup(void);
 
 extern struct platform_device pxa988_device_udc;
-extern unsigned int system_rev;
+extern struct platform_device pxa_device_coda7542;
 
 #define IOPWRDOM_VIRT_BASE	(APB_VIRT_BASE + 0x1e800)
 #define AIB_MMC1_IO_REG		0x1c

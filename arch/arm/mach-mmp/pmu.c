@@ -19,18 +19,16 @@
 #include <mach/cputype.h>
 #include <mach/irqs.h>
 #include <mach/regs-ciu.h>
-
-#ifdef CONFIG_CPU_PXA988
+#include <mach/features.h>
 #include <mach/regs-coresight.h>
-#endif
 
 static struct platform_device pmu_device = {
 	.name		= "arm-pmu",
 	.id		= ARM_PMU_DEVICE_CPU,
 };
 
-#ifdef CONFIG_CPU_PXA988
-static struct resource pmu_resource_pxa988[] = {
+static struct resource pmu_resource_pxa[] = {
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 	/* core0 */
 	{
 		.start	= IRQ_PXA988_CORESIGHT,
@@ -43,79 +41,98 @@ static struct resource pmu_resource_pxa988[] = {
 		.end	= IRQ_PXA988_CORESIGHT2,
 		.flags	= IORESOURCE_IRQ,
 	},
+#if defined(CONFIG_CPU_PXA1088)
+	/* core2 */
+	{
+		.start	= IRQ_PXA1088_CORESIGHT3,
+		.end	= IRQ_PXA1088_CORESIGHT3,
+		.flags	= IORESOURCE_IRQ,
+	},
+	/* core3 */
+	{
+		.start	= IRQ_PXA1088_CORESIGHT4,
+		.end	= IRQ_PXA1088_CORESIGHT4,
+		.flags	= IORESOURCE_IRQ,
+	},
+#endif
+#endif
 };
 
-static void __init pxa988_cti_init(void)
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
+static void __init pxa988_enable_external_agent(void __iomem *addr)
 {
 	u32 tmp;
 
-	/* enable access CTI registers for core0 */
-	tmp = __raw_readl(CIU_CA9_CPU_CORE0_CONF);
+	tmp = readl_relaxed(addr);
 	tmp |= 0x100000;
-	__raw_writel(tmp, CIU_CA9_CPU_CORE0_CONF);
+	writel_relaxed(tmp, addr);
+}
 
-	/* enable access CTI registers for core1 */
-	tmp = __raw_readl(CIU_CA9_CPU_CORE1_CONF);
-	tmp |= 0x100000;
-	__raw_writel(tmp, CIU_CA9_CPU_CORE1_CONF);
+static void __init pxa988_cti_enable(u32 cpu)
+{
+	void __iomem *cti_base = CTI_CORE0_VIRT_BASE + 0x1000 * cpu;
+	u32 tmp;
 
-	/* enable the write access to CTI0 */
-	__raw_writel(0xC5ACCE55, CTI_CORE0_VIRT_BASE + CTI_LOCK_OFFSET);
-	__raw_writel(0x1, CTI_CORE0_VIRT_BASE + CTI_CTRL_OFFSET);
+	/* Unlock CTI */
+	writel_relaxed(0xC5ACCE55, cti_base + CTI_LOCK_OFFSET);
 
 	/*
-	 * enable core0 CTI triger in1 from PMU0 irq to CTM channel 0
-	 * and enable the CTM channel 0 route to core0 CTI trigger out 6
+	 * Enables a cross trigger event to the corresponding channel.
 	 */
-	tmp = __raw_readl(CTI_CORE0_VIRT_BASE + CTI_EN_IN1_OFFSET);
+	tmp = readl_relaxed(cti_base + CTI_EN_IN1_OFFSET);
 	tmp &= ~CTI_EN_MASK;
-	tmp |= 0x1;
-	__raw_writel(tmp, CTI_CORE0_VIRT_BASE + CTI_EN_IN1_OFFSET);
+	tmp |= 0x1 << cpu;
+	writel_relaxed(tmp, cti_base + CTI_EN_IN1_OFFSET);
 
-	tmp = __raw_readl(CTI_CORE0_VIRT_BASE + CTI_EN_OUT6_OFFSET);
+	tmp = readl_relaxed(cti_base + CTI_EN_OUT6_OFFSET);
 	tmp &= ~CTI_EN_MASK;
-	tmp |= 0x1;
-	__raw_writel(tmp, CTI_CORE0_VIRT_BASE + CTI_EN_OUT6_OFFSET);
+	tmp |= 0x1 << cpu;
+	writel_relaxed(tmp, cti_base + CTI_EN_OUT6_OFFSET);
 
+	/* Enable CTI */
+	writel_relaxed(0x1, cti_base + CTI_CTRL_OFFSET);
+}
 
-	/* enable the write access to CTI1 */
-	__raw_writel(0xC5ACCE55, CTI_CORE1_VIRT_BASE + CTI_LOCK_OFFSET);
-	__raw_writel(0x1, CTI_CORE1_VIRT_BASE + CTI_CTRL_OFFSET);
+static void __init pxa988_cti_init(void)
+{
+	int cpu;
 
-	/*
-	 * enable core1 CTI triger in1 from PMU1 irq to CTM channel 1
-	 * and enable the CTM channel 1 route to core1 CTI trigger out 6
-	 */
-	tmp = __raw_readl(CTI_CORE1_VIRT_BASE + CTI_EN_IN1_OFFSET);
-	tmp &= ~CTI_EN_MASK;
-	tmp |= 0x2;
-	__raw_writel(tmp, CTI_CORE1_VIRT_BASE + CTI_EN_IN1_OFFSET);
+	/* if enable TrustZone, move core config to TZSW. */
+#ifndef CONFIG_TZ_HYPERVISOR
+	/* enable access CTI registers for core */
+	pxa988_enable_external_agent(CIU_CPU_CORE0_CONF);
+	pxa988_enable_external_agent(CIU_CPU_CORE1_CONF);
+#if defined(CONFIG_CPU_PXA1088)
+	pxa988_enable_external_agent(CIU_CPU_CORE2_CONF);
+	pxa988_enable_external_agent(CIU_CPU_CORE3_CONF);
+#endif
+#endif /* CONFIG_TZ_HYPERVISOR */
 
-	tmp = __raw_readl(CTI_CORE1_VIRT_BASE + CTI_EN_OUT6_OFFSET);
-	tmp &= ~CTI_EN_MASK;
-	tmp |= 0x2;
-	__raw_writel(tmp, CTI_CORE1_VIRT_BASE + CTI_EN_OUT6_OFFSET);
+	for (cpu = 0; cpu < CONFIG_NR_CPUS; cpu++)
+		pxa988_cti_enable(cpu);
 }
 
 void pxa988_ack_ctiint(void)
 {
-	/* ack the cti irq */
-	__raw_writel(0x40, CTI_REG(CTI_INTACK_OFFSET));
+	writel_relaxed(0x40, CTI_REG(CTI_INTACK_OFFSET));
 }
 EXPORT_SYMBOL(pxa988_ack_ctiint);
+
+void pxa_pmu_ack(void)
+{
+	pxa988_ack_ctiint();
+}
 #endif
 
 static int __init pxa_pmu_init(void)
 {
-#ifdef CONFIG_CPU_PXA988
-	pmu_device.resource = pmu_resource_pxa988;
-	pmu_device.num_resources = ARRAY_SIZE(pmu_resource_pxa988);
+	if (has_feat_pmu_support()) {
+		pmu_device.resource = pmu_resource_pxa;
+		pmu_device.num_resources = ARRAY_SIZE(pmu_resource_pxa);
 
-	/* Need to init CTI irq line */
-	pxa988_cti_init();
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
+		pxa988_cti_init();
 #endif
-
-	if (pmu_device.resource) {
 		platform_device_register(&pmu_device);
 	} else {
 		printk(KERN_WARNING "unsupported Soc for PMU");

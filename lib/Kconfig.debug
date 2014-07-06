@@ -12,10 +12,11 @@ config PRINTK_TIME
 
 config PRINTK_CPU_ID
 	bool "Show cpu id on printks"
-	depends on PRINTK
+	depends on PRINTK && SMP
 	help
 	  Selecting this option causes current printk cpu id to be
 	  included in printk output. Or add printk.cpu=1 at boot-time.
+	  This allows you to see the running cpu id with kernel log.
 	  See Documentation/kernel-parameters.txt
 
 config PRINTK_PID
@@ -24,7 +25,7 @@ config PRINTK_PID
 	help
 	  Selecting this option causes current task's pid to be
 	  included in printk output. Or add printk.pid=1 at boot-time.
-	  This allows you to see the running process with kernel log.
+	  This allows you to see the running process id with kernel log.
 	  See Documentation/kernel-parameters.txt
 
 config PRINTK_COMM
@@ -32,7 +33,8 @@ config PRINTK_COMM
 	depends on PRINTK
 	help
 	  Selecting this option causes current task's comm to be
-	  included in printk output. This allows you to see the running process with kernel log.
+	  included in printk output. Or add printk.comm=1 at boot-time.
+	  This allows you to see the running process name with kernel log.
 	  See Documentation/kernel-parameters.txt
 
 config DEFAULT_MESSAGE_LOGLEVEL

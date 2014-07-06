@@ -24,15 +24,21 @@ config SWITCH_88PM800_HS
 	help
 	  Say Y here to enable headset & hook switch support.
 
-config SWITCH_88PM800_HS_SEC
-	tristate "88pm800 Headset Switch support for SEC"
-	depends on GENERIC_GPIO && MFD_88PM800
+config SWITCH_88PM822_HS
+	tristate "88pm822 Headset Switch support"
+	depends on GENERIC_GPIO && MFD_88PM822
 	help
 	  Say Y here to enable headset & hook switch support.
 
+config SWITCH_88CE170_HS
+	tristate "88ce170 Headset Switch support"
+	depends on GENERIC_GPIO && MFD_88CE170
+	help
+	  Say Y here to enable ce170 headset & hook switch support.
+
 config SAMSUNG_JACK 
 	bool "3.5MM ear jack KSND driver for Samsung devices on Marvell PXA986"
-	depends on GENERIC_GPIO && MFD_88PM800
+	depends on GENERIC_GPIO && MFD_88PM822
 	help
 	  Say Y here to enable headset & hook switch support.
 

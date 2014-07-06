@@ -13,15 +13,9 @@
 
 #ifndef _LINUX_DRIVER_TYPES_H_
 #define _LINUX_DRIVER_TYPES_H_
-
 #ifdef ACI_LNX_KERNEL
-#include <generated/autoconf.h>
-#if defined(CONFIG_MODVERSIONS) && ! defined(MODVERSIONS)
-  #define MODVERSIONS
-#endif
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/version.h>
 #include <linux/init.h>
 #include <linux/sched.h>
 #include <linux/delay.h>

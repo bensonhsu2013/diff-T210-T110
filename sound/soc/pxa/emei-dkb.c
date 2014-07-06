@@ -28,18 +28,20 @@
 #include <linux/uaccess.h>
 #include <sound/pcm_params.h>
 #include <linux/pxa2xx_ssp.h>
-#ifdef CONFIG_MACH_LT02
-#include <mach/mfp-pxa986-lt02.h>
-#else
-#include <mach/mfp-pxa988-aruba.h>
-#endif
-
+#include <mach/mfp-pxa988.h>
 #include "pxa-ssp.h"
+
 #ifdef CONFIG_PROC_FS
 #include <linux/proc_fs.h>
 #endif
+
+#if defined(CONFIG_SND_SOC_D2199)
+int ssp_master;
+#else
 static int ssp_master;
+#endif
 static int gssp_master;
+
 /*
  * SSP audio private data
  */
@@ -54,11 +56,13 @@ struct ssp_priv {
 	uint32_t	psp;
 #endif
 };
+
 #ifdef CONFIG_PROC_FS
 static ssize_t ssp_master_write_proc(struct file *filp,
 		const char *buff, size_t len, loff_t *off)
 {
 	char a;
+
 	if (copy_from_user(&a, buff, 1))
 		return -EINVAL;
 	switch (a) {
@@ -74,16 +78,20 @@ static ssize_t ssp_master_write_proc(struct file *filp,
 		pr_err("Wrong input, please echo 1 for ssp master, 0 for codec master\n");
 		break;
 	}
+
 	return len;
 }
+
 static void create_ssp_master_proc_file(void)
 {
 	struct proc_dir_entry *proc_file = NULL;
+
 	proc_file = create_proc_entry("driver/ssp_master", 0644, NULL);
 	if (!proc_file) {
 		pr_err("%s: create proc file failed\n", __func__);
 		return;
 	}
+
 	proc_file->write_proc = (write_proc_t *)ssp_master_write_proc;
 }
 
@@ -95,19 +103,19 @@ static ssize_t gssp_master_write_proc(struct file *filp,
 	if (copy_from_user(&a, buff, 1))
 		return -EINVAL;
 	switch (a) {
-		case '0':
-			pr_info("Switch to GSSP slave, codec master mode\n");
-			gssp_master = 0;
-			break;
-		case '1':
-			pr_info("Switch to GSSP master, codec slave mode\n");
-			gssp_master = 1;
-			break;
-		default:
-			pr_err("Wrong input, please echo 1 for gssp master, 0 for codec master\n");
-			break;
+	case '0':
+		pr_info("Switch to GSSP slave, codec master mode\n");
+		gssp_master = 0;
+		break;
+	case '1':
+		pr_info("Switch to GSSP master, codec slave mode\n");
+		gssp_master = 1;
+		break;
+	default:
+		pr_err("Wrong input, please echo 1 for gssp master, 0 for codec master\n");
+		break;
 	}
-	
+
 	return len;
 }
 
@@ -167,7 +175,7 @@ static int emei_dkb_hifi_hw_params(struct snd_pcm_substream *substream,
 		snd_soc_dai_set_fmt(cpu_dai, SND_SOC_DAIFMT_I2S |
 			    SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_CBS_CFS);
 	else
-	snd_soc_dai_set_fmt(cpu_dai, SND_SOC_DAIFMT_I2S |
+		snd_soc_dai_set_fmt(cpu_dai, SND_SOC_DAIFMT_I2S |
 			    SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_CBM_CFM);
 
 	return 0;
@@ -328,39 +336,87 @@ static struct snd_soc_ops emei_dkb_machine_ops[] = {
 
 static struct snd_soc_dai_link emei_dkb_hifi_dai[] = {
 {
+#if defined(CONFIG_SND_SOC_D2199)
+	 .name = "d2199 i2s",
+#else
 	 .name = "88pm805 i2s",
+#endif	 
 	 .stream_name = "audio playback",
+#if defined(CONFIG_SND_SOC_D2199)
+	 .codec_name = "d2199-codec.2-0018",
+#else
 	 .codec_name = "88pm80x-codec",
+#endif
 	 .platform_name = "mmp-pcm-audio",
 	 .cpu_dai_name = "pxa-ssp-dai.1",
+#if defined(CONFIG_SND_SOC_D2199)
+	.codec_dai_name = "d2199-i2s",	
+#else
 	 .codec_dai_name = "88pm805-i2s",
+#endif	 
 	 .ops = &emei_dkb_machine_ops[0],
 },
 {
+#if defined(CONFIG_SND_SOC_D2199)
+	 .name = "d2199 pcm",
+#else
 	 .name = "88pm805 pcm",
+#endif	 
 	 .stream_name = "audio capture",
+#if defined(CONFIG_SND_SOC_D2199)
+	 .codec_name = "d2199-codec.2-0018",
+#else
 	 .codec_name = "88pm80x-codec",
+#endif
 	 .platform_name = "pxa-pcm-audio",
 	 .cpu_dai_name = "pxa-ssp-dai.4",
+#if defined(CONFIG_SND_SOC_D2199)	
+	.codec_dai_name = "d2199-pcm", 
+#else
 	 .codec_dai_name = "88pm805-pcm",
+#endif	 
 	 .ops = &emei_dkb_machine_ops[1],
 },
 {
+#if defined(CONFIG_SND_SOC_D2199)
+	 .name = "d2199 dummy nb",
+#else
 	 .name = "88pm805 dummy nb",
+#endif	 
 	 .stream_name = "dummy nb capture",
+#if defined(CONFIG_SND_SOC_D2199)
+	 .codec_name = "d2199-codec.2-0018",
+#else	 
 	 .codec_name = "88pm80x-codec",
+#endif	 
 	 .platform_name = "pxa-pcm-audio",
 	 .cpu_dai_name = "pxa-ssp-dai.4",
+#if defined(CONFIG_SND_SOC_D2199)
+	 .codec_dai_name = "d2199-dummy",
+#else
 	 .codec_dai_name = "88pm805-dummy",
+#endif	 
 	 .ops = &emei_dkb_machine_ops[2],
 },
 {
+#if defined(CONFIG_SND_SOC_D2199)
+	 .name = "d2199 dummy wb",
+#else
 	 .name = "88pm805 dummy wb",
+#endif	 
 	 .stream_name = "dummy wb capture",
+#if defined(CONFIG_SND_SOC_D2199)
+	 .codec_name = "d2199-codec.2-0018",
+#else	 
 	 .codec_name = "88pm80x-codec",
+#endif	 
 	 .platform_name = "pxa-pcm-audio",
 	 .cpu_dai_name = "pxa-ssp-dai.4",
+#if defined(CONFIG_SND_SOC_D2199)
+	 .codec_dai_name = "d2199-dummy",
+#else
 	 .codec_dai_name = "88pm805-dummy",
+#endif	 
 	 .ops = &emei_dkb_machine_ops[3],
 },
 };
@@ -401,6 +457,7 @@ static int __devinit emei_dkb_probe(struct platform_device *pdev)
 			ret);
 		return ret;
 	}
+
 #ifdef CONFIG_PROC_FS
 	create_ssp_master_proc_file();
 	create_gssp_master_proc_file();

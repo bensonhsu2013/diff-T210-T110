@@ -123,6 +123,7 @@ struct shm_skctl {
 	volatile unsigned int diag_header_ptr;
 	volatile unsigned int diag_cp_db_ver;
 	volatile unsigned int diag_ap_db_ver;
+	volatile unsigned int reset_request;
 };
 
 /* share memory socket header structure */

@@ -59,12 +59,6 @@ static int process_sdio_pending_irqs(struct mmc_host *host)
 		return ret;
 	}
 
-	if (!host->sdio_irq_pending) {
-		if (pending)
-			pr_warning("pending irq:0x%x without CardInt\n", pending);
-		return 0;
-	}
-
 	count = 0;
 	for (i = 1; i <= 7; i++) {
 		if (pending & (1 << i)) {

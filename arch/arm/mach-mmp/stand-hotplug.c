@@ -20,30 +20,27 @@
 #include <linux/cpufreq.h>
 #include <linux/clk.h>
 #include <linux/uaccess.h>
-#include <linux/tick.h>
-#include <linux/kernel_stat.h>
+#include <linux/kthread.h>
+
 #include <plat/clock.h>
+#include <plat/pxa_trace.h>
+
+#include <mach/clock-pxa988.h>
 
 #define BOOT_DELAY	60
-#define CHECK_DELAY_ON	(.5*HZ * 8)
+#define CHECK_DELAY_NOP	(.5 * HZ * 16)
+#define CHECK_DELAY_ON	(.5 * HZ * 4)
 #define CHECK_DELAY_OFF	(.5*HZ)
-#define TRANS_RQ 2
-#define TRANS_LOAD_RQ 20
-#define CPU_OFF 0
-#define CPU_ON  1
+#define TRANS_RQ 1
+#define TRANS_LOAD_RQ 8
 #define NUM_CPUS num_possible_cpus()
 #define CPULOAD_TABLE (NR_CPUS + 1)
 
-#define TRANS_LOAD_L0 0
 #if (NR_CPUS > 2)
-#define TRANS_LOAD_H0 20
-#define TRANS_LOAD_L1 10
-#define TRANS_LOAD_H1 30
-#define TRANS_LOAD_L2 15
-#define TRANS_LOAD_H2 45
-#define TRANS_LOAD_L3 20
-#define TRANS_LOAD_H3 100
+#define MIPS_HIGH	624000
+#define MIPS_LOW	250000
 #else
+#define TRANS_LOAD_L0 0
 #define TRANS_LOAD_H0 25
 #define TRANS_LOAD_L1 10
 #define TRANS_LOAD_H1 100
@@ -59,21 +56,29 @@ static unsigned int freq_min = -1UL;
 static unsigned int max_performance;
 
 static unsigned int hotpluging_rate = CHECK_DELAY_OFF;
+static unsigned int hotpluging_nop_time = CHECK_DELAY_NOP;
+static unsigned int nop_time;
 static unsigned int user_lock;
 static unsigned int trans_rq = TRANS_RQ;
 static unsigned int trans_load_rq = TRANS_LOAD_RQ;
 
+#if (NR_CPUS <= 2)
 static unsigned int trans_load_l0 = TRANS_LOAD_L0;
 static unsigned int trans_load_h0 = TRANS_LOAD_H0;
 static unsigned int trans_load_l1 = TRANS_LOAD_L1;
 static unsigned int trans_load_h1 = TRANS_LOAD_H1;
-
-#if (NR_CPUS > 2)
-static unsigned int trans_load_l2 = TRANS_LOAD_L2;
-static unsigned int trans_load_h2 = TRANS_LOAD_H2;
-static unsigned int trans_load_l3 = TRANS_LOAD_L3;
-static unsigned int trans_load_h3 = TRANS_LOAD_H3;
+#else
+static unsigned int trans_load_l0;
+static unsigned int trans_load_l1;
+static unsigned int trans_load_l2;
+static unsigned int trans_load_l3;
+static unsigned int trans_load_h0;
+static unsigned int trans_load_h1;
+static unsigned int trans_load_h2;
+static unsigned int trans_load_h3 = 100;
 #endif
+
+
 
 enum flag {
 	HOTPLUG_NOP,
@@ -102,54 +107,35 @@ struct cpu_hotplug_info {
 
 static DEFINE_PER_CPU(struct cpu_time_info, hotplug_cpu_time);
 
+static void init_hotplug_statistics(void)
+{
+	int i;
+
+	/* Initialize tmp_info */
+	for_each_online_cpu(i) {
+		struct cpu_time_info *tmp_info;
+		cputime64_t cur_wall_time, cur_idle_time;
+		tmp_info = &per_cpu(hotplug_cpu_time, i);
+
+		/* Get current idle and wall time */
+		cur_idle_time = get_cpu_idle_time(i, &cur_wall_time);
+
+		/* Initial tmp_info */
+		tmp_info->load  = 0;
+		tmp_info->avg_load  = 0;
+		tmp_info->prev_cpu_idle  = cur_idle_time;
+		tmp_info->prev_cpu_wall  = cur_wall_time;
+		tmp_info->total_wall_time = cur_wall_time;
+	}
+
+	/* Initialize nop_time */
+	nop_time = 0;
+}
+
 /* mutex can be used since hotplug_timer does not run in
    timer(softirq) context but in process context */
-static DEFINE_MUTEX(hotplug_lock);
-
-
-static inline u64 get_cpu_idle_time_jiffy(unsigned int cpu,
-			u64 *wall)
-{
-	u64 idle_time;
-	u64 cur_wall_time;
-	u64 busy_time;
-
-	cur_wall_time = jiffies64_to_cputime64(get_jiffies_64());
-
-	busy_time  = kcpustat_cpu(cpu).cpustat[CPUTIME_USER];
-	busy_time += kcpustat_cpu(cpu).cpustat[CPUTIME_SYSTEM];
-	busy_time += kcpustat_cpu(cpu).cpustat[CPUTIME_IRQ];
-	busy_time += kcpustat_cpu(cpu).cpustat[CPUTIME_SOFTIRQ];
-	busy_time += kcpustat_cpu(cpu).cpustat[CPUTIME_STEAL];
-	busy_time += kcpustat_cpu(cpu).cpustat[CPUTIME_NICE];
-
-	idle_time = cur_wall_time - busy_time;
-	if (wall)
-		*wall = jiffies_to_usecs(cur_wall_time);
-
-	return jiffies_to_usecs(idle_time);
-}
-
-static inline cputime64_t get_cpu_idle_time(unsigned int cpu,
-			cputime64_t *wall)
-{
-	u64 idle_time = get_cpu_idle_time_us(cpu, NULL);
-
-	if (idle_time == -1ULL)
-		return get_cpu_idle_time_jiffy(cpu, wall);
-	else
-		idle_time += get_cpu_iowait_time_us(cpu, wall);
-
-	return idle_time;
-}
-
-bool hotplug_out_chk(unsigned int nr_online_cpu, unsigned int threshold_up,
-		unsigned int avg_load)
-{
-	return ((nr_online_cpu > 1) &&
-		avg_load < threshold_up);
-}
-
+static DEFINE_MUTEX(hotplug_stat_lock);
+static DEFINE_MUTEX(hotplug_user_lock);
 static struct clk *cpu_clk;
 static inline enum flag
 standalone_hotplug(unsigned int avg_load, unsigned int cur_freq,
@@ -170,17 +156,18 @@ standalone_hotplug(unsigned int avg_load, unsigned int cur_freq,
 
 	nr_online_cpu = num_online_cpus();
 
-	if (hotplug_out_chk(nr_online_cpu,
-			    threshold[nr_online_cpu - 1][THRESHOLD_LOW],
-				avg_load)) {
-		return HOTPLUG_OUT;
+	if (avg_load < threshold[nr_online_cpu - 1][THRESHOLD_LOW]) {
+		nop_time = 0;
+		if (nr_online_cpu > 1)
+			return HOTPLUG_OUT;
 		/* If total nr_running is less than cpu(on-state) number
 		 * hotplug do not hotplug-in
 		 */
-	} else if ((nr_running() > nr_online_cpu) &&
-		   (avg_load > threshold[nr_online_cpu - 1][THRESHOLD_HIGH]) &&
-		   (cur_freq > freq_min)) {
-		return HOTPLUG_IN;
+	} else if (avg_load > threshold[nr_online_cpu - 1][THRESHOLD_HIGH]) {
+		nop_time = 0;
+		if ((nr_running() > nr_online_cpu) &&
+		    (cur_freq > freq_min))
+			return HOTPLUG_IN;
 	} else if (nr_online_cpu > 1 && nr_rq_min < trans_rq) {
 		struct cpu_time_info *tmp_info;
 
@@ -189,8 +176,32 @@ standalone_hotplug(unsigned int avg_load, unsigned int cur_freq,
 		 * hotplug-out operation need
 		 */
 		if ((tmp_info->load < trans_load_rq) &&
-		    (avg_load < threshold[nr_online_cpu - 2][THRESHOLD_HIGH]))
+		    (avg_load < threshold[nr_online_cpu - 2][THRESHOLD_HIGH])) {
+			nop_time = 0;
 			return HOTPLUG_OUT;
+		}
+	} else if (nr_online_cpu > 1) {
+		if ((avg_load >=
+		     threshold[nr_online_cpu - 2][THRESHOLD_HIGH]) &&
+		    (avg_load <=
+		     threshold[nr_online_cpu - 1][THRESHOLD_HIGH]))
+			nop_time = 0;
+		else if ((avg_load >=
+			  threshold[nr_online_cpu - 1][THRESHOLD_LOW]) &&
+			 (avg_load <
+			  threshold[nr_online_cpu - 2][THRESHOLD_HIGH])) {
+			nop_time += hotpluging_rate;
+
+			/*
+			 * If load_l <= avg_load <= former load_h,
+			 * more than one online cpu, and nop_time
+			 * >= hotpluging_nop_time, plug-out cpu
+			 */
+			if (nop_time >= hotpluging_nop_time) {
+				nop_time = 0;
+				return HOTPLUG_OUT;
+			}
+		}
 	}
 
 	return HOTPLUG_NOP;
@@ -209,7 +220,7 @@ static int hotplug_freq_notifer_call(struct notifier_block *nb,
 	if (user_lock == 1)
 		return  0;
 
-	mutex_lock(&hotplug_lock);
+	mutex_lock(&hotplug_stat_lock);
 
 	for_each_online_cpu(i) {
 		struct cpu_time_info *tmp_info;
@@ -249,7 +260,7 @@ static int hotplug_freq_notifer_call(struct notifier_block *nb,
 					* (freq->old >> 10));
 	}
 
-	mutex_unlock(&hotplug_lock);
+	mutex_unlock(&hotplug_stat_lock);
 
 	return 0;
 }
@@ -261,6 +272,8 @@ static struct notifier_block hotplug_freq_notifier = {
 static void __ref hotplug_timer(struct work_struct *work)
 {
 	struct cpu_hotplug_info tmp_hotplug_info[4];
+	struct sched_param param_normal = { .sched_priority = 0 };
+	struct sched_param param_rt = { .sched_priority = 1};
 	int i;
 	unsigned int avg_load = 0;
 	unsigned int cpu_rq_min = 0;
@@ -273,7 +286,7 @@ static void __ref hotplug_timer(struct work_struct *work)
 	if (user_lock == 1)
 		return;
 
-	mutex_lock(&hotplug_lock);
+	mutex_lock(&hotplug_stat_lock);
 
 	/* Get current cpu freq */
 	cur_freq = cpu_clk->ops->getrate(cpu_clk) / 1000;
@@ -295,8 +308,10 @@ static void __ref hotplug_timer(struct work_struct *work)
 					tmp_info->prev_cpu_wall);
 
 		/* Check wall time and idle time */
-		if (wall_time < idle_time)
+		if (wall_time < idle_time) {
+			mutex_unlock(&hotplug_stat_lock);
 			goto no_hotplug;
+		}
 
 		/* Update idle time and wall time */
 		tmp_info->prev_cpu_idle = cur_idle_time;
@@ -336,6 +351,12 @@ static void __ref hotplug_timer(struct work_struct *work)
 					/ total_wall_time) \
 				     / (max_performance >> 10);
 
+		trace_pxa_hp_single(i,
+				    get_cpu_nr_running(i),
+				    tmp_info->load,
+				    (tmp_info->avg_load *
+				     (max_performance >> 10) / 100));
+
 		/* Get avg_load of two cores */
 		avg_load += tmp_info->avg_load;
 
@@ -348,6 +369,10 @@ static void __ref hotplug_timer(struct work_struct *work)
 			cpu_rq_min = i;
 		}
 	}
+
+	trace_pxa_hotplug_stand_mips((cur_freq / 1000),
+				     (avg_load * (max_performance >> 10) / 100),
+				     num_online_cpus());
 
 	for (i = NUM_CPUS - 1; i > 0; --i) {
 		if (cpu_online(i) == 0) {
@@ -371,87 +396,72 @@ static void __ref hotplug_timer(struct work_struct *work)
 	}
 
 	/*cpu hotplug*/
-	if (flag_hotplug == HOTPLUG_IN \
-			&& cpu_online(select_off_cpu) == CPU_OFF) {
+	if ((flag_hotplug == HOTPLUG_IN) &&
+	    /* Avoid running cpu_up(0) */
+	    select_off_cpu &&
+	    (!cpu_online(select_off_cpu))) {
 		pr_info("cpu%d turning on!\n", select_off_cpu);
-		mutex_unlock(&hotplug_lock);
+		mutex_unlock(&hotplug_stat_lock);
 
 		/* Plug-In one cpu */
+		sched_setscheduler(kthreadd_task, SCHED_FIFO, &param_rt);
 		cpu_up(select_off_cpu);
+		sched_setscheduler(kthreadd_task, SCHED_NORMAL, &param_normal);
 		pr_info("cpu%d on\n", select_off_cpu);
 
-		mutex_lock(&hotplug_lock);
 		hotpluging_rate = CHECK_DELAY_ON;
-	} else if (flag_hotplug == HOTPLUG_OUT \
-			&& cpu_online(cpu_rq_min) == CPU_ON) {
+	} else if ((flag_hotplug == HOTPLUG_OUT) &&
+		   /* Avoid running cpu_down(0) */
+		   cpu_rq_min &&
+		   (cpu_online(cpu_rq_min))) {
 		pr_info("cpu%d turnning off!\n", cpu_rq_min);
-		mutex_unlock(&hotplug_lock);
+		mutex_unlock(&hotplug_stat_lock);
 
 		/* Plug-Out one cpu */
 		cpu_down(cpu_rq_min);
 		pr_info("cpu%d off!\n", cpu_rq_min);
 
-		mutex_lock(&hotplug_lock);
 		hotpluging_rate = CHECK_DELAY_OFF;
-	}
+	} else
+		mutex_unlock(&hotplug_stat_lock);
 
 no_hotplug:
 	queue_delayed_work_on(0, hotplug_wq, \
 				&hotplug_work, hotpluging_rate);
-
-	mutex_unlock(&hotplug_lock);
 }
 
 static int standalone_hotplug_notifier_event(struct notifier_block *this,
 					     unsigned long event, void *ptr)
 {
 	static unsigned user_lock_saved;
-	int i;
 
 	switch (event) {
 	case PM_SUSPEND_PREPARE:
-		mutex_lock(&hotplug_lock);
+		mutex_lock(&hotplug_user_lock);
 		user_lock_saved = user_lock;
 		user_lock = 1;
 		pr_info("%s: saving pm_hotplug lock %x\n",
 			__func__, user_lock_saved);
-		mutex_unlock(&hotplug_lock);
+		mutex_unlock(&hotplug_user_lock);
 		return NOTIFY_OK;
 	case PM_POST_RESTORE:
 	case PM_POST_SUSPEND:
-		mutex_lock(&hotplug_lock);
+		mutex_lock(&hotplug_user_lock);
 		pr_info("%s: restoring pm_hotplug lock %x\n",
 			__func__, user_lock_saved);
 		user_lock = user_lock_saved;
-		mutex_unlock(&hotplug_lock);
+		mutex_unlock(&hotplug_user_lock);
 		/*
 		 * corner case:
 		 * user_lock set to 1 during suspend, and work_queue may goto
 		 * "unlock", then work_queue never have chance to run again
 		 */
 		if (0 == user_lock) {
-			mutex_lock(&hotplug_lock);
-
-			/* Initial tmp_info */
-			for_each_online_cpu(i) {
-				struct cpu_time_info *tmp_info;
-				cputime64_t cur_wall_time, cur_idle_time;
-				tmp_info = &per_cpu(hotplug_cpu_time, i);
-
-			/* Get current idle and wall time */
-			cur_idle_time = get_cpu_idle_time(i, &cur_wall_time);
-
-				/* Initial tmp_info */
-				tmp_info->load  = 0;
-				tmp_info->avg_load  = 0;
-				tmp_info->prev_cpu_idle  = cur_idle_time;
-				tmp_info->prev_cpu_wall  = cur_wall_time;
-				tmp_info->total_wall_time = cur_wall_time;
-			}
-
-			mutex_unlock(&hotplug_lock);
-
 			flush_delayed_work(&hotplug_work);
+			mutex_lock(&hotplug_stat_lock);
+			/* Initialize data */
+			init_hotplug_statistics();
+			mutex_unlock(&hotplug_stat_lock);
 			queue_delayed_work_on(0, hotplug_wq, &hotplug_work,
 				hotpluging_rate);
 		}
@@ -469,10 +479,10 @@ static struct notifier_block standalone_hotplug_notifier = {
 static int hotplug_reboot_notifier_call(struct notifier_block *this,
 					unsigned long code, void *_cmd)
 {
-	mutex_lock(&hotplug_lock);
+	mutex_lock(&hotplug_user_lock);
 	pr_err("%s: disabling pm hotplug\n", __func__);
 	user_lock = 1;
-	mutex_unlock(&hotplug_lock);
+	mutex_unlock(&hotplug_user_lock);
 
 	return NOTIFY_DONE;
 }
@@ -512,41 +522,36 @@ static int lock_set(struct device *dev, struct device_attribute *attr,
 {
 	u32 val;
 	int restart_hp = 0;
-	int i;
+	bool waitqueue_finish = false;
 
 	if (!sscanf(buf, "%d", &val))
 		return -EINVAL;
 
-	mutex_lock(&hotplug_lock);
+	mutex_lock(&hotplug_user_lock);
 	/* we want to re-enable governor */
 	if ((1 == user_lock) && (0 == val))
 		restart_hp = 1;
+	/*
+	 * when lock governor, we should wait workqueue finish
+	 * before return, it can avoid user lock and gonvernor work
+	 * concurrent conflict corner case
+	 */
+	if ((0 == user_lock) && (1 == !!val))
+		waitqueue_finish = true;
 	user_lock = val ? 1 : 0;
-
-	/* Initial tmp_info */
-	for_each_online_cpu(i) {
-		struct cpu_time_info *tmp_info;
-		cputime64_t cur_wall_time, cur_idle_time;
-		tmp_info = &per_cpu(hotplug_cpu_time, i);
-
-		/* Get current idle and wall time */
-		cur_idle_time = get_cpu_idle_time(i, &cur_wall_time);
-
-		/* Initial tmp_info */
-		tmp_info->load  = 0;
-		tmp_info->avg_load  = 0;
-		tmp_info->prev_cpu_idle  = cur_idle_time;
-		tmp_info->prev_cpu_wall  = cur_wall_time;
-		tmp_info->total_wall_time = cur_wall_time;
-	}
-
-	mutex_unlock(&hotplug_lock);
+	mutex_unlock(&hotplug_user_lock);
 
 	if (restart_hp) {
 		flush_delayed_work(&hotplug_work);
+		mutex_lock(&hotplug_stat_lock);
+		/* Initialize data */
+		init_hotplug_statistics();
+		mutex_unlock(&hotplug_stat_lock);
 		queue_delayed_work_on(0, hotplug_wq, &hotplug_work,
 				CHECK_DELAY_OFF);
 	}
+	if (waitqueue_finish)
+		cancel_delayed_work_sync(&hotplug_work);
 
 	return count;
 }
@@ -590,6 +595,7 @@ define_show_thhd_function(l3);
 static DEVICE_ATTR(load_h1, S_IRUGO | S_IWUSR, load_get_h1, load_set_h1);
 static DEVICE_ATTR(load_l2, S_IRUGO | S_IWUSR, load_get_l2, load_set_l2);
 static DEVICE_ATTR(load_h2, S_IRUGO | S_IWUSR, load_get_h2, load_set_h2);
+static DEVICE_ATTR(load_l3, S_IRUGO | S_IWUSR, load_get_l3, load_set_l3);
 #endif
 
 static struct attribute *hotplug_attributes[] = {
@@ -600,6 +606,7 @@ static struct attribute *hotplug_attributes[] = {
 	&dev_attr_load_h1.attr,
 	&dev_attr_load_l2.attr,
 	&dev_attr_load_h2.attr,
+	&dev_attr_load_l3.attr,
 #endif
 	&dev_attr_bound_freq.attr,
 	NULL,
@@ -638,22 +645,8 @@ static int __init stand_alone_hotplug_init(void)
 	if (ret)
 		goto err_cpufreq_register_notifier;
 
-	/* Initial tmp_info */
-	for_each_online_cpu(i) {
-		struct cpu_time_info *tmp_info;
-		cputime64_t cur_wall_time, cur_idle_time;
-		tmp_info = &per_cpu(hotplug_cpu_time, i);
-
-		/* Get current idle and wall time */
-		cur_idle_time = get_cpu_idle_time(i, &cur_wall_time);
-
-		/* Initial tmp_info */
-		tmp_info->load  = 0;
-		tmp_info->avg_load  = 0;
-		tmp_info->prev_cpu_idle  = cur_idle_time;
-		tmp_info->prev_cpu_wall  = cur_wall_time;
-		tmp_info->total_wall_time = cur_wall_time;
-	}
+	/* Initialize data */
+	init_hotplug_statistics();
 
 	INIT_DELAYED_WORK(&hotplug_work, hotplug_timer);
 
@@ -670,6 +663,31 @@ static int __init stand_alone_hotplug_init(void)
 
 	max_performance = freq_max * NUM_CPUS;
 	pr_info("init max_performance : %u\n", max_performance);
+
+#if (NR_CPUS > 2)
+	/* Set trans_load_XX with MIPS_XX */
+	trans_load_l1 = MIPS_LOW * 100 * 1 / max_performance;
+	trans_load_l2 = MIPS_LOW * 100 * 2 / max_performance;
+	trans_load_l3 = MIPS_LOW * 100 * 3 / max_performance;
+	trans_load_h0 = MIPS_HIGH * 100 * 1 / max_performance;
+	trans_load_h1 = MIPS_HIGH * 100 * 2 / max_performance;
+	trans_load_h2 = MIPS_HIGH * 100 * 3 / max_performance;
+
+	/* Show trans_load_XX */
+
+	pr_info("--------------------\n"
+		"|CPU|LOW(%%)|HIGH(%%)|\n"
+		"|  1|   %3d|    %3d|\n"
+		"|  2|   %3d|    %3d|\n"
+		"|  3|   %3d|    %3d|\n"
+		"|  4|   %3d|    %3d|\n"
+		"--------------------\n",
+		trans_load_l0, trans_load_h0,
+		trans_load_l1, trans_load_h1,
+		trans_load_l2, trans_load_h2,
+		trans_load_l3, trans_load_h3);
+
+#endif
 
 	ret = kobject_init_and_add(&hotplug_kobj, &hotplug_dir_ktype,
 				&(cpu_subsys.dev_root->kobj), "hotplug");

@@ -425,17 +425,14 @@ static const struct regmap_irq pm800_irqs[] = {
 		.mask = PM800_GPIO4_INT_ENA4,
 	},
 };
-#if defined(CONFIG_SPA) ||			\
-	defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
+#if defined(CONFIG_SPA) || defined(CONFIG_MACH_LT02)
 #define CHG_STATUS_HIGH 1
 #define CHG_STATUS_LOW 0
-#define PM800_USER_DATA3 0xEA
 
 static u8 power_on_reason = 0;
-
 unsigned char pm80x_get_power_on_reason(void)
 {
-	return power_on_reason;	
+	return power_on_reason;
 }
 #endif
 unsigned char pmic_chip_id = 0;
@@ -595,7 +592,6 @@ static int __devinit device_gpadc_init(struct pm80x_chip *chip,
 				 PM800_MEAS_EN1_VBAT, PM800_MEAS_EN1_VBAT);
 	if (ret < 0)
 		goto out;
-        /*make gpadc1 enable*/
 	ret = regmap_update_bits(map, PM800_GPADC_MEAS_EN2,
 				 (PM800_MEAS_EN2_RFTMP | PM800_MEAS_GP0_EN| PM800_MEAS_GP1_EN),
 				 (PM800_MEAS_EN2_RFTMP | PM800_MEAS_GP0_EN| PM800_MEAS_GP1_EN));
@@ -608,22 +604,6 @@ static int __devinit device_gpadc_init(struct pm80x_chip *chip,
 	 * to GPADC sampling = 1 slot for all GPADCs set for
 	 * Temprature mesurmants
 	 */
-#ifdef CONFIG_GPADC0_CURRENT_SINK_MODE
-        /*make gpadc0, gpadc1 bias out enable*/
-	mask = (PM800_GPADC_GP_BIAS_EN0 | PM800_GPADC_GP_BIAS_EN1 |
-		PM800_GPADC_GP_BIAS_EN2 | PM800_GPADC_GP_BIAS_EN3 |
-		PM800_GPADC_GP_BIAS_OUT0 | PM800_GPADC_GP_BIAS_OUT1);
-
-	if (pdata && (pdata->batt_det == 0))
-		data = (PM800_GPADC_GP_BIAS_EN0 | PM800_GPADC_GP_BIAS_EN1 |
-			PM800_GPADC_GP_BIAS_EN2 | PM800_GPADC_GP_BIAS_EN3|
-			PM800_GPADC_GP_BIAS_OUT0 | PM800_GPADC_GP_BIAS_OUT1);
-	else
-		data = (PM800_GPADC_GP_BIAS_EN0 | PM800_GPADC_GP_BIAS_EN2 |
-			PM800_GPADC_GP_BIAS_EN3 | PM800_GPADC_GP_BIAS_OUT0 |
-			PM800_GPADC_GP_BIAS_OUT1);
-#else
-        /*make gpadc1 bias out enable*/
 	mask = (PM800_GPADC_GP_BIAS_EN0 | PM800_GPADC_GP_BIAS_EN1 |
 		PM800_GPADC_GP_BIAS_EN2 | PM800_GPADC_GP_BIAS_EN3 |PM800_GPADC_GP_BIAS_OUT1);
 
@@ -633,22 +613,14 @@ static int __devinit device_gpadc_init(struct pm80x_chip *chip,
 	else
 		data = (PM800_GPADC_GP_BIAS_EN0 | PM800_GPADC_GP_BIAS_EN2 |
 			PM800_GPADC_GP_BIAS_EN3 | PM800_GPADC_GP_BIAS_OUT1);
-#endif
 
 	ret = regmap_update_bits(map, PM800_GP_BIAS_ENA1, mask, data);
 	if (ret < 0)
 		{goto out;}
-	/*make gpadc0, gpadc1 output 31uA bias */
-	mask = PM800_GPADC_GP_BIAS_MASK0;
-	data = (0x06 << PM800_GPADC_GP_BIAS_SHIFT1_D0); // 31uA
-#ifdef CONFIG_GPADC0_CURRENT_SINK_MODE
-	ret = regmap_update_bits(map, PM800_GPADC_BIAS1, mask, data);
-	if (ret < 0)
-		{goto out;}
-#endif
-	ret = regmap_update_bits(map, PM800_GPADC_BIAS2, mask, data);
-	if (ret < 0)
-		{goto out;}
+
+        mask = PM800_GPADC_GP_BIAS_MASK0;
+        data = (0x06 << PM800_GPADC_GP_BIAS_SHIFT1_D0); // 31uA
+	  ret = regmap_update_bits(map, PM800_GPADC_BIAS1_D0, mask, data);
 	dev_info(chip->dev, "pm800 device_gpadc_init: Done\n");
 	return 0;
 
@@ -723,7 +695,7 @@ static int __devinit device_irq_init_800(struct pm80x_chip *chip)
 	    PM800_WAKEUP2_INV_INT | PM800_WAKEUP2_INT_CLEAR |
 	    PM800_WAKEUP2_INT_MASK;
 
-	data = PM800_WAKEUP2_INT_CLEAR;
+	data = (chip->irq_mode) ? PM800_WAKEUP2_INT_CLEAR : (0<<1);
 	ret = regmap_update_bits(map, PM800_WAKEUP2, mask, data);
 
 	if (ret < 0)
@@ -839,7 +811,6 @@ static int __devinit device_800_init(struct pm80x_chip *chip,
 
 	if ((pmic_id >= PM800_CHIP_A0) && (pmic_id <= PM800_CHIP_END)) {
 		chip->version = val;
-                pmic_chip_id = pmic_id;
 		dev_info(chip->dev,
 			 "88PM80x:Marvell 88PM800 (ID:0x%x) detected\n", val);
 	} else {
@@ -848,31 +819,22 @@ static int __devinit device_800_init(struct pm80x_chip *chip,
 		ret = -EINVAL;
 		goto out;
 	}
-#if defined(CONFIG_SPA)	||			\
-	defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
+#if defined(CONFIG_SPA)	
 	/* read power on reason from PMIC general use register */
-	ret = regmap_read(chip->regmap, PM800_USER_DATA3, &val);
+	ret = regmap_read(chip->regmap, PMIC_GENERAL_USE_REGISTER, &val);
 	if (ret < 0) {
-		dev_err(chip->dev, "Failed to read PM800_USER_DATA3 : %d\n", ret);
+		dev_err(chip->dev, "Failed to read PMIC_GENERAL_USE_REGISTER : %d\n", ret);
 		goto out;
 	}
-	printk("%s read register PM800_USER_DATA3 [%d]\n", __func__, val);
-#if 0
-	if (ret & PM800_CHG_STS1)
-	{
-		ret = PMIC_GENERAL_USE_BOOT_BY_CHG;
-		printk("%s charger detected %d\n", __func__, ret);
-	}
-	else
-	{
-		ret = PMIC_GENERAL_USE_BOOT_BY_ONKEY;
-		printk("%s charger not detected %d\n", __func__, ret);
-	}
-#endif	
+	printk("%s read register PMIC_GENERAL_USE_REGISTER [%d]\n", __func__, val);
+
 	/* read power on reason from PMIC general use register */
-	regmap_write(chip->regmap, PM800_USER_DATA3, PMIC_GENERAL_USE_BOOT_BY_HW_RESET);
+	if (val != PMIC_GENERAL_USE_BOOT_BY_FULL_RESET)
+		regmap_write(chip->regmap, PMIC_GENERAL_USE_REGISTER, PMIC_GENERAL_USE_BOOT_BY_HW_RESET);
+
 	power_on_reason	= (u8)val; 
 #endif
+
 
 	/*
 	 * alarm wake up bit will be clear in device_irq_init(),
@@ -888,6 +850,19 @@ static int __devinit device_800_init(struct pm80x_chip *chip,
 			pdata->rtc->rtc_wakeup = 1;
 	}
 
+	ret = regmap_read(chip->regmap, PM800_USER_DATA6, &val);
+	if (ret < 0) {
+		dev_err(chip->dev, "Failed to read RTC usr reg: %d\n", ret);
+		goto out;
+	}
+	if (val & (1 << 2)) {
+		/* clear */
+		regmap_update_bits(chip->regmap, PM800_USER_DATA6,
+				   (1 << 2), (0 << 2));
+		if (pdata && pdata->rtc)
+			pdata->rtc->rtc_wakeup = 1;
+	}
+
 	ret = device_gpadc_init(chip, pdata);
 	if (ret < 0) {
 		dev_err(chip->dev, "[%s]Failed to init gpadc\n", __func__);
@@ -895,6 +870,7 @@ static int __devinit device_800_init(struct pm80x_chip *chip,
 	}
 
 	chip->regmap_irq_chip = &pm800_irq_chip;
+	chip->irq_mode = pdata->irq_mode;
 
 	ret = device_irq_init_800(chip);
 	if (ret < 0) {

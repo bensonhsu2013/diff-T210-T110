@@ -7,14 +7,6 @@
  *
  *  Host driver specific definitions.
  */
-#ifdef CONFIG_MACH_LT02
-#define _MMC_SAFE_ACCESS_
-#endif
-
-#ifdef _MMC_SAFE_ACCESS_
-extern int mmc_is_available;
-#endif
-
 #ifndef LINUX_MMC_HOST_H
 #define LINUX_MMC_HOST_H
 
@@ -27,6 +19,9 @@ extern int mmc_is_available;
 
 #include <linux/mmc/core.h>
 #include <linux/mmc/pm.h>
+
+#define _MMC_SAFE_ACCESS_
+
 
 enum timing_type {
 	MMC_TIMING_LEGACY = 0, /* 0~25MHz */
@@ -177,7 +172,6 @@ struct mmc_async_req {
  */
 struct mmc_slot {
 	int cd_irq;
-	int cd_gpio;
 	struct mutex lock;
 	void *handler_priv;
 };
@@ -276,6 +270,21 @@ struct mmc_host {
  * some cases, eg, for Marvell 8787 SDIO card in phone system
  */
 #define MMC_CAP2_DISABLE_PROBE_CDSCAN	(1 << 13)
+
+/*
+ * disable the block devices' pre/post feature
+ * So that the next data transfer will only be perpared/triggered
+ * when previous transfer has been totally finished
+ */
+#define MMC_CAP2_DISABLE_BLK_ASYNC		(1 << 14)
+
+
+/*
+ * disable the block devices' pre/post feature
+ * So that the next data transfer will only be perpared/triggered
+ * when previous transfer has been totally finished
+ */
+#define MMC_CAP2_DISABLE_BLK_ASYNC		(1 << 14)
 #define MMC_CAP2_SECURE_ERASE_EN		(1 << 31)
 
 	mmc_pm_flag_t		pm_caps;	/* supported pm features */

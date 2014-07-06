@@ -31,13 +31,11 @@ struct sec_therm_adc_table {
  * struct sec_bat_plaform_data - init data for sec batter driver
  * @adc_table: array of adc to temperature data
  * @adc_arr_size: size of adc_table
- * @polling_interval: interval for polling thermistor (msecs)
  */
 struct sec_therm_platform_data {
 	unsigned int adc_arr_size;
+	unsigned int adc_channel;
 	struct sec_therm_adc_table *adc_table;
-	unsigned int polling_interval;
-	int (*get_siop_level)(int);
 };
 
 #endif /* __MACH_SEC_THERMISTOR_H */

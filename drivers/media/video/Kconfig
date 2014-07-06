@@ -959,9 +959,21 @@ config VIDEO_MVISP
 	tristate "Marvell ISP support (EXPERIMENTAL)"
 	select VIDEOBUF2_DMA_CONTIG
 	depends on VIDEO_V4L2 && I2C && VIDEO_V4L2_SUBDEV_API && MEDIA_CONTROLLER && ARCH_MMP && EXPERIMENTAL
+	select MAP_CAMERA
 	---help---
 	  Driver for an Marvell ISP 3 camera controller.
 	  Including the ISP IPC,ISP DMA and CCIC control.
+
+config MAP_CAMERA
+	bool "MAP camera support"
+	depends on VIDEO_V4L2 && HAS_DMA
+	default n
+	---help---
+	  MAP camera is a package of helper function to enhance MediaController.
+	  It implement common used v4l2 APIs, and provide a infrastructure, on
+	  which camera IP core drivers can be addressed. The IP core shoulde be
+	  broken down into subdevs(mc_agent), and each fulfill all the subdev
+	  ops.
 
 config SOC_CAMERA
 	tristate "SoC camera support"
@@ -991,11 +1003,18 @@ config VIDEO_VCM_DW9714L
 	---help---
 	 Support for the OmniVision ov5647 vcm base.
 
+config VIDEO_VCM_AD5823
+	tristate "ov12830 vcm support"
+	depends on VIDEO_MVISP && I2C && VIDEO_MVISP_SENSOR
+	---help---
+	 Support for the OmniVision ov12830 vcm base.
+
 config VIDEO_VCM_AK7343
 	tristate "Lsi vcm support"
 	depends on VIDEO_MVISP && I2C && VIDEO_MVISP_SENSOR
-	help
-	Support for the Samsung LSI vcm base.
+	---help---
+	 Support for the Samsung LSI vcm base.
+
 
 config SOC_CAMERA_IMX074
 	tristate "imx074 support"
@@ -1111,6 +1130,26 @@ config SOC_CAMERA_S5K4ECGX
 	  This is a Video4Linux2 sensor-level driver for the SYS.LSI
 	  S5K4ECGX 5M camera.
 
+config VIDEO_SR030PC30
+	tristate "SYS.LSI SR030PC30 subsensor support"
+	depends on I2C && SOC_CAMERA
+	---help---
+	  This driver supports SR030PC30 VGA camera from Siliconfile
+
+config SOC_CAMERA_SR352
+	tristate "silliconfile SR352 sub sensor support"
+	depends on SOC_CAMERA && I2C
+	---help---
+	  This is a Video4Linux2 sensor-level driver for the silliconfile
+	  SR352 3.0M camera.
+
+config SOC_CAMERA_SUBSENSOR
+	tristate "Marvell AE subsensor support demo"
+	depends on SOC_CAMERA && I2C
+	---help---
+	  This is a Video4Linux2 sensor-level driver for the
+	  Marvell AE subsensor support demo.
+	  
 config SOC_CAMERA_SR030PC50
 	tristate "siliconfile SR030PC50 VGA sensor support"
 	depends on SOC_CAMERA && I2C
@@ -1131,14 +1170,13 @@ config SOC_CAMERA_SR130PC10
 	---help---
 	  This is a Video4Linux2 sensor-level driver for the silliconfile
 	  SR130PC10 1.2M camera.
-
-config SOC_CAMERA_SR352
-	tristate "silliconfile SR352 sub sensor support"
+	  
+config CAMERA_J_CAMERA
+	tristate "J Camera driver"
 	depends on SOC_CAMERA && I2C
 	---help---
-	  This is a Video4Linux2 sensor-level driver for the silliconfile
-	  SR352 3.0M camera.
-
+	  This is a v4l2 driver for the J camera 
+	  
 config MX1_VIDEO
 	bool
 

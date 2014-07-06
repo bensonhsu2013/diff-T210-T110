@@ -28,6 +28,18 @@ static LIST_HEAD(clocks);
 int enable_voltage_based_dvfm;
 EXPORT_SYMBOL(enable_voltage_based_dvfm);
 
+static int disable_freqchg;
+
+static int __init disable_freqchg_setup(char *str)
+{
+	int n;
+	if (!get_option(&str, &n))
+		return 0;
+	disable_freqchg = n;
+	return 1;
+}
+__setup("disable_freqchg=", disable_freqchg_setup);
+
 static inline bool clk_cansleep(struct clk *c)
 {
 	return c->cansleep;
@@ -243,8 +255,11 @@ EXPORT_SYMBOL(clk_disable);
 int clk_set_rate(struct clk *c, unsigned long rate)
 {
 	int ret = 0;
-	unsigned long flags, new_rate, old_rate;
+	unsigned long flags, old_rate;
+	long new_rate;
 	int sr_flag = 0;
+	if (disable_freqchg)
+		return 0;
 
 	clk_lock_save(c, flags);
 

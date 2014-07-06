@@ -44,20 +44,22 @@
 #define APMU_BUS	APMU_REG(0x06c)
 #define APMU_PWR_STBL_TIMER        APMU_REG(0x084)
 #define APMU_CORE_STATUS APMU_REG(0x090)
-#define APMU_CC2_AP	APMU_REG(0x100)
-#define APMU_GC	APMU_REG(0x0cc)
+#define APMU_GC		APMU_REG(0x0cc)
+#define APMU_GC_2D	APMU_REG(0x0f4)
 #define APMU_GC_PD	APMU_REG(0x0d0)
 
-#if defined(CONFIG_CPU_MMP2) || defined(CONFIG_CPU_MMP3)
+#if defined(CONFIG_CPU_MMP2) || defined(CONFIG_CPU_MMP3)\
+	|| defined(CONFIG_CPU_EDEN)
 #define APMU_SDH2	APMU_REG(0x0e8)
 #define APMU_SDH3	APMU_REG(0x0ec)
 #define APMU_SDH4	APMU_REG(0x15c)
-#elif defined(CONFIG_CPU_PXA910) || defined(CONFIG_CPU_PXA988)
+#elif defined(CONFIG_CPU_PXA910) || defined(CONFIG_CPU_PXA988)	\
+	|| defined(CONFIG_CPU_PXA1088)
 #define APMU_SDH2	APMU_REG(0x0e0)
 #endif
 
 /* pxa988 MCK4 AHB clock */
-#if defined(CONFIG_CPU_PXA988)
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 #define APMU_MCK4_CTL	APMU_REG(0x0e8)
 #endif
 
@@ -77,18 +79,14 @@
 #define APMU_CCSR               APMU_REG(0x000c)
 #define APMU_SQU_CLK_GATE_CTRL	APMU_REG(0x001c)
 #define APMU_LCD_CLK_RES_CTRL   APMU_REG(0x004c)
-#define APMU_DEBUG              APMU_REG(0x0088)
 #define APMU_IMR                APMU_REG(0x0098)
-#define APMU_IRWC		APMU_REG(0x009c)
+#define APMU_IRWC				APMU_REG(0x009c)
 #define APMU_ISR                APMU_REG(0x00a0)
-#define APMU_DX8_CLK_RES_CTRL   APMU_REG(0x00a4)
 #define APMU_MC_HW_SLP_TYPE     APMU_REG(0x00b0)
 #define APMU_PLL_SEL_STATUS     APMU_REG(0x00c4)
 #define APMU_SMC_CLK_RES_CTRL   APMU_REG(0x00d4)
-#define APMU_PWR_CTRL_REG		APMU_REG(0x00d8)
 #define APMU_GC_CLK_RES_CTRL	APMU_REG(0x00cc)
-#define APMU_PWR_BLK_TMR_REG	APMU_REG(0x00dc)
-#define APMU_PWR_STATUS_REG     APMU_REG(0x00f0)
+#define APMU_GC_CLK_RES_CTRL2	APMU_REG(0x027c)
 
 #define APMU_CC2R               APMU_REG(0x0100)
 #define APMU_CC2SR              APMU_REG(0x0104)
@@ -98,8 +96,11 @@
 #define APMU_FSIC3_CLK_RES_CTRL APMU_REG(0x0100)
 #define APMU_LCD2_CLK_RES_CTRL  APMU_REG(0x0110)
 
-/* coda7542 */
+/* VPU clk control regs of PXA988/Eden */
 #define APMU_VPU_CLK_RES_CTRL	APMU_REG(0x00a4)
+/* Eden */
+#define APMU_ISLD_VPU_CTRL		APMU_REG(0x01b0)
+#define APMU_ISLD_GC_CTRL		APMU_REG(0x01b4)
 
 /* CNM clock and power on/off register*/
 #define APMU_DX8_CLK_RES_CTRL   APMU_REG(0x00a4)
@@ -128,6 +129,8 @@
 #define APMU_AXICLK_EN	(1 << 3)
 #define APMU_FNRST_DIS	(1 << 1)
 #define APMU_AXIRST_DIS	(1 << 0)
+
+#define MASK_LCD_BLANK_CHECK	(1 << 27)
 
 /* Wake Clear Register */
 #define APMU_WAKE_CLR	APMU_REG(0x07c)
@@ -226,15 +229,24 @@
 #define APMU_PJ_C1_CC4			APMU_REG(0x024C)
 #define APMU_PJ_C2_CC4			APMU_REG(0x0250)
 
-/* PXA988 CA9 core idle configuration */
-#define PMU_CA9_CORE0_IDLE_CFG		APMU_REG(0x0124)
-#define PMU_CA9_CORE1_IDLE_CFG		APMU_REG(0x0128)
+/* PXA988/1088 Common core idle configuration */
+#define PMU_CORE0_IDLE_CFG		APMU_REG(0x0124)
+#define PMU_CORE1_IDLE_CFG		APMU_REG(0x0128)
 #define APMU_COREn_WAKEUP_CTL(n)	(APMU_REG(0x012C) + 4 * (n & 0x3))
 #define APMU_WAKEUP_CORE(n)		(1 << (n & 0x3))
 
-/* PXA988 CA9 MP idle configuration */
-#define PMU_CA9MP_IDLE_CFG0		APMU_REG(0x0120)
-#define PMU_CA9MP_IDLE_CFG1		APMU_REG(0x00e4)
+/* PXA988/1088 Common MP idle configuration */
+#define PMU_MP_IDLE_CFG0		APMU_REG(0x0120)
+#define PMU_MP_IDLE_CFG1		APMU_REG(0x00e4)
+
+/* PXA1088 Unique MP idle configuration */
+#ifdef CONFIG_CPU_PXA1088
+#define PMU_CORE2_IDLE_CFG		APMU_REG(0x0160)
+#define PMU_CORE3_IDLE_CFG		APMU_REG(0x0164)
+#define PMU_MP_IDLE_CFG2		APMU_REG(0x0150)
+#define PMU_MP_IDLE_CFG3		APMU_REG(0x0154)
+#endif
+
 
 /* PXA988 AP Clock Control Register2 */
 #define PMU_CC2_AP			APMU_REG(0x0100)

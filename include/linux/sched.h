@@ -142,6 +142,9 @@ extern unsigned long nr_iowait(void);
 extern unsigned long nr_iowait_cpu(int cpu);
 extern unsigned long this_cpu_load(void);
 extern unsigned long get_cpu_nr_running(unsigned int cpu);
+#ifdef CONFIG_ZRAM_FOR_ANDROID
+extern unsigned long this_cpu_loadx(int i);
+#endif
 
 
 extern void calc_global_load(unsigned long ticks);
@@ -318,6 +321,11 @@ extern int proc_dowatchdog_thresh(struct ctl_table *table, int write,
 				  size_t *lenp, loff_t *ppos);
 extern unsigned int  softlockup_panic;
 void lockup_detector_init(void);
+#ifdef CONFIG_SMP_HARDLOCKUP_DETECTOR
+extern unsigned int  hardlockup_enable;
+extern int proc_hardlockup(struct ctl_table *, int ,
+			   void __user *, size_t *, loff_t *);
+#endif
 #else
 static inline void touch_softlockup_watchdog(void)
 {

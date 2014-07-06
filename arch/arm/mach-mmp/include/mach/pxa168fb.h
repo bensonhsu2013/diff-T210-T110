@@ -56,10 +56,14 @@
 #define MAX_FB_INFO	(3)
 
 /* default fb buffer size WVGA-32bits */
-#if defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
+#if defined(CONFIG_MACH_WILCOX)
+#define DEFAULT_FB_SIZE	((960 * 544 * 12)+ 4096)
+#elif defined(CONFIG_MACH_DEGA) 
+#define DEFAULT_FB_SIZE	((800 * 1280 * 12)+ 4096)
+#elif defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_GOYA)
 #define DEFAULT_FB_SIZE	((1024 * 600 * 12)+ 4096)
 #else
-#define DEFAULT_FB_SIZE	((800 * 480 * 8)+ 4096)
+#define DEFAULT_FB_SIZE	((800 * 480 * 12)+ 4096)
 #endif
 /*
  * Buffer pixel format
@@ -198,14 +202,6 @@ struct pxa168fb_info {
 	int			dma_on;
 	/* lock for variables, e.g. active */
 	spinlock_t		var_lock;
-#ifdef CONFIG_MACH_ARUBA_TD
-	/* mem_status:
-	* 0: DMA mem is from DMA region.
-	* 1: DMA mem is from normal region.
-	* -1: no frame buffer.
-	*/
-	int			mem_status;
-#endif
 	unsigned                wait_vsync;
 	unsigned                vsync_en;
 	uint64_t		vsync_ts_nano;
@@ -650,10 +646,6 @@ extern int fb_filter;
 extern int fb_vsmooth;
 extern int gfx_vsmooth;
 extern int vid_vsmooth;
-#ifdef CONFIG_MACH_HENDRIX
-extern struct fbi_info gfx_info;
-extern struct fbi_info ovly_info;
-#endif
 extern struct device_attribute dev_attr_misc;
 extern void dynamic_change_pll3(unsigned int rate);
 extern int dip_register_notifier(struct notifier_block *nb, unsigned int list);

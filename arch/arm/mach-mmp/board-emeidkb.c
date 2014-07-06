@@ -24,6 +24,7 @@
 #include <linux/regulator/machine.h>
 #include <linux/mmc/host.h>
 #include <linux/mmc/sdhci.h>
+#include <linux/mmc/card.h>
 #include <linux/platform_data/pxa_sdhci.h>
 #include <linux/sd8x_rfkill.h>
 #include <linux/regmap.h>
@@ -34,12 +35,19 @@
 #include <linux/lps331ap.h>
 #include <linux/spi/pxa2xx_spi.h>
 #include <linux/spi/cmmb.h>
+#include <linux/spinlock.h>
 #include <linux/workqueue.h>
+#include <linux/i2c-gpio.h>
 #include <linux/notifier.h>
 #include <linux/reboot.h>
+#include <linux/pwm_backlight.h>
 #include <linux/keyreset.h>
 #ifdef CONFIG_PROC_FS
 #include <linux/proc_fs.h>
+#endif
+
+#ifdef CONFIG_ST21NFCA
+#include <linux/nfc/st21nfca.h>
 #endif
 
 #include <asm/hardware/gic.h>
@@ -63,10 +71,17 @@
 #include <media/soc_camera.h>
 #include <mach/isp_dev.h>
 #include <mach/gpio-edge.h>
+#include <mach/dvfs.h>
+#include <mach/features.h>
+#include <mach/regs-mpmu.h>
+#if defined(CONFIG_TC35876X)
+#include <mach/tc35876x.h>
+#endif
 
 #ifdef CONFIG_CHARGER_ISL9226
 #include <linux/power/isl9226.h>
 #endif
+#include <linux/power/t7_charger.h>
 
 #if defined(CONFIG_INV_MPU_IIO)
 #include <linux/mpu.h>
@@ -83,8 +98,6 @@
 #include "common.h"
 #include "onboard.h"
 
-#define VER_1V0 0x10
-#define VER_1V1 0x11
 static int board_id;
 static int __init board_id_setup(char *str)
 {
@@ -95,6 +108,11 @@ static int __init board_id_setup(char *str)
 	return 1;
 }
 __setup("board_id=", board_id_setup);
+
+int get_board_id()
+{
+	return board_id;
+}
 
 static unsigned long emeidkb_pin_config[] __initdata = {
 	GPIO000_KP_MKIN0,			/* KP_MKIN[0] */
@@ -111,7 +129,6 @@ static unsigned long emeidkb_pin_config[] __initdata = {
 #define GPIO007_GPIO_WIB_PDn		(GPIO007_GPIO_7 | MFP_PULL_FLOAT)
 #define GPIO008_GPIO_WIB_WLAN		(GPIO008_GPIO_8 | MFP_PULL_LOW)
 #define GPIO009_GPIO_WIB_BT		(GPIO009_GPIO_9 | MFP_PULL_LOW)
-#define GPIO010_GPIO_RF_DCDC_EN		GPIO010_GPIO_10
 #define GPIO011_GPIO_WIB_RESETn		(GPIO011_GPIO_11 | MFP_PULL_FLOAT)
 #define GPIO012_GPIO_TORCH_EN		GPIO012_GPIO_12
 #define GPIO013_GPIO_CMMB_IRQ		GPIO013_GPIO_13
@@ -121,12 +138,10 @@ static unsigned long emeidkb_pin_config[] __initdata = {
 #define GPIO016_GPIO_TP_RESET		GPIO016_GPIO_16
 #define GPIO017_GPIO_TP_INT		GPIO017_GPIO_17
 #define GPIO018_GPIO_CMMB_EN		GPIO018_GPIO_18
-#define GPIO019_GPIO_CMMB_RESET		GPIO019_GPIO_19
 #define GPIO020_GPIO_FLASH_EN		GPIO020_GPIO_20
 	GPIO007_GPIO_WIB_PDn,
 	GPIO008_GPIO_WIB_WLAN,
 	GPIO009_GPIO_WIB_BT,
-	GPIO010_GPIO_RF_DCDC_EN,
 	GPIO011_GPIO_WIB_RESETn,
 	GPIO012_GPIO_TORCH_EN | MFP_PULL_FLOAT | MFP_LPM_FLOAT,
 	GPIO013_GPIO_CMMB_IRQ,
@@ -135,27 +150,24 @@ static unsigned long emeidkb_pin_config[] __initdata = {
 	GPIO016_GPIO_TP_RESET | MFP_PULL_FLOAT,
 	GPIO017_GPIO_TP_INT | MFP_PULL_LOW,
 	GPIO018_GPIO_CMMB_EN,
-	GPIO019_GPIO_CMMB_RESET,
 	GPIO020_GPIO_FLASH_EN | MFP_PULL_LOW | MFP_LPM_DRIVE_LOW,
 
-	GPIO021_I2S_BITCLK,	/* I2S_BITCLK */
-	GPIO022_I2S_SYNC,	/* I2S_SYNC */
-	GPIO023_I2S_DATA_OUT,	/* I2S_DATA_OUT */
-	GPIO024_I2S_SDATA_IN,	/* I2S_DATA_IN */
+	/*
+	 * configure to be GPIO input to avoid leakage in production
+	 * mode. would configure it to I2S MFP in sound start up
+	 * function.
+	 */
+	GPIO021_GPIO_INPUT,
+	GPIO022_GPIO_INPUT,
+	GPIO023_GPIO_INPUT,
+	GPIO024_GPIO_INPUT,
 
 	GPIO025_GSSP_SCLK,	/* PCM_CLK */
 	GPIO026_GSSP_SFRM,	/* PCM_SYNC */
 	GPIO027_GSSP_TXD,	/* PCM_TXD */
 	GPIO028_GSSP_RXD,	/* PCM_RXD */
 
-#define GPIO029_GPIO_CHARGER_IND1	(GPIO029_GPIO_29 | MFP_PULL_LOW)
-#define GPIO030_GPIO_CHARGER_IND2	(GPIO030_GPIO_30 | MFP_PULL_LOW)
-#define GPIO031_GPIO_CHARGER_EN		(GPIO031_GPIO_31 | \
-					 MFP_PULL_LOW | MFP_LPM_FLOAT)
 #define GPIO032_GPIO_LCD_BL		GPIO032_GPIO_32
-	GPIO029_GPIO_CHARGER_IND1,
-	GPIO030_GPIO_CHARGER_IND2,
-	GPIO031_GPIO_CHARGER_EN,
 	GPIO032_GPIO_LCD_BL | MFP_PULL_FLOAT | MFP_LPM_FLOAT,
 
 	GPIO033_SPI_DCLK,	/* CMMB_SPI_CLK */
@@ -193,12 +205,10 @@ static unsigned long emeidkb_pin_config[] __initdata = {
 	GPIO053_CI2C_SCL | MFP_LPM_FLOAT,	/* CI2C_SCL */
 	GPIO054_CI2C_SDA | MFP_LPM_FLOAT,	/* CI2C_SDA */
 
-#define GPIO084_GPIO_GPS_RESET_N	(GPIO084_GPIO_84 | MFP_PULL_FLOAT)
-#define GPIO085_GPIO_GPS_CLK_EN		(GPIO085_GPIO_85 | MFP_PULL_FLOAT)
+#define GPIO084_GPIO_GPS_RESET_N	(GPIO084_GPIO_84 | MFP_PULL_LOW)
 #define GPIO086_GPIO_GPS_SEN_EN		(GPIO086_GPIO_86 | MFP_PULL_LOW | \
 					 MFP_LPM_FLOAT)
 	GPIO084_GPIO_GPS_RESET_N,
-	GPIO085_GPIO_GPS_CLK_EN,
 	GPIO086_GPIO_GPS_SEN_EN,
 
 	GPIO087_CI2C_SCL_2 | MFP_LPM_FLOAT,	/* CI2C_SCL2 */
@@ -245,7 +255,6 @@ static unsigned long emeidkb_pin_config[] __initdata = {
 	SM_SCLK_MMC3_CLK | MFP_LPM_DRIVE_HIGH,
 	SM_BEN0_MMC3_RSTN,
 
-#define GPIO_GPS_TIMER_SYNC	ANT_SW4_GPIO_28
 #define GPIO_RF_PDET_EN		SM_ADV_GPIO_0
 #define GPIO_LCD_RESET_N	ND_RDY1_GPIO_1
 #define GPIO_LED_B_CTRL		SM_ADVMUX_GPIO_2
@@ -253,7 +262,6 @@ static unsigned long emeidkb_pin_config[] __initdata = {
 #define GPIO_LED_G_CTRL		SM_CSN0_GPIO_103
 #define GPIO_GPS_LDO_EN		(SM_CSN1_GPIO_104 | MFP_PULL_FLOAT)
 #define GPIO_VCM_PWDN		ND_CS1N3_GPIO_102
-	GPIO_GPS_TIMER_SYNC,
 	GPIO_RF_PDET_EN,
 	GPIO_LCD_RESET_N | MFP_PULL_FLOAT,
 	GPIO_LED_B_CTRL | MFP_PULL_FLOAT | MFP_LPM_FLOAT,
@@ -276,14 +284,40 @@ static unsigned long emeidkb_pin_config[] __initdata = {
 	DF_ALE_SM_WEn_ND_ALE | MFP_LPM_FLOAT,
 	DF_WEn_DF_WEn | MFP_LPM_FLOAT,
 	DF_REn_DF_REn | MFP_LPM_FLOAT,
-	DF_RDY0_DF_RDY0 | MFP_LPM_FLOAT,
 };
 
+static unsigned long dvc_pin_config[] __initdata = {
+
+#define GPIO043_GPIO_DVC1_Ax	(GPIO043_GPIO_43_Ax | MFP_PULL_FLOAT)
+#define GPIO044_GPIO_DVC2_Ax	(GPIO044_GPIO_44_Ax | MFP_PULL_FLOAT)
+
+	GPIO043_GPIO_DVC1_Ax,
+	GPIO044_GPIO_DVC2_Ax,
+};
+
+#define GPIO_GPS_TIMER_SYNC		ANT_SW4_GPIO_28
+#define GPIO_GPS_TIMER_SYNC_T7		GPIO010_GPIO_10
+/* mfp config shared by emeidkb1.0/1.1 */
+#define GPIO019_GPIO_CMMB_RESET		GPIO019_GPIO_19
+#define GPIO029_GPIO_CHARGER_IND1	(GPIO029_GPIO_29 | MFP_PULL_LOW)
+#define GPIO030_GPIO_CHARGER_IND2	(GPIO030_GPIO_30 | MFP_PULL_LOW)
+#define GPIO031_GPIO_CHARGER_EN		(GPIO031_GPIO_31 | \
+					 MFP_PULL_LOW | MFP_LPM_FLOAT)
+#define GPIO085_GPIO_GPS_CLK_EN		(GPIO085_GPIO_85 | MFP_PULL_FLOAT)
+#define GPIO010_GPIO_RF_DCDC_EN		GPIO010_GPIO_10
 static unsigned long dkb1v0_pin_config[] __initdata = {
 #define GPIO091_GPIO_GYRO_INT		(GPIO091_GPIO_91 | MFP_PULL_LOW)
 #define GPIO092_GPIO_G_INT		(GPIO092_GPIO_92 | MFP_PULL_LOW)
 #define GPIO093_GPIO_MAG_INT		(GPIO093_GPIO_93 | MFP_PULL_LOW)
 #define GPIO098_GPIO_PRESURE_DRDY	GPIO098_GPIO_98
+	DF_RDY0_DF_RDY0 | MFP_LPM_FLOAT,
+	GPIO019_GPIO_CMMB_RESET,
+	GPIO029_GPIO_CHARGER_IND1,
+	GPIO030_GPIO_CHARGER_IND2,
+	GPIO031_GPIO_CHARGER_EN,
+	GPIO085_GPIO_GPS_CLK_EN,
+	GPIO_GPS_TIMER_SYNC,
+	GPIO010_GPIO_RF_DCDC_EN,
 	GPIO091_GPIO_GYRO_INT,
 	GPIO092_GPIO_G_INT,
 	GPIO093_GPIO_MAG_INT,   /* sensor func not ready, for power, just set */
@@ -295,10 +329,45 @@ static unsigned long dkb1v1_pin_config[] __initdata = {
 #define GPIO092_GPIO_CTL_SLP		GPIO092_GPIO_92
 #define GPIO093_GPIO_FB_BIN		(GPIO093_GPIO_93 | MFP_PULL_FLOAT)
 #define GPIO098_GPIO_FG_INT		(GPIO098_GPIO_98 | MFP_PULL_HIGH)
+	DF_RDY0_DF_RDY0 | MFP_LPM_FLOAT,
+	GPIO019_GPIO_CMMB_RESET,
+	GPIO029_GPIO_CHARGER_IND1,
+	GPIO030_GPIO_CHARGER_IND2,
+	GPIO031_GPIO_CHARGER_EN,
+	GPIO085_GPIO_GPS_CLK_EN,
+	GPIO_GPS_TIMER_SYNC,
+	GPIO010_GPIO_RF_DCDC_EN,
 	GPIO091_GPIO_MMC1_CD,
 	GPIO092_GPIO_CTL_SLP,
 	GPIO093_GPIO_FB_BIN,
 	GPIO098_GPIO_FG_INT,
+};
+
+static unsigned long t7dkb_pin_config[] __initdata = {
+#define GPIO018_GPIO_CHARGER_EN		GPIO018_GPIO_18
+#define GPIO19_GPIO_MIPI_BRIDGE_RSTn	(GPIO019_GPIO_19 | MFP_PULL_HIGH)
+#define GPIO029_GPIO_CHARGER_INT	GPIO029_GPIO_29
+#define GPIO030_GPIO_CHARGER_DET	GPIO030_GPIO_30
+#define GPIO031_GPIO_MIPI_BRIDGE_EN	(GPIO031_GPIO_31 |\
+					MFP_PULL_LOW | MFP_LPM_DRIVE_LOW)
+#define GPIO091_GPIO_MMC1_CD		(GPIO091_GPIO_91 | MFP_PULL_HIGH)
+#define GPIO_LCD_PWR_EN			ND_RDY0_GPIO_108
+#define PWM4_LCD_VCXO_OUT		VCXO_OUT_PWM_4
+#define GPIO125_GPIO_SDA		(GPIO125_GPIO_125 |\
+					 MFP_LPM_FLOAT | MFP_PULL_HIGH)
+#define GPIO123_GPIO_SCL		(GPIO123_GPIO_123 |\
+					 MFP_LPM_FLOAT | MFP_PULL_HIGH)
+	GPIO_GPS_TIMER_SYNC_T7,
+	GPIO018_GPIO_CHARGER_EN,
+	GPIO19_GPIO_MIPI_BRIDGE_RSTn,
+	GPIO029_GPIO_CHARGER_INT,
+	GPIO030_GPIO_CHARGER_DET,
+	GPIO031_GPIO_MIPI_BRIDGE_EN,
+	GPIO091_GPIO_MMC1_CD,
+	GPIO_LCD_PWR_EN,
+	PWM4_LCD_VCXO_OUT,
+	GPIO125_GPIO_SDA,
+	GPIO123_GPIO_SCL,
 };
 
 static unsigned int emei_dkb_matrix_key_map[] = {
@@ -399,6 +468,12 @@ static struct regulator_consumer_supply regulator_supplies[] = {
 	[PM800_ID_LDO17] = REGULATOR_SUPPLY("v_cam_af", NULL),
 	[PM800_ID_LDO18] = REGULATOR_SUPPLY("v_ldo18", NULL),
 	[PM800_ID_LDO19] = REGULATOR_SUPPLY("v_gps_3v", NULL),
+
+	/* below 4 IDs are fake ids, they are only used in new dvc */
+	[PM800_ID_BUCK1_AP_ACTIVE] = REGULATOR_SUPPLY("vcc_main_ap_active", NULL),
+	[PM800_ID_BUCK1_AP_LPM] = REGULATOR_SUPPLY("vcc_main_ap_lpm", NULL),
+	[PM800_ID_BUCK1_APSUB_IDLE] = REGULATOR_SUPPLY("vcc_main_apsub_idle", NULL),
+	[PM800_ID_BUCK1_APSUB_SLEEP] = REGULATOR_SUPPLY("vcc_main_apsub_sleep", NULL),
 };
 
 static int regulator_index[] = {
@@ -426,6 +501,12 @@ static int regulator_index[] = {
 	PM800_ID_LDO17,
 	PM800_ID_LDO18,
 	PM800_ID_LDO19,
+
+	/* below 4 ids are fake id, they are only used in new dvc */
+	PM800_ID_BUCK1_AP_ACTIVE,
+	PM800_ID_BUCK1_AP_LPM,
+	PM800_ID_BUCK1_APSUB_IDLE,
+	PM800_ID_BUCK1_APSUB_SLEEP,
 };
 
 #define REG_INIT(_name, _min, _max, _always, _boot)	\
@@ -470,6 +551,12 @@ static struct regulator_init_data pm800_regulator_data[] = {
 	[PM800_ID_LDO17] = REG_INIT(LDO17, 1200000, 3300000, 0, 0),
 	[PM800_ID_LDO18] = REG_INIT(LDO18, 1700000, 3300000, 1, 1),
 	[PM800_ID_LDO19] = REG_INIT(LDO19, 1700000, 3300000, 1, 1),
+
+	/* below 4 items are fake, they are only used in new dvc */
+	[PM800_ID_BUCK1_AP_ACTIVE] = REG_INIT(BUCK1_AP_ACTIVE,  1000, 10000, 1, 1),
+	[PM800_ID_BUCK1_AP_LPM] = REG_INIT(BUCK1_AP_LPM,  1000, 10000, 1, 1),
+	[PM800_ID_BUCK1_APSUB_IDLE] = REG_INIT(BUCK1_APSUB_IDLE,  1000, 10000, 1, 1),
+	[PM800_ID_BUCK1_APSUB_SLEEP] = REG_INIT(BUCK1_APSUB_SLEEP,  1000, 10000, 1, 1),
 };
 
 static void mic_set_power(int on)
@@ -493,6 +580,7 @@ static void mic_set_power(int on)
 static int sync_time_to_soc(unsigned int ticks)
 {
 	RCNR = ticks;
+	udelay(200);
 	return 0;
 }
 #endif
@@ -519,9 +607,16 @@ static struct pm80x_dvc_pdata pm80x_dvc = {
 static struct pm80x_bat_pdata pm80x_bat = {
 };
 
+static struct pm80x_bat_pdata pm80x_t7_bat = {
+	.bat_ntc = 1,
+	.capacity = 2800, /* mAh */
+	.r_int = 200, /* mOhm */
+};
+
 static int pm800_plat_config(struct pm80x_chip *chip,
 				struct pm80x_platform_data *pdata)
 {
+	int data;
 	if (!chip || !pdata || !chip->regmap || !chip->subchip
 	    || !chip->subchip->regmap_power) {
 		pr_err("%s:chip or pdata is not availiable!\n", __func__);
@@ -531,13 +626,10 @@ static int pm800_plat_config(struct pm80x_chip *chip,
 	/* RESET_OUTn, RTC_RESET_MODE =0 */
 	regmap_write(chip->regmap, PM800_RTC_MISC1, 0xb0);
 
-	/* Set internal digital sleep voltage as 0.9V */
-	regmap_write(chip->regmap, PM800_LOW_POWER1, 0xf0);
-	/*
-	 * Enable 32Khz-out-3 low jitter XO_LJ = 1
-	 * enable DVC for internal digital circuitry
-	 * */
-	regmap_write(chip->regmap, PM800_LOW_POWER2, 0x60);
+	/* Set internal digital sleep voltage as 1.2V */
+	regmap_write(chip->regmap, PM800_LOW_POWER1, 0x0);
+	/* Enable 32Khz-out-3 low jitter XO_LJ = 1 */
+	regmap_write(chip->regmap, PM800_LOW_POWER2, 0x20);
 
 	/* Enabele LDO and BUCK clock gating in lpm */
 	regmap_write(chip->regmap, PM800_LOW_POWER_CONFIG3, 0x80);
@@ -550,6 +642,14 @@ static int pm800_plat_config(struct pm80x_chip *chip,
 	/* Enable voltage change in pmic, POWER_HOLD = 1 */
 	regmap_write(chip->regmap, PM800_WAKEUP1, 0x80);
 
+	/*
+	 * Block wakeup attempts when VSYS rises above
+	 * VSYS_UNDER_RISE_TH1, or power off may fail
+	 */
+	regmap_read(chip->regmap,PM800_RTC_MISC5, &data);
+	data |= 0x1;
+	regmap_write(chip->regmap,PM800_RTC_MISC5, data);
+
 	/* Enable GPADC sleep mode */
 	regmap_write(chip->subchip->regmap_gpadc,
 		     PM800_GPADC_MISC_CONFIG2, 0x71);
@@ -558,6 +658,9 @@ static int pm800_plat_config(struct pm80x_chip *chip,
 
 	/* Set buck1 sleep mode as 0.8V */
 	regmap_write(chip->subchip->regmap_power, PM800_SLEEP_BUCK1, 0x10);
+	/* Set buck1 audio mode as 0.8V */
+	regmap_write(chip->subchip->regmap_power, PM800_AUDIO_MODE_CONFIG1,
+			0x10);
 	/* Enable buck sleep mode */
 	regmap_write(chip->subchip->regmap_power, PM800_BUCK_SLP1, 0xaa);
 	regmap_write(chip->subchip->regmap_power, PM800_BUCK_SLP2, 0x2);
@@ -574,11 +677,22 @@ static int pm800_plat_config(struct pm80x_chip *chip,
 	data |= (1 << 7);
 	regmap_write(chip->regmap, PM800_RTC_CONTROL, data);
 
-	data = 0xc0;
+	/*
+	 * Base page 0x50 and 0x55 should be set to 0x0C to allow PMIC
+	 * Buck clock and digital clocks to be locked to the 32KHz clock,
+	 * but make sure USE_XO field (Bas page 0xD0.7) is previously set.
+	 *
+	 * Once you set 0x0C, if you read back you will read 0x0D, as the
+	 * LSB is a Read Only bit representing the “lock” fla which will
+	 * be set shortly after bit 1 of the same register is set to 0.
+	 */
+	data = 0x0C;
 	regmap_write(chip->regmap, OSC_CNTRL1, data);
+	regmap_write(chip->regmap, OSC_CNTRL6, data);
 
+	/* Forcing the clock of the bucks to be active also during sleep */
 	regmap_read(chip->regmap, OSC_CNTRL3, &data);
-	data |= (1 << 4);
+	data |= (1 << 4) | (1 << 7);
 	regmap_write(chip->regmap, OSC_CNTRL3, data);
 
 	if (cpu_is_pxa988()) {
@@ -617,14 +731,13 @@ static int pm800_plat_config(struct pm80x_chip *chip,
 			     PM800_LDO5, data);
 	}
 
-	/* Set LDO19 as 1.8v for GPS */
-	if (board_id == VER_1V1) {
-		regmap_read(chip->subchip->regmap_power,
-			    PM800_LDO19, &data);
-		data |= 0x1;
+	/*
+	 * Set LDO19 as 1.8v for GPS
+	 * on emeidkb1.1 and t7 tablet, 2.8V by default
+	 */
+	if ((board_id == VER_1V1) || (board_id == VER_T7))
 		regmap_write(chip->subchip->regmap_power,
-			    PM800_LDO19, data);
-	}
+			    PM800_LDO19, 0x1);
 
 	/* BUCK enable 0x50, BUCK1, 2, 3, 4 */
 	regmap_write(chip->subchip->regmap_power, 0x50, 0x0f);
@@ -633,17 +746,45 @@ static int pm800_plat_config(struct pm80x_chip *chip,
 	regmap_write(chip->subchip->regmap_power, 0x52, 0x60);
 	regmap_write(chip->subchip->regmap_power, 0x53, 0x06);
 
+	/* Dump power-down log */
+	regmap_read(chip->regmap, PM800_POWER_DOWN_LOG1, &data);
+	pr_info("PowerDW Log1 0x%x: 0x%x\n", PM800_POWER_DOWN_LOG1, data);
+	regmap_read(chip->regmap, PM800_POWER_DOWN_LOG2, &data);
+	pr_info("PowerDW Log2 0x%x: 0x%x\n", PM800_POWER_DOWN_LOG2, data);
+	/* Clear power-down log */
+	regmap_write(chip->regmap, PM800_POWER_DOWN_LOG1, 0xff);
+	regmap_write(chip->regmap, PM800_POWER_DOWN_LOG2, 0xff);
+
+	/* force buck3 at PWM mode */
+	regmap_update_bits(chip->subchip->regmap_power,
+		0x7E, (1 << 6), (1 << 6));
+	regmap_update_bits(chip->subchip->regmap_power,
+		0x7F, (1 << 4), (1 << 4));
+	/* Set buck3 to 1.25V */
+	regmap_write(chip->subchip->regmap_power,
+		     PM800_BUCK3, 0x34);
 	return 0;
 }
 
-static struct pm80x_headset_pdata pm80x_headset = {
-	.headset_flag = 1,
-	.mic_set_power = mic_set_power,
-	.hook_press_th = 60,
-	.vol_up_press_th = 250,
-	.vol_down_press_th = 500,
-	.mic_det_th = 600,
-	.press_release_th = 600,
+static struct pm80x_headset_pdata pm80x_headset[] = {
+	{
+		.headset_flag = 1,
+		.mic_set_power = mic_set_power,
+		.hook_press_th = 60,
+		.vol_up_press_th = 250,
+		.vol_down_press_th = 500,
+		.mic_det_th = 600,
+		.press_release_th = 600,
+	},
+	{
+		.headset_flag = 1,
+		.mic_set_power = mic_set_power,
+		.hook_press_th = 20,
+		.vol_up_press_th = 110,
+		.vol_down_press_th = 230,
+		.mic_det_th = 600,
+		.press_release_th = 600,
+	},
 };
 
 static struct pm80x_vibrator_pdata vibrator_pdata = {
@@ -651,7 +792,6 @@ static struct pm80x_vibrator_pdata vibrator_pdata = {
 };
 
 static struct pm80x_platform_data pm800_info = {
-	.headset = &pm80x_headset,
 	.power_page_addr = 0x31,	/* POWER */
 	.gpadc_page_addr = 0x32,	/* GPADC */
 	.test_page_addr = 0x37,		/* TEST */
@@ -674,24 +814,26 @@ static struct pm80x_platform_data pm805_info = {
 #if defined(CONFIG_TOUCHSCREEN_FT5306)
 static int ft5306_touch_io_power_onoff(struct device *dev, int on)
 {
-	static struct regulator *v_ldo8;
+	static struct regulator *v_ldo;
 
-	if (!v_ldo8) {
-		v_ldo8 = regulator_get(dev, "v_ldo8");
-		if (IS_ERR(v_ldo8)) {
-			v_ldo8 = NULL;
-			pr_err("%s: enable v_ldo8 for touch fail!\n", __func__);
+	if (!v_ldo) {
+		if (board_id == VER_T7)
+			v_ldo = regulator_get(dev, "v_ldo15");
+		else
+			v_ldo = regulator_get(dev, "v_ldo8");
+		if (IS_ERR(v_ldo)) {
+			v_ldo = NULL;
+			pr_err("%s: enable v_ldo for touch fail!\n", __func__);
 			return -EIO;
 		}
 	}
 
 	if (on) {
-		regulator_set_voltage(v_ldo8, 3100000, 3100000);
-		regulator_enable(v_ldo8);
+		regulator_set_voltage(v_ldo, 3100000, 3100000);
+		regulator_enable(v_ldo);
 	} else
-		regulator_disable(v_ldo8);
+		regulator_disable(v_ldo);
 
-	msleep(100);
 	return 0;
 }
 
@@ -707,11 +849,11 @@ static void ft5306_touch_reset(void)
 	}
 
 	gpio_direction_output(touch_reset, 1);
-	msleep(5);
+	msleep(1);
 	gpio_direction_output(touch_reset, 0);
 	msleep(5);
 	gpio_direction_output(touch_reset, 1);
-	msleep(300);
+	msleep(200);
 	printk(KERN_INFO "ft5306_touch reset done.\n");
 	gpio_free(touch_reset);
 out:
@@ -764,12 +906,20 @@ static int ft5306_set_virtual_key(struct input_dev *input_dev)
 	return 0;
 }
 
-static struct ft5306_touch_platform_data ft5306_touch_data = {
+static struct ft5306_touch_platform_data ft5306_emeidkb_data = {
 	.power = ft5306_touch_io_power_onoff,
 	.reset = ft5306_touch_reset,
 	.abs_x_max = 540,
 	.abs_y_max = 960,
 	.set_virtual_key = ft5306_set_virtual_key,
+};
+
+static struct ft5306_touch_platform_data ft5306_t7dkb_data = {
+	.power = ft5306_touch_io_power_onoff,
+	.reset = ft5306_touch_reset,
+	.abs_x_max = 1024,
+	.abs_y_max = 600,
+	.abs_flag = 2,
 };
 #endif
 
@@ -795,6 +945,11 @@ static void pm800_dvctable_init(void)
 	while (index < 4)
 		vol_table[index++] = lowest_rate * 1000;
 
+	if (board_id == VER_T7) {
+		pm80x_dvc.dvc1 = MFP_PIN_GPIO44;
+		pm80x_dvc.dvc2 = MFP_PIN_GPIO43;
+	}
+
 	pm80x_dvc.vol_val = vol_table;
 	pm80x_dvc.size	= vol_tbsize;
 	return ;
@@ -817,6 +972,17 @@ static struct mpu_platform_data inv_mpu_mmc328x_data = {
 				0, -1, 0,
 				1, 0, 0,
 				0, 0, -1 },
+};
+static struct mpu_platform_data gyro_platform_data_t7 = {
+	.int_config  = 0x10,
+	.set_power      = sensor_set_power,
+	.level_shifter = 0,
+	.orientation = {  0,  1,  0,
+			1,  0,  0,
+			0,  0, -1 },
+	.sec_slave_type = SECONDARY_SLAVE_TYPE_NONE,
+	.key = { 0xec, 0x5c, 0xa6, 0x17, 0x54, 0x3, 0x42, 0x90, 0x74, 0x7e,
+		0x3a, 0x6f, 0xc, 0x2c, 0xdd, 0xb },
 };
 #endif
 
@@ -842,7 +1008,7 @@ static int sensor_set_power(int on)
 	} else {
 		regulator_disable(v_sensor);
 	}
-	msleep(100);
+	msleep(20);
 	return 0;
 }
 #endif
@@ -862,11 +1028,12 @@ struct lps331ap_prs_platform_data lps331ap_plat_data = {
 #endif
 
 #ifdef CONFIG_CHARGER_ISL9226
+/* On emeidkb, the eoc current is decided by Riset2 */
 static struct isl9226_charger_pdata isl9226_data = {
 	.default_input_current = 95,	/*charge current if USB enum fail: mA*/
 	.usb_input_current = 475,	/*USB charger current: mA*/
 	.ac_input_current = 950,	/*AC charger current: mA*/
-	.eoc_current = 100,		/*end of charge current: mA*/
+	.eoc_current = 240,		/*end of charge current: mA*/
 	.prechg_current = 120,		/*pre-charge current: mA */
 	.prechg_voltage = 3000,		/*pre-charge voltage: mV*/
 };
@@ -904,10 +1071,68 @@ static struct i2c_board_info emeidkb_pwr_i2c_info[] = {
 		.type = "ft5306_touch",
 		.addr = 0x39,
 		.irq  = MMP_GPIO_TO_IRQ(mfp_to_gpio(GPIO017_GPIO_TP_INT)),
-		.platform_data	= &ft5306_touch_data,
+		.platform_data	= &ft5306_emeidkb_data,
 	},
 #endif
 };
+
+static struct i2c_board_info t7dkb_pwr_i2c_info[] = {
+	{
+		.type		= "88PM800",
+		.addr		= 0x30,
+		.irq		= IRQ_PXA988_PMIC,
+		.platform_data	= &pm800_info,
+	},
+	{
+		.type = "88PM805",
+		.addr = 0x38,
+		.irq  = MMP_GPIO_TO_IRQ(mfp_to_gpio(GPIO124_GPIO_124)),
+		.platform_data = &pm805_info,
+	},
+};
+
+/* i2c-gpio for t7 */
+static struct i2c_board_info t7dkb_gpio_i2c_info[] = {
+#if defined(CONFIG_TOUCHSCREEN_FT5306)
+	{
+		.type = "ft5306_touch",
+		.addr = 0x38,
+		.irq  = MMP_GPIO_TO_IRQ(mfp_to_gpio(GPIO017_GPIO_TP_INT)),
+		.platform_data	= &ft5306_t7dkb_data,
+	},
+#endif
+};
+
+static struct i2c_gpio_platform_data i2c_gpio_data = {
+	.sda_pin	= mfp_to_gpio(GPIO125_GPIO_SDA),
+	.scl_pin	= mfp_to_gpio(GPIO123_GPIO_SCL),
+	.udelay		= 3,
+	.timeout	= 100,
+};
+
+static struct platform_device i2c_gpio_device = {
+	.name	= "i2c-gpio",
+	.id	= 3,
+	.dev	= {
+		.platform_data = &i2c_gpio_data
+	},
+};
+/* end for i2c-gpio */
+
+/* charger for t7 */
+static struct t7_pdata t7_charger_data = {
+	.chg_int = mfp_to_gpio(GPIO029_GPIO_CHARGER_INT),/* status pin0 */
+	.chg_det = mfp_to_gpio(GPIO030_GPIO_CHARGER_DET),/* status pin1 */
+	.chg_en = mfp_to_gpio(GPIO018_GPIO_CHARGER_EN),	/* ENABLE pin */
+};
+
+static struct platform_device t7_charger_device = {
+	.name	= "t7-charger",
+	.dev	= {
+		.platform_data = &t7_charger_data,
+	},
+};
+/* end for t7-charger */
 
 /* CCIC pin definition */
 #define GPIO079_GPIO_CAM_STROBE		GPIO079_GPIO_79
@@ -938,17 +1163,33 @@ static unsigned long ccic_pin_config[] = {
 
 };
 
-static void pxa988_cam_pin_init(struct device *dev, int on)
+static DEFINE_SPINLOCK(ccic_lock);
+static int ccic_init = 0;
+static int pxa988_cam_pin_init(struct device *dev, int on)
 {
 	unsigned int pin_index = 0;
 
-	if (on)
+	if (on) {
+		spin_lock(&ccic_lock);
+		if (ccic_init) {
+			pr_err("Currently CCIC is in use!\n");
+			spin_unlock(&ccic_lock);
+			return -1;
+		}
+		ccic_init = 1;
+		spin_unlock(&ccic_lock);
 		mfp_config(ARRAY_AND_SIZE(ccic_pin_config));
+	}
 	else {
 		for (pin_index = MFP_PIN_GPIO67;
 				pin_index <= MFP_PIN_GPIO80; pin_index++)
 			mfp_write(pin_index, 0xd0c0);
+		spin_lock(&ccic_lock);
+		ccic_init = 0;
+		spin_unlock(&ccic_lock);
 	}
+
+	return 0;
 }
 
 #ifdef CONFIG_VIDEO_MVISP_OV882X
@@ -1058,32 +1299,65 @@ static struct mvisp_v4l2_subdevs_group dxoisp_subdevs_group[] = {
 #endif
 #ifdef CONFIG_VIDEO_MVISP_SENSOR
 static struct sensor_power_data sensor_pwd_id[] = {
-	{"lsi3h5", mfp_to_gpio(GPIO081_GPIO_CAM_RST_MAIN),
-		mfp_to_gpio(GPIO080_GPIO_CAM_PD_MAIN),
-		 1, 1, "v_cam_af", "v_cam_avdd", 2800000, 2800000},
 	{"ov5647", mfp_to_gpio(GPIO081_GPIO_CAM_RST_MAIN),
 		mfp_to_gpio(GPIO080_GPIO_CAM_PD_MAIN),
 		1, 0, NULL, "v_cam_avdd", 0, 2800000},
+	{"lsi3h5", mfp_to_gpio(GPIO081_GPIO_CAM_RST_MAIN),
+		mfp_to_gpio(GPIO080_GPIO_CAM_PD_MAIN),
+		 1, 1, "v_cam_af", "v_cam_avdd", 2800000, 2800000},
+	{"lsi3h7", mfp_to_gpio(GPIO081_GPIO_CAM_RST_MAIN),
+		mfp_to_gpio(GPIO080_GPIO_CAM_PD_MAIN),
+		 1, 1, "v_cam_af", "v_cam_avdd", 2800000, 2800000},
+	{"s5k4e1", mfp_to_gpio(GPIO081_GPIO_CAM_RST_MAIN),
+		mfp_to_gpio(GPIO080_GPIO_CAM_PD_MAIN),
+		1, 1, NULL, "v_cam_avdd", 0, 2800000},
+	{"ov12830", mfp_to_gpio(GPIO081_GPIO_CAM_RST_MAIN),
+		 mfp_to_gpio(GPIO080_GPIO_CAM_PD_MAIN),
+		1, 1, NULL, "v_cam_avdd", 0, 2800000},
+	{"ov8850", mfp_to_gpio(GPIO081_GPIO_CAM_RST_MAIN),
+		mfp_to_gpio(GPIO080_GPIO_CAM_PD_MAIN),
+		1, 1, "v_cam_af", "v_cam_avdd", 2800000, 2800000},
 	{"ov8825", mfp_to_gpio(GPIO081_GPIO_CAM_RST_MAIN),
 		mfp_to_gpio(GPIO080_GPIO_CAM_PD_MAIN),
 		1, 1, "v_cam_af", "v_cam_avdd", 2800000, 2800000},
 	{"ov8820", mfp_to_gpio(GPIO081_GPIO_CAM_RST_MAIN),
 		 mfp_to_gpio(GPIO080_GPIO_CAM_PD_MAIN),
 		1, 1, "v_cam_af", "v_cam_avdd", 2800000, 2800000},
+	{"hi542", mfp_to_gpio(GPIO081_GPIO_CAM_RST_MAIN),
+		mfp_to_gpio(GPIO080_GPIO_CAM_PD_MAIN),
+		1, 1, "v_cam_af", "v_cam_avdd", 2800000, 2800000},
 };
 static struct sensor_type sensor_id[] = {
-	{REG_PIDH_VALUE_LSI, "lsi3h5", REG_NUM_2,
-		{REG_PIDH_LSI, REG_PIDM_LSI, REG_PIDL_LSI},
-		{REG_PIDH_VALUE_LSI, REG_PIDM_VALUE_LSI, REG_PIDL_VALUE} },
 	{REG_PIDM_VALUE_5647, "ov5647", REG_NUM_2,
 		{REG_PIDH, REG_PIDM, REG_PIDL},
 		{REG_PIDH_VALUE_5647, REG_PIDM_VALUE_5647, REG_PIDL_VALUE} },
+	{REG_PIDH_VALUE_LSI3H5, "lsi3h5", REG_NUM_2,
+		{REG_PIDH_LSI3H5, REG_PIDM_LSI3H5, REG_PIDL_LSI3H5},
+		{REG_PIDH_VALUE_LSI3H5, REG_PIDM_VALUE_LSI3H5,
+		REG_PIDL_VALUE} },
+	{REG_PIDH_VALUE_LSI3H7, "lsi3h7", REG_NUM_2,
+		{REG_PIDH_LSI3H7, REG_PIDM_LSI3H7, REG_PIDL_LSI3H7},
+		{REG_PIDH_VALUE_LSI3H7, REG_PIDM_VALUE_LSI3H7,
+		REG_PIDL_VALUE} },
+	{REG_PIDM_VALUE_S5K4E1, "s5k4e1", REG_NUM_2,
+		{REG_PIDH_S5K4E1, REG_PIDM_S5K4E1, REG_PIDL},
+		{REG_PIDH_VALUE_S5K4E1, REG_PIDM_VALUE_S5K4E1,
+		 REG_PIDL_VALUE} },
+	{REG_PIDM_VALUE_12830, "ov12830", REG_NUM_2,
+		{REG_PIDH, REG_PIDM, REG_PIDL},
+		{REG_PIDH_VALUE_12830, REG_PIDM_VALUE_12830,
+		REG_PIDL_VALUE_12830} },
+	{REG_PIDM_VALUE_8850, "ov8850", REG_NUM_2,
+		{REG_PIDH, REG_PIDM, REG_PIDL},
+		{REG_PIDH_VALUE, REG_PIDM_VALUE_8850, REG_PIDL_VALUE} },
 	{REG_PIDM_VALUE_8825, "ov8825", REG_NUM_2,
 		{REG_PIDH, REG_PIDM, REG_PIDL},
 		{REG_PIDH_VALUE, REG_PIDM_VALUE_8825, REG_PIDL_VALUE} },
 	{REG_PIDM_VALUE_8820, "ov8820", REG_NUM_2,
 		{REG_PIDH, REG_PIDM, REG_PIDL},
 		{REG_PIDH_VALUE, REG_PIDM_VALUE_8820, REG_PIDL_VALUE} },
+	{REG_PIDH_VALUE_HI542, "hi542", REG_NUM_1,
+		{REG_PIDH_HI542}, {REG_PIDH_VALUE_HI542} }
 };
 static struct sensor_platform_data sensor_platdata = {
 	.sensor_pwd = sensor_pwd_id,
@@ -1092,11 +1366,29 @@ static struct sensor_platform_data sensor_platdata = {
 	.flash_enable = mfp_to_gpio(GPIO020_GPIO_FLASH_EN),
 	.chip_ident_id = chip_ident_id,
 };
+
+static struct i2c_board_info s5k4e1_info = {
+	.type = "sensor",
+	.addr = 0x37,
+	.platform_data = &sensor_platdata,
+};
+static struct i2c_board_info ov1208_info = {
+	.type = "sensor",
+	.addr = 0x36,
+	.platform_data = &sensor_platdata,
+};
 static struct i2c_board_info ov882x_info = {
 	.type = "sensor",
 	.addr = 0x36,
 	.platform_data = &sensor_platdata,
 };
+
+static struct i2c_board_info ov8850_info = {
+	.type = "sensor",
+	.addr = 0x36,
+	.platform_data = &sensor_platdata,
+};
+
 static struct i2c_board_info ov5647_info = {
 	.type = "sensor",
 	.addr = 0x36,
@@ -1107,10 +1399,41 @@ static struct i2c_board_info lsi3h5_info = {
 	.addr = 0x2D,
 	.platform_data = &sensor_platdata,
 };
+static struct i2c_board_info lsi3h7_info = {
+	.type = "sensor",
+	.addr = 0x10,
+	.platform_data = &sensor_platdata,
+};
+
+static struct i2c_board_info hi542_info = {
+	.type = "sensor",
+	.addr = 0x20,
+	.platform_data = &sensor_platdata,
+};
 
 static struct mvisp_subdev_i2c_board_info sensor_isp_info[] = {
 	{
+		.board_info = &ov5647_info,
+		.i2c_adapter_id = 0,
+	},
+	{
 		.board_info = &lsi3h5_info,
+		.i2c_adapter_id = 0,
+	},
+	{
+		.board_info = &lsi3h7_info,
+		.i2c_adapter_id = 0,
+	},
+	{
+		.board_info = &s5k4e1_info,
+		.i2c_adapter_id = 0,
+	},
+	{
+		.board_info = &ov1208_info,
+		.i2c_adapter_id = 0,
+	},
+	{
+		.board_info = &ov8850_info,
 		.i2c_adapter_id = 0,
 	},
 	{
@@ -1118,7 +1441,7 @@ static struct mvisp_subdev_i2c_board_info sensor_isp_info[] = {
 		.i2c_adapter_id = 0,
 	},
 	{
-		.board_info = &ov5647_info,
+		.board_info = &hi542_info,
 		.i2c_adapter_id = 0,
 	},
 };
@@ -1126,6 +1449,7 @@ static struct mvisp_subdev_i2c_board_info sensor_isp_info[] = {
 static struct vcm_platform_data dw9714l_platdata = {
 	.power_domain = "v_cam_af",
 	.pwdn_gpio = mfp_to_gpio(GPIO080_GPIO_CAM_PD_MAIN),
+	.pwdn_en = 0,
 };
 
 static struct i2c_board_info dw9714l_info = {
@@ -1134,10 +1458,22 @@ static struct i2c_board_info dw9714l_info = {
 	.platform_data = &dw9714l_platdata,
 };
 #endif
+#ifdef CONFIG_VIDEO_VCM_AD5823
+static struct vcm_platform_data ad5823_platdata = {
+	.power_domain = "v_cam_af",
+	.pwdn_gpio = mfp_to_gpio(GPIO080_GPIO_CAM_PD_MAIN),
+	.pwdn_en = 1,
+};
+
+static struct i2c_board_info ad5823_info = {
+	.type = "ad5823",
+	.addr = 0x0c,
+	.platform_data = &ad5823_platdata,
+};
+#endif
 #ifdef CONFIG_VIDEO_VCM_AK7343
 static struct vcm_platform_data ak7343_platdata = {
 	.power_domain = "v_cam_af",
-	.pwdn_gpio = mfp_to_gpio(GPIO080_GPIO_CAM_PD_MAIN),
 };
 
 static struct i2c_board_info ak7343_info = {
@@ -1150,6 +1486,12 @@ static struct mvisp_subdev_i2c_board_info vcm_isp_info[] = {
 #ifdef CONFIG_VIDEO_VCM_DW9714L
 	{
 		.board_info = &dw9714l_info,
+		.i2c_adapter_id = 0,
+	},
+#endif
+#ifdef CONFIG_VIDEO_VCM_AD5823
+	{
+		.board_info = &ad5823_info,
 		.i2c_adapter_id = 0,
 	},
 #endif
@@ -1196,22 +1538,17 @@ static struct mvisp_v4l2_subdevs_group dxoisp_subdevs_group[] = {
 };
 #endif
 
-static char *pxa988_isp_ccic_clk_name[] = {
-	[0] = "ISP-CLK",
-	[1] = "CCICPHYCLK",
-	[2] = "CCICFUNCLK",
-};
-
 static struct mvisp_platform_data pxa988_dxoisp_pdata = {
-	.isp_clknum       = 1,
-	.ccic_clknum      = 2,
-	.clkname          = pxa988_isp_ccic_clk_name,
 	.mvisp_reset      = pxa988_isp_reset_hw,
 	.isp_pwr_ctrl     = pxa988_isp_power_control,
 	.init_pin         = pxa988_cam_pin_init,
 	.subdev_group     = dxoisp_subdevs_group,
 	.ccic_dummy_ena   = false,
 	.ispdma_dummy_ena = false,
+	.isp_clk_rate_num  = 2,
+	.isp_clk_rate      = {312, 416},
+	.ccic_clk_rate_num = 2,
+	.ccic_clk_rate     = {312, 416},
 };
 
 static void __init pxa988_init_dxoisp(void)
@@ -1221,7 +1558,62 @@ static void __init pxa988_init_dxoisp(void)
 }
 #endif
 
+#ifdef CONFIG_ST21NFCA
+static struct st21nfca_i2c_platform_data st21nfca = {
+	.irq_gpio       = mfp_to_gpio(MFP_PIN_GPIO94),
+	.ena_gpio       = mfp_to_gpio(MFP_PIN_GPIO15),
+	.polarity_mode  = IRQF_TRIGGER_FALLING,
+};
+#endif
+
+#if defined(CONFIG_TC35876X)
+static int tc358765_init(void)
+{
+	return 0;
+}
+
+static struct tc35876x_platform_data tc358765_data = {
+	.platform_init = tc358765_init,
+	.id = TC358765_CHIPID,
+	.id_reg = TC358765_CHIPID_REG,
+};
+#endif
+
 static struct i2c_board_info emeidkb_i2c_info[] = {
+#ifdef CONFIG_ST21NFCA
+	{
+		.type		= "st21nfca",
+		.addr		= 0x1,
+		.platform_data	= &st21nfca,
+		.flags		= I2C_CLIENT_WAKE,
+	},
+#endif
+};
+
+static struct i2c_board_info t7_i2c_info[] = {
+#ifdef CONFIG_ST21NFCA
+	{
+		.type		= "st21nfca",
+		.addr		= 0x1,
+		.platform_data	= &st21nfca,
+		.flags		= I2C_CLIENT_WAKE,
+	},
+#endif
+#if defined(CONFIG_TC35876X)
+	{
+		.type           = "tc35876x",
+		.addr           = 0x0f,
+		.platform_data  = &tc358765_data,
+	},
+#endif
+#if defined(CONFIG_SENSORS_ISL29043)
+	{
+		.type		= "isl29043",
+		.addr		= 0x44,
+		.irq = MMP_GPIO_TO_IRQ(mfp_to_gpio(GPIO014_GPIO_PROX_IRQ)),
+		.platform_data	= &isl29043_plat_data,
+	},
+#endif
 };
 
 static struct i2c_board_info emeidkb_i2c2_info[] = {
@@ -1251,6 +1643,17 @@ static struct i2c_board_info emeidkb_i2c2_info[] = {
 		.type       = "mmc328x",
 		.addr       = 0x30,
 		.platform_data = &inv_mpu_mmc328x_data,
+	},
+#endif
+};
+
+static struct i2c_board_info t7_i2c2_info[] = {
+#if defined(CONFIG_INV_MPU_IIO)
+	{
+		.type       = "mpu6050",
+		.addr       = 0x68,
+		.irq = MMP_GPIO_TO_IRQ(mfp_to_gpio(GPIO095_GPIO_MOTION_INT)),
+		.platform_data = &gyro_platform_data_t7,
 	},
 #endif
 };
@@ -1359,9 +1762,12 @@ static struct i2c_pxa_platform_data emeidkb_pwr_i2c_pdata = {
 	.hardware_trylock	= pxa988_ripc_trylock,
 };
 
+static DEFINE_SPINLOCK(bl_lock);
+
 static void emei_dkb_set_bl(int intensity)
 {
 	int gpio_bl, bl_level, p_num;
+	unsigned long flags;
 	/*
 	 * FIXME
 	 * the initial value of bl_level_last is the
@@ -1398,9 +1804,11 @@ static void emei_dkb_set_bl(int intensity)
 		p_num = bl_level + 32 - bl_level_last;
 
 	while (p_num--) {
+		spin_lock_irqsave(&bl_lock, flags);
 		gpio_direction_output(gpio_bl, 0);
 		udelay(1);
 		gpio_direction_output(gpio_bl, 1);
+		spin_unlock_irqrestore(&bl_lock, flags);
 		udelay(1);
 	}
 
@@ -1414,7 +1822,7 @@ set_bl_return:
 }
 
 static struct generic_bl_info emei_dkb_lcd_backlight_data = {
-	.name = "emei-bl",
+	.name = "lcd-bl",
 	.max_intensity = 100,
 	.default_intensity = 50,
 	.set_bl_intensity = emei_dkb_set_bl,
@@ -1424,6 +1832,23 @@ static struct platform_device emei_dkb_lcd_backlight_devices = {
 	.name = "generic-bl",
 	.dev = {
 		.platform_data = &emei_dkb_lcd_backlight_data,
+	},
+};
+
+static struct platform_pwm_backlight_data t7_lcd_backlight_data = {
+	/* primary backlight */
+	.name = "lcd-bl",
+	.pwm_id = 4,
+	.max_brightness = 100,
+	.dft_brightness = 50,
+	.pwm_period_ns = 2000000,
+};
+
+static struct platform_device t7_lcd_backlight_devices = {
+	.name = "pwm-backlight",
+	.id = 0,
+	.dev = {
+		.platform_data = &t7_lcd_backlight_data,
 	},
 };
 
@@ -1510,6 +1935,7 @@ static void emeidkb_8787_set_power(unsigned int on)
 	static struct regulator *wib_1v8;
 	static struct regulator *wib_3v3;
 	static int enabled;
+	unsigned char data;
 
 	/* LDO9 = 1.8V/300mA Off by default; LDO6 = 2.8V/300mA Off by default */
 	if (!wib_1v8) {
@@ -1535,15 +1961,29 @@ static void emeidkb_8787_set_power(unsigned int on)
 	if (on && !enabled) {
 		regulator_set_voltage(wib_1v8, 1800000, 1800000);
 		regulator_enable(wib_1v8);
-		regulator_set_voltage(wib_3v3, 2800000, 2800000);
+		regulator_set_voltage(wib_3v3, 3300000, 3300000);
 		regulator_enable(wib_3v3);
 		enabled = 1;
 
 		/* Only when SD8787 are active (power on),
 		 * it is meanful to enable the edge wakeup
 		 */
-		if (cpu_pxa98x_stepping() < PXA98X_Z3 || cpu_is_pxa986_z3())
+		if (has_feat_sdio_edge_wakeup_only())
 			mmp_gpio_edge_add(&gpio_edge_sdio_dat1);
+
+		/*
+		 * Disable VBUCK2's sleep mode, allow big current output
+		 * even system enter to suspend
+		 * As SD8787 use it as 1.8V supply, it would still work
+		 * druing suspend and need much current
+		 *
+		 * TODO: this is HW design relate, need to modify if HW is
+		 * different as DKB
+		 */
+		data = pm800_extern_read(PM80X_POWER_PAGE, PM800_BUCK_SLP1);
+		data = (data & ~PM800_BUCK2_SLP1_MASK) |
+			(PM800_BUCK_SLP_PWR_ACT2 << PM800_BUCK2_SLP1_SHIFT);
+		pm800_extern_write(PM80X_POWER_PAGE, PM800_BUCK_SLP1, data);
 	}
 
 	if (!on && enabled) {
@@ -1551,36 +1991,175 @@ static void emeidkb_8787_set_power(unsigned int on)
 		regulator_disable(wib_3v3);
 		enabled = 0;
 
-		if (cpu_pxa98x_stepping() < PXA98X_Z3 || cpu_is_pxa986_z3())
+		if (has_feat_sdio_edge_wakeup_only())
 			mmp_gpio_edge_del(&gpio_edge_sdio_dat1);
+
+		/*
+		 * Enable VBUCK2's sleep mode again (Only 5mA ability)
+		 * If SD8787 is power off, VBUCK2 sleep mode has not side
+		 * impact to Sd8787, but has benifit to whole power consumption
+		 */
+		data = pm800_extern_read(PM80X_POWER_PAGE, PM800_BUCK_SLP1);
+		data = (data & ~PM800_BUCK2_SLP1_MASK) |
+			(PM800_BUCK_SLP_PWR_LOW << PM800_BUCK2_SLP1_SHIFT);
+		pm800_extern_write(PM80X_POWER_PAGE, PM800_BUCK_SLP1, data);
 	}
 }
 #endif
 
+static struct sdhci_pxa_dtr_data sd_dtr_data[] = {
+	{
+		.timing		= MMC_TIMING_LEGACY, /* < 25MHz */
+		.preset_rate	= PXA_SDH_DTR_26M,
+		.src_rate	= PXA_SDH_DTR_52M,
+	},
+	{
+		.timing		= MMC_TIMING_UHS_SDR12, /* 25MHz */
+		.preset_rate	= PXA_SDH_DTR_26M,
+		.src_rate	= PXA_SDH_DTR_104M,
+	},
+	{
+		.timing		= MMC_TIMING_UHS_SDR25, /* 50MHz */
+		.preset_rate	= PXA_SDH_DTR_52M,
+		.src_rate	= PXA_SDH_DTR_104M,
+	},
+	{
+		.timing		= MMC_TIMING_SD_HS, /* 50MHz */
+		.preset_rate	= PXA_SDH_DTR_52M,
+		.src_rate	= PXA_SDH_DTR_104M,
+	},
+	{
+		.timing		= MMC_TIMING_UHS_DDR50, /* 50MHz */
+		.preset_rate	= PXA_SDH_DTR_52M,
+		.src_rate	= PXA_SDH_DTR_104M,
+	},
+	{
+		.timing		= MMC_TIMING_UHS_SDR50, /* 100MHz */
+		.preset_rate	= PXA_SDH_DTR_104M,
+		.src_rate	= PXA_SDH_DTR_208M,
+	},
+	{
+		.timing		= MMC_TIMING_UHS_SDR104, /* 208MHz */
+		.preset_rate	= PXA_SDH_DTR_208M,
+		.src_rate	= PXA_SDH_DTR_416M,
+	},
+		/*
+		 * end of sdhc dtr table
+		 * set as the default src rate
+		 */
+	{
+		.timing		= MMC_TIMING_MAX,
+		.preset_rate	= PXA_SDH_DTR_PS_NONE,
+		.src_rate	= PXA_SDH_DTR_208M,
+	},
+};
+
+static struct sdhci_pxa_dtr_data sdio_dtr_data[] = {
+	{
+		.timing		= MMC_TIMING_LEGACY, /* < 25MHz */
+		.preset_rate	= PXA_SDH_DTR_26M,
+		.src_rate	= PXA_SDH_DTR_52M,
+	},
+	{
+		.timing		= MMC_TIMING_UHS_SDR12, /* 25MHz */
+		.preset_rate	= PXA_SDH_DTR_26M,
+		.src_rate	= PXA_SDH_DTR_104M,
+	},
+	{
+		.timing		= MMC_TIMING_UHS_SDR25, /* 50MHz */
+		.preset_rate	= PXA_SDH_DTR_52M,
+		.src_rate	= PXA_SDH_DTR_104M,
+	},
+	{
+		.timing		= MMC_TIMING_SD_HS, /* 50MHz */
+		.preset_rate	= PXA_SDH_DTR_45M,
+		.src_rate	= PXA_SDH_DTR_89M,
+	},
+	{
+		.timing		= MMC_TIMING_UHS_DDR50, /* 50MHz */
+		.preset_rate	= PXA_SDH_DTR_52M,
+		.src_rate	= PXA_SDH_DTR_104M,
+	},
+	{
+		.timing		= MMC_TIMING_UHS_SDR50, /* 100MHz */
+		.preset_rate	= PXA_SDH_DTR_104M,
+		.src_rate	= PXA_SDH_DTR_208M,
+	},
+	{
+		.timing		= MMC_TIMING_UHS_SDR104, /* 208MHz */
+		.preset_rate	= PXA_SDH_DTR_208M,
+		.src_rate	= PXA_SDH_DTR_416M,
+	},
+	{
+		.timing		= MMC_TIMING_MAX,
+		.preset_rate	= PXA_SDH_DTR_PS_NONE,
+		.src_rate	= PXA_SDH_DTR_89M,
+	},
+};
+static struct sdhci_pxa_dtr_data emmc_dtr_data[] = {
+	{
+		.timing		= MMC_TIMING_LEGACY, /* < 25MHz */
+		.preset_rate	= PXA_SDH_DTR_26M,
+		.src_rate	= PXA_SDH_DTR_52M,
+	},
+	{
+		.timing		= MMC_TIMING_MMC_HS, /* 50MHz */
+		.preset_rate	= PXA_SDH_DTR_52M,
+		.src_rate	= PXA_SDH_DTR_104M,
+	},
+	{
+		.timing		= MMC_TIMING_UHS_DDR50, /* 50MHz */
+		.preset_rate	= PXA_SDH_DTR_52M,
+		.src_rate	= PXA_SDH_DTR_104M,
+	},
+	{
+		.timing		= MMC_TIMING_MMC_HS200, /* 208MHz */
+		.preset_rate	= PXA_SDH_DTR_156M,
+		.src_rate	= PXA_SDH_DTR_156M,
+	},
+	{
+		.timing		= MMC_TIMING_MAX,
+		.preset_rate	= PXA_SDH_DTR_PS_NONE,
+		.src_rate	= PXA_SDH_DTR_208M,
+	},
+};
+
+
+
 /* For emeiDKB, MMC1(SDH1) used for SD/MMC Card slot */
 static struct sdhci_pxa_platdata pxa988_sdh_platdata_mmc1 = {
-	.flags		= PXA_FLAG_ENABLE_CLOCK_GATING,
+	.flags		= PXA_FLAG_ENABLE_CLOCK_GATING
+				| PXA_FLAG_NEW_RX_CFG_REG,
 	.cd_type	 = PXA_SDHCI_CD_HOST,
-	.clk_delay_cycles	= 0x1F,
+	.clk_delay_cycles	= 0x0,
 	.host_caps_disable	= MMC_CAP_UHS_SDR104,
 	.quirks			= SDHCI_QUIRK_INVERTED_WRITE_PROTECT,
 	.signal_vol_change	= emeidkb_sdcard_signal,
+	.dtr_data		= sd_dtr_data,
 };
 
 /* For emeiDKB, MMC2(SDH2) used for WIB card */
 static struct sdhci_pxa_platdata pxa988_sdh_platdata_mmc2 = {
-	.flags          = PXA_FLAG_WAKEUP_HOST,
+	.flags          = PXA_FLAG_WAKEUP_HOST
+				| PXA_FLAG_EN_PM_RUNTIME
+				| PXA_FLAG_DISABLE_PROBE_CDSCAN
+				| PXA_FLAG_NEW_RX_CFG_REG,
 	.cd_type	 = PXA_SDHCI_CD_EXTERNAL,
+	.clk_delay_cycles	= 0x0,
 	.pm_caps	= MMC_PM_KEEP_POWER,
+	.dtr_data	= sdio_dtr_data,
 };
 
 /* For emeiDKB, MMC3(SDH3) used for eMMC */
 static struct sdhci_pxa_platdata pxa988_sdh_platdata_mmc3 = {
 	.flags		= PXA_FLAG_ENABLE_CLOCK_GATING
-				| PXA_FLAG_SD_8_BIT_CAPABLE_SLOT,
+				| PXA_FLAG_SD_8_BIT_CAPABLE_SLOT
+				| PXA_FLAG_EN_PM_RUNTIME
+				| PXA_FLAG_NEW_RX_CFG_REG,
 	.cd_type	 = PXA_SDHCI_CD_PERMANENT,
-	.clk_delay_cycles	= 0xF,
+	.clk_delay_cycles	= 0x0,
 	.host_caps	= MMC_CAP_1_8V_DDR,
+	.dtr_data	= emmc_dtr_data,
 };
 
 static void __init emeidkb_init_mmc(void)
@@ -1610,14 +2189,22 @@ static void __init emeidkb_init_mmc(void)
 	 */
 
 	/* HW MMC3(sdh3) used for eMMC, and register first */
+	if (board_id == VER_T7)
+		pxa988_sdh_platdata_mmc3.clk_delay_cycles = 0xF;
+
 	pxa988_add_sdh(3, &pxa988_sdh_platdata_mmc3);
 
 	/* HW MMC1(sdh1) used for SD/MMC card */
-	if (board_id == VER_1V1) {
+	if (board_id == VER_1V1 || board_id == VER_T7) {
+		pxa988_sdh_platdata_mmc1.flags	 = PXA_FLAG_EN_PM_RUNTIME
+				| PXA_FLAG_ENABLE_CLOCK_GATING
+				| PXA_FLAG_NEW_RX_CFG_REG;
 		pxa988_sdh_platdata_mmc1.cd_type = PXA_SDHCI_CD_GPIO;
 		pxa988_sdh_platdata_mmc1.ext_cd_gpio =
 				mfp_to_gpio(GPIO091_GPIO_91);
 	}
+	if (board_id == VER_T7)
+		pxa988_sdh_platdata_mmc1.clk_delay_cycles = 0x1F;
 	pxa988_add_sdh(1, &pxa988_sdh_platdata_mmc1);
 
 	/* HW MMC2(sdh2) used for SDIO(WIFI/BT/FM module), and register last */
@@ -1836,6 +2423,11 @@ static struct spi_board_info spi_board_info[] __initdata = {
 	},
 };
 
+static struct platform_device inno_demod = {
+	.name   = "inno-demod",
+	.id     = -1,
+};
+
 static void __init emeidkb_init_spi(void)
 {
 	int err;
@@ -1861,7 +2453,7 @@ static void __init emeidkb_init_spi(void)
 	}
 	gpio_direction_input(cmmb_int);
 	gpio_free(cmmb_int);
-
+	platform_device_register(&inno_demod);
 	pxa988_add_ssp(0);
 	pxa988_add_spi(1, &pxa_ssp_master_info);
 	if (spi_register_board_info(spi_board_info,
@@ -1873,101 +2465,72 @@ static void __init emeidkb_init_spi(void)
 #endif /* defined CONFIG_CMMB */
 
 #if defined(CONFIG_VIDEO_MMP)
-static int pxa988_cam_clk_init(struct device *dev, int init)
+static int pxa988_cam_clk_init(struct device *dev)
 {
 	struct mmp_cam_pdata *data = dev->platform_data;
+	int ret;
 
-	if ((!data->clk_enabled) && init) {
-		data->clk[0] = clk_get(dev, "CCICFUNCLK");
-		if (IS_ERR(data->clk[0])) {
-			dev_err(dev, "Could not get function clk\n");
-			goto out_clk0;
-		}
-		data->clk[1] = clk_get(dev, "CCICAXICLK");
-		if (IS_ERR(data->clk[1])) {
-			dev_err(dev, "Could not get AXI clk\n");
-			goto out_clk1;
-		}
-		data->clk[2] = clk_get(dev, "LCDCIHCLK");
-		if (IS_ERR(data->clk[2])) {
-			dev_err(dev, "Could not get lcd/ccic AHB clk\n");
-			goto out_clk2;
-		}
-		if (data->bus_type == V4L2_MBUS_CSI2_LANES) {
-			data->clk[3] = clk_get(dev, "CCICPHYCLK");
-			if (IS_ERR(data->clk[3])) {
-				dev_err(dev, "Could not get PHY clk\n");
-				goto out_clk3;
-			}
-		}
-		data->clk_enabled = 1;
-		return 0;
+	data->clk[0] = devm_clk_get(dev, "CCICFUNCLK");
+	if (IS_ERR(data->clk[0])) {
+		dev_err(dev, "Could not get function clk\n");
+		ret = PTR_ERR(data->clk[0]);
+		return ret;
 	}
 
-	if (!init && data->clk_enabled) {
-		clk_put(data->clk[0]);
-		clk_put(data->clk[1]);
-		clk_put(data->clk[2]);
-		if (data->bus_type == V4L2_MBUS_CSI2_LANES)
-			clk_put(data->clk[3]);
-		data->clk_enabled = 0;
-		return 0;
+	data->clk[1] = devm_clk_get(dev, "CCICAXICLK");
+	if (IS_ERR(data->clk[1])) {
+		dev_err(dev, "Could not get AXI clk\n");
+		ret = PTR_ERR(data->clk[1]);
+		return ret;
 	}
-	return -EFAULT;
 
-out_clk0:
-		return PTR_ERR(data->clk[0]);
-out_clk1:
-		clk_put(data->clk[0]);
-		return PTR_ERR(data->clk[1]);
-out_clk2:
-		clk_put(data->clk[0]);
-		clk_put(data->clk[1]);
-		return PTR_ERR(data->clk[2]);
-out_clk3:
-		clk_put(data->clk[0]);
-		clk_put(data->clk[1]);
-		clk_put(data->clk[2]);
-		return PTR_ERR(data->clk[3]);
+	data->clk[2] = devm_clk_get(dev, "LCDCIHCLK");
+	if (IS_ERR(data->clk[2])) {
+		dev_err(dev, "Could not get lcd/ccic AHB clk\n");
+		ret = PTR_ERR(data->clk[2]);
+		return ret;
+	}
+
+	data->clk[3] = devm_clk_get(dev, "CCICPHYCLK");
+	if (IS_ERR(data->clk[3])) {
+		dev_err(dev, "Could not get PHY clk\n");
+		ret = PTR_ERR(data->clk[3]);
+		return ret;
+	}
+
+	return 0;
 }
 
 static void pxa988_cam_set_clk(struct device *dev, int on)
 {
 	struct mmp_cam_pdata *data = dev->platform_data;
+	int mipi = on & MIPI_ENABLE;
 
-	if (data->clk_enabled) {
-		if (on == 1) {
-			clk_enable(data->clk[1]);
-			clk_enable(data->clk[0]);
-			if (data->bus_type == V4L2_MBUS_CSI2_LANES)
-				clk_enable(data->clk[3]);
-			clk_enable(data->clk[2]);
-		} else {
-			clk_disable(data->clk[0]);
-			if (data->bus_type == V4L2_MBUS_CSI2_LANES)
-				clk_disable(data->clk[3]);
-			clk_disable(data->clk[1]);
-			clk_disable(data->clk[2]);
-		}
+	on &= POWER_ON;
+	if (on) {
+		clk_enable(data->clk[2]);
+		clk_enable(data->clk[1]);
+		clk_enable(data->clk[0]);
+		if (mipi)
+			clk_enable(data->clk[3]);
+	} else {
+		if (mipi)
+			clk_disable(data->clk[3]);
+		clk_disable(data->clk[0]);
+		clk_disable(data->clk[1]);
+		clk_disable(data->clk[2]);
 	}
 }
 
 struct mmp_cam_pdata mv_cam_data = {
 	.name = "EMEI",
-	.clk_enabled = 0,
 	.dma_burst = 64,
-	.mipi_enabled = 0,
 	.mclk_min = 24,
 	.mclk_src = 3,
 	.mclk_div = 13,
 	.init_pin = pxa988_cam_pin_init,
 	.init_clk = pxa988_cam_clk_init,
 	.enable_clk = pxa988_cam_set_clk,
-#if defined(CONFIG_SOC_CAMERA_OV5640) || defined(CONFIG_SOC_CAMERA_OV5640_ECS)
-	.bus_type = V4L2_MBUS_CSI2_LANES,
-	.dphy = {0x0D06, 0x33, 0x0900},
-	.lane = 2,
-#endif
 };
 #endif
 
@@ -1978,6 +2541,12 @@ static struct i2c_board_info dkb_i2c_camera[] = {
 	{
 		I2C_BOARD_INFO("ov5640", 0x3c),
 	},
+	{
+		I2C_BOARD_INFO("gc2035", 0x3c),
+	},
+	{
+		I2C_BOARD_INFO("gc0328", 0x21),
+	},
 };
 
 #if defined(CONFIG_SOC_CAMERA_OV2659)
@@ -1985,7 +2554,9 @@ static int ov2659_sensor_power(struct device *dev, int on)
 {
 	unsigned int cam_pwr;
 	unsigned int cam_reset;
+	int ret = 0;
 	static struct regulator *v_sensor;
+	static struct regulator *af_vcc;
 
 	if (!v_sensor) {
 		v_sensor = regulator_get(dev, "v_cam_avdd");
@@ -1996,6 +2567,14 @@ static int ov2659_sensor_power(struct device *dev, int on)
 		}
 	}
 
+	if (!af_vcc) {
+		af_vcc = regulator_get(dev, "v_cam_af");
+		if (IS_ERR(af_vcc)) {
+			ret = -EIO;
+			goto out_af_vcc;
+		}
+	}
+
 	cam_pwr = mfp_to_gpio(GPIO082_GPIO_CAM_PD_SUB);
 	cam_reset = mfp_to_gpio(GPIO083_GPIO_CAM_RST_SUB);
 
@@ -2003,16 +2582,20 @@ static int ov2659_sensor_power(struct device *dev, int on)
 		if (gpio_request(cam_pwr, "CAM_PWR")) {
 			printk(KERN_ERR "Request GPIO failed,"
 					"gpio: %d\n", cam_pwr);
-			return -EIO;
+			ret = -EIO;
+			goto out_pwr;
 		}
 	}
 	if (gpio_request(cam_reset, "CAM_RESET")) {
 		printk(KERN_ERR "Request GPIO failed,"
 			"gpio: %d\n", cam_reset);
-		return -EIO;
+			ret = -EIO;
+			goto out_rst;
 	}
 
 	if (on) {
+		regulator_set_voltage(af_vcc, 2800000, 2800000);
+		regulator_enable(af_vcc);
 		regulator_set_voltage(v_sensor, 2800000, 2800000);
 		regulator_enable(v_sensor);
 		msleep(20);
@@ -2027,12 +2610,32 @@ static int ov2659_sensor_power(struct device *dev, int on)
 		mdelay(1);
 		gpio_direction_output(cam_reset, 1);
 		gpio_direction_output(cam_pwr, 1);
+#if 0
 		regulator_disable(v_sensor);
+		regulator_disable(af_vcc);
+#endif
 	}
-	gpio_free(cam_pwr);
+
 	gpio_free(cam_reset);
-	return 0;
+out_rst:
+	gpio_free(cam_pwr);
+out_pwr:
+	regulator_put(af_vcc);
+	af_vcc = NULL;
+out_af_vcc:
+	regulator_put(v_sensor);
+	v_sensor = NULL;
+
+	return ret;
 }
+
+static struct sensor_board_data ov2659_data = {
+	.mount_pos	= SENSOR_USED | SENSOR_POS_FRONT | SENSOR_RES_LOW,
+	.bus_type	= V4L2_MBUS_PARALLEL,
+	.bus_flag	= 0,	/* EMEI DKB connection don't change polarity of
+				 * PCLK/HSYNC/VSYNC signal */
+	.plat		= &mv_cam_data,
+};
 
 static struct soc_camera_link iclink_ov2659_dvp = {
 	.bus_id         = 0,            /* Must match with the camera ID */
@@ -2040,6 +2643,10 @@ static struct soc_camera_link iclink_ov2659_dvp = {
 	.board_info     = &dkb_i2c_camera[0],
 	.i2c_adapter_id = 0,
 	.module_name    = "ov2659",
+	.priv		= &ov2659_data,
+	.flags		= 0,	/* controller driver should copy priv->bus_flag
+				 * here, so soc_camera_apply_board_flags can
+				 * take effect */
 };
 
 static struct platform_device dkb_ov2659_dvp = {
@@ -2047,6 +2654,114 @@ static struct platform_device dkb_ov2659_dvp = {
 	.id     = 0,
 	.dev    = {
 		.platform_data = &iclink_ov2659_dvp,
+	},
+};
+#endif
+
+#if defined(CONFIG_SOC_CAMERA_GC0328_ECS)
+static int gc0328_sensor_power(struct device *dev, int on)
+{
+	unsigned int cam_pwr;
+	unsigned int cam_reset;
+	int ret = 0;
+	static struct regulator *v_sensor;
+	static struct regulator *af_vcc;
+
+	if (!v_sensor) {
+		v_sensor = regulator_get(dev, "v_cam_avdd");
+		if (IS_ERR(v_sensor)) {
+			v_sensor = NULL;
+			pr_err(KERN_ERR "Enable v_ldo16 failed!\n");
+			return -EIO;
+		}
+	}
+
+	if (!af_vcc) {
+		af_vcc = regulator_get(dev, "v_cam_af");
+		if (IS_ERR(af_vcc)) {
+			ret = -EIO;
+			goto out_af_vcc;
+		}
+	}
+
+	cam_pwr = mfp_to_gpio(GPIO082_GPIO_CAM_PD_SUB);
+	cam_reset = mfp_to_gpio(GPIO081_GPIO_CAM_RST_MAIN);
+
+	if (cam_pwr) {
+		if (gpio_request(cam_pwr, "CAM_PWR")) {
+			printk(KERN_ERR "Request GPIO failed gpio: %d\n",
+				cam_pwr);
+			ret = -EIO;
+			goto out_pwr;
+		}
+	}
+	if (gpio_request(cam_reset, "CAM_RESET")) {
+		printk(KERN_ERR "Request GPIO failed gpio: %d\n",
+				cam_reset);
+			ret = -EIO;
+			goto out_rst;
+	}
+
+	if (on) {
+		regulator_set_voltage(af_vcc, 2800000, 2800000);
+		regulator_enable(af_vcc);
+		regulator_set_voltage(v_sensor, 2800000, 2800000);
+		regulator_enable(v_sensor);
+		gpio_direction_output(cam_pwr, 0);
+		usleep_range(10000, 20000);
+		gpio_direction_output(cam_reset, 1);
+		usleep_range(10000, 20000);
+		gpio_direction_output(cam_reset, 0);
+		usleep_range(10000, 20000);
+		gpio_direction_output(cam_reset, 1);
+		msleep(20);
+	} else {
+		gpio_direction_output(cam_reset, 0);
+		msleep(20);
+		gpio_direction_output(cam_reset, 1);
+		gpio_direction_output(cam_pwr, 1);
+		regulator_disable(v_sensor);
+		regulator_disable(af_vcc);
+	}
+
+	gpio_free(cam_reset);
+out_rst:
+	gpio_free(cam_pwr);
+out_pwr:
+	regulator_put(af_vcc);
+	af_vcc = NULL;
+out_af_vcc:
+	regulator_put(v_sensor);
+	v_sensor = NULL;
+
+	return ret;
+}
+
+static struct sensor_board_data gc0328_data = {
+	.mount_pos	= SENSOR_USED | SENSOR_POS_FRONT | SENSOR_RES_LOW,
+	.bus_type	= V4L2_MBUS_PARALLEL,
+	.bus_flag	= 0,	/* EMEI DKB connection don't change polarity of
+				 * PCLK/HSYNC/VSYNC signal */
+	.plat		= &mv_cam_data,
+};
+
+static struct soc_camera_link iclink_gc0328_dvp = {
+	.bus_id         = 0,            /* Must match with the camera ID */
+	.power          = gc0328_sensor_power,
+	.board_info     = &dkb_i2c_camera[3],
+	.i2c_adapter_id = 0,
+	.module_name    = "gc0328",
+	.priv		= &gc0328_data,
+	.flags		= 0,	/* controller driver should copy priv->bus_flag
+				 * here, so soc_camera_apply_board_flags can
+				 * take effect */
+};
+
+static struct platform_device dkb_gc0328_dvp = {
+	.name   = "soc-camera-pdrv",
+	.id     = 3,
+	.dev    = {
+		.platform_data = &iclink_gc0328_dvp,
 	},
 };
 #endif
@@ -2088,30 +2803,52 @@ static int ov5640_sensor_power(struct device *dev, int on)
 		}
 	}
 
-	/* Enable voltage for camera sensor OV5640 */
-	if (on) {
+	switch (on) {
+	case POWER_OFF:
+		gpio_direction_output(cam_reset, 0);
+		msleep(1);
+		gpio_direction_output(cam_reset, 1);
+		gpio_direction_output(pwdn, 1);
+		msleep(1);
+
+		/*FIXME:
+		 * According to OV5640 spec, when power off sensor, all the
+		 * power supplies should be cut. Otherwise, sensor's state
+		 * won't be completely cleared and may work improperly. But
+		 * in current pxa988 board design, DOVDD can't be shutdown
+		 * as it comes from a uncloseable BUCK. Thus, here we need
+		 * to keep all power supplies on and pull up pwdn. It has
+		 * little power impact.
+		 */
+#if 0
+		regulator_disable(avdd);
+		regulator_disable(af_vcc);
+#endif
+		break;
+	case POWER_ON:
 		regulator_set_voltage(af_vcc, 2800000, 2800000);
 		regulator_enable(af_vcc);
 		regulator_set_voltage(avdd, 2800000, 2800000);
 		regulator_enable(avdd);
-		mdelay(5);
-		/* enable the sensor now*/
+		msleep(5);
 		gpio_direction_output(pwdn, 0);
-		mdelay(1);
+		msleep(1);
 		gpio_direction_output(cam_reset, 0);
-		mdelay(1);
+		msleep(1);
 		gpio_direction_output(cam_reset, 1);
-		mdelay(20);
-	} else {
-		gpio_direction_output(cam_reset, 0);
-		mdelay(1);
-		gpio_direction_output(cam_reset, 1);
-
-		regulator_disable(avdd);
-		regulator_disable(af_vcc);
-
+		msleep(20);
+		break;
+	case POWER_SAVING:
 		gpio_direction_output(pwdn, 1);
-		mdelay(1);
+		msleep(1);
+		break;
+	case POWER_RESTORE:
+		gpio_direction_output(pwdn, 0);
+		msleep(1);
+		break;
+	default:
+		dev_err(dev, "unknown sensor power operation!\n");
+		break;
 	}
 
 	gpio_free(cam_reset);
@@ -2129,19 +2866,135 @@ out_rst:
 out:
 	return ret;
 }
+
+static struct sensor_board_data ov5640_data = {
+	.mount_pos	= SENSOR_USED | SENSOR_POS_BACK | SENSOR_RES_HIGH,
+	.bus_type	= V4L2_MBUS_CSI2,
+	.bus_flag	= V4L2_MBUS_CSI2_2_LANE, /* ov5640 used 2 lanes */
+	.dphy		= {0x0D06, 0x33, 0x0900},
+	.mipi_enabled	= 0,
+	.plat		= &mv_cam_data,
+};
+
 static struct soc_camera_link iclink_ov5640_mipi = {
 	.bus_id         = 0,            /* Must match with the camera ID */
 	.power          = ov5640_sensor_power,
 	.board_info     = &dkb_i2c_camera[1],
 	.i2c_adapter_id = 0,
 	.module_name    = "ov5640",
-	.priv		= "pxa98x-mipi",
+	.priv		= &ov5640_data,
 };
+
 static struct platform_device dkb_ov5640_mipi = {
 	.name   = "soc-camera-pdrv",
 	.id     = 1,
 	.dev    = {
 		.platform_data = &iclink_ov5640_mipi,
+	},
+};
+#endif
+
+#if defined(CONFIG_SOC_CAMERA_GC2035_ECS)
+static int gc2035_sensor_power(struct device *dev, int on)
+{
+	static struct regulator *avdd;
+	int pwdn, cam_reset;
+	int ret = 0;
+
+	pwdn = mfp_to_gpio(GPIO080_GPIO_CAM_PD_MAIN);
+	cam_reset = mfp_to_gpio(GPIO081_GPIO_CAM_RST_MAIN);
+
+	if (gpio_request(pwdn, "CA_ENABLE_LOW")) {
+		ret = -EIO;
+		goto out;
+	}
+
+	if (gpio_request(cam_reset, "CAM_RESET_LOW")) {
+		ret = -EIO;
+		goto out_rst;
+	}
+
+	if (!avdd) {
+		avdd = regulator_get(dev, "v_cam_avdd");
+		if (IS_ERR(avdd)) {
+			ret =  -EIO;
+			goto out_avdd;
+		}
+	}
+
+	switch (on) {
+	case POWER_OFF:
+		gpio_direction_output(cam_reset, 1);
+		usleep_range(1000, 1000);
+		gpio_direction_output(pwdn, 1);
+		usleep_range(1000, 1000);
+		gpio_direction_output(cam_reset, 0);
+		usleep_range(5000, 5000);
+
+		regulator_disable(avdd);
+		break;
+	case POWER_ON:
+		regulator_set_voltage(avdd, 2800000, 2800000);
+		regulator_enable(avdd);
+
+		gpio_direction_output(cam_reset, 0);
+		usleep_range(1000, 1000);
+		gpio_direction_output(pwdn, 1);
+		usleep_range(1000, 1000);
+		gpio_direction_output(pwdn, 0);
+		usleep_range(1000, 1000);
+		gpio_direction_output(cam_reset, 1);
+		msleep(20);
+		break;
+	case POWER_SAVING:
+		gpio_direction_output(pwdn, 1);
+		usleep_range(1000, 1000);
+		break;
+	case POWER_RESTORE:
+		gpio_direction_output(pwdn, 0);
+		usleep_range(1000, 1000);
+		break;
+	default:
+		dev_err(dev, "unknown sensor power operation!\n");
+		break;
+	}
+
+	gpio_free(cam_reset);
+	gpio_free(pwdn);
+	return 0;
+
+out_avdd:
+	avdd = NULL;
+	gpio_free(cam_reset);
+out_rst:
+	gpio_free(pwdn);
+out:
+	return ret;
+}
+
+static struct sensor_board_data gc2035_data = {
+	.mount_pos	= SENSOR_USED | SENSOR_POS_BACK | SENSOR_RES_HIGH,
+	.bus_type	= V4L2_MBUS_CSI2,
+	.bus_flag	= V4L2_MBUS_CSI2_1_LANE, /* gc2035 used 1 lanes */
+	.dphy		= {0x0D06, 0x33, 0x0900},
+	.mipi_enabled	= 0,
+	.plat		= &mv_cam_data,
+};
+
+static struct soc_camera_link iclink_gc2035_mipi = {
+	.bus_id         = 0,            /* Must match with the camera ID */
+	.power          = gc2035_sensor_power,
+	.board_info     = &dkb_i2c_camera[2],
+	.i2c_adapter_id = 0,
+	.module_name    = "gc2035",
+	.priv		= &gc2035_data,
+};
+
+static struct platform_device dkb_gc2035_mipi = {
+	.name   = "soc-camera-pdrv",
+	.id     = 2,
+	.dev    = {
+		.platform_data = &iclink_gc2035_mipi,
 	},
 };
 #endif
@@ -2152,6 +3005,12 @@ static struct platform_device *dkb_platform_devices[] = {
 #endif
 #if defined(CONFIG_SOC_CAMERA_OV5640) || defined(CONFIG_SOC_CAMERA_OV5640_ECS)
 	&dkb_ov5640_mipi,
+#endif
+#if defined(CONFIG_SOC_CAMERA_GC2035_ECS)
+	&dkb_gc2035_mipi,
+#endif
+#if defined(CONFIG_SOC_CAMERA_GC0328_ECS)
+	&dkb_gc0328_dvp,
 #endif
 };
 
@@ -2247,7 +3106,7 @@ static void __init pxa988_init_device_ddrdevfreq(void)
 	devfreq_ddr_pdata.hw_base[0] =  DMCU_VIRT_BASE;
 	devfreq_ddr_pdata.hw_base[1] =  DMCU_VIRT_BASE;
 
-	if (cpu_is_pxa986() && (!cpu_is_z1z2()))
+	if (!cpu_is_z1z2())
 		devfreq_ddr_pdata.qos_list = ddr_freq_qos_table;
 
 	pxa988_device_ddrdevfreq.dev.platform_data = (void *)&devfreq_ddr_pdata;
@@ -2372,19 +3231,19 @@ static void gps_on_off(int flag)
 	gpio_free(gps_on);
 }
 
-#define SIRF_STATUS_LEN	16
-static char sirf_status[SIRF_STATUS_LEN] = "off";
+#define GPS_STATUS_LEN	16
+static char gps_status[GPS_STATUS_LEN] = "off";
 
-static ssize_t sirf_read_proc(char *page, char **start, off_t off,
+static ssize_t gps_read_proc(char *page, char **start, off_t off,
 		int count, int *eof, void *data)
 {
-	int len = strlen(sirf_status);
+	int len = strlen(gps_status);
 
-	sprintf(page, "%s\n", sirf_status);
+	sprintf(page, "%s\n", gps_status);
 	return len + 1;
 }
 
-static ssize_t sirf_write_proc(struct file *filp,
+static ssize_t gps_write_proc(struct file *filp,
 		const char *buff, size_t len, loff_t *off)
 {
 	char messages[256];
@@ -2399,25 +3258,25 @@ static ssize_t sirf_write_proc(struct file *filp,
 	if (!buff || copy_from_user(messages, buff, len))
 		return -EFAULT;
 
-	if (strlen(messages) > (SIRF_STATUS_LEN - 1)) {
+	if (strlen(messages) > (GPS_STATUS_LEN - 1)) {
 		pr_warning("[ERROR] messages too long! (%d) %s\n",
 			strlen(messages), messages);
 		return -EFAULT;
 	}
 
 	if (strncmp(messages, "off", 3) == 0) {
-		strcpy(sirf_status, "off");
+		strcpy(gps_status, "off");
 		gps_power_off();
 	} else if (strncmp(messages, "on", 2) == 0) {
-		strcpy(sirf_status, "on");
+		strcpy(gps_status, "on");
 		gps_power_on();
 	} else if (strncmp(messages, "reset", 5) == 0) {
-		strcpy(sirf_status, messages);
+		strcpy(gps_status, messages);
 		ret = sscanf(messages, "%s %d", buffer, &flag);
 		if (ret == 2)
 			gps_reset(flag);
-	} else if (strncmp(messages, "sirfon", 6) == 0) {
-		strcpy(sirf_status, messages);
+	} else if (strncmp(messages, "wakeup", 6) == 0) {
+		strcpy(gps_status, messages);
 		ret = sscanf(messages, "%s %d", buffer, &flag);
 		if (ret == 2)
 			gps_on_off(flag);
@@ -2426,28 +3285,105 @@ static ssize_t sirf_write_proc(struct file *filp,
 		if (ret == 2)
 			gps_eclk_ctrl(flag);
 	} else
-		pr_info("usage: echo {on/off} > /proc/driver/sirf\n");
+		pr_info("usage: echo {on/off} > /proc/driver/gps\n");
 
 	return len;
 }
 
-static void create_sirf_proc_file(void)
+static void create_gps_proc_file(void)
 {
-	struct proc_dir_entry *sirf_proc_file = NULL;
+	struct proc_dir_entry *gps_proc_file = NULL;
 
 	/*
 	 * CSR and Marvell GPS lib will both use this file
-	 * "/proc/drver/sirf" may be modified in future
+	 * "/proc/drver/gps" may be modified in future
 	 */
-	sirf_proc_file = create_proc_entry("driver/sirf", 0644, NULL);
-	if (!sirf_proc_file) {
-		pr_err("sirf proc file create failed!\n");
+	gps_proc_file = create_proc_entry("driver/gps", 0644, NULL);
+	if (!gps_proc_file) {
+		pr_err("gps proc file create failed!\n");
 		return;
 	}
 
-	sirf_proc_file->read_proc = sirf_read_proc;
-	sirf_proc_file->write_proc = (write_proc_t  *)sirf_write_proc;
+	gps_proc_file->read_proc = gps_read_proc;
+	gps_proc_file->write_proc = (write_proc_t  *)gps_write_proc;
 }
+
+static ssize_t pcm_mfp_read_proc(char *page, char **start, off_t off,
+		int count, int *eof, void *data)
+{
+	int mfp = mfp_read(mfp_to_gpio(GPIO025_GPIO_INPUT));
+
+	mfp &= 0x7;
+
+	sprintf(page, "GPIO25~28 are configured to %s\n",
+			mfp ? "GSSP" : "GPIO input");
+
+	return strlen(page) + 1;
+}
+
+static ssize_t pcm_mfp_write_proc(struct file *filp,
+				const char *buff, size_t len, loff_t *off)
+{
+	char a;
+	unsigned long i, j, gpio;
+	unsigned long gssp_mfp[2][4] = {
+		{
+			GPIO025_GPIO_INPUT,
+			GPIO026_GPIO_INPUT,
+			GPIO027_GPIO_INPUT,
+			GPIO028_GPIO_INPUT,
+		},
+		{
+			GPIO025_GSSP_SCLK,	/* PCM_CLK */
+			GPIO026_GSSP_SFRM,	/* PCM_SYNC */
+			GPIO027_GSSP_TXD,	/* PCM_TXD */
+			GPIO028_GSSP_RXD,	/* PCM_RXD */
+		},
+	};
+
+	if (copy_from_user(&a, buff, 1))
+		return -EINVAL;
+	switch (a) {
+	case '0':
+		i = 0;
+		pr_debug("Switch GPIO25~28 to GPIO input\n");
+		break;
+	case '1':
+		i = 1;
+		pr_debug("Switch GPIO25~28 to GSSP function\n");
+		break;
+	default:
+		pr_err("[PCM_MFP] Error: invalid configuration\n");
+		return len;
+	}
+
+	mfp_config(ARRAY_AND_SIZE(gssp_mfp[i]));
+
+	for (j = 0; j < ARRAY_SIZE(gssp_mfp[i]); j++) {
+		gpio = mfp_to_gpio(gssp_mfp[i][j]);
+		gpio_request(gpio, NULL);
+		gpio_direction_input(gpio);
+		gpio_free(gpio);
+	}
+
+	return len;
+}
+
+static void create_pcm_mfp_proc_file(void)
+{
+	struct proc_dir_entry *proc_file = NULL;
+
+	proc_file = create_proc_entry("driver/pcm_mfp", 0644, NULL);
+	if (!proc_file) {
+		pr_err("%s: create proc file failed\n", __func__);
+		return;
+	}
+
+	proc_file->write_proc = (write_proc_t *)pcm_mfp_write_proc;
+	proc_file->read_proc = (read_proc_t *)pcm_mfp_read_proc;
+
+}
+
 #endif
 
 static struct timer_list uart_constraint_timer;
@@ -2457,7 +3393,7 @@ static void uart_add_constraint(int mfp, void *unused)
 {
 	if (!mod_timer(&uart_constraint_timer, jiffies + 3 * HZ))
 		pm_qos_update_request(&uart_lpm_cons,
-			PM_QOS_CPUIDLE_BLOCK_DDR_VALUE);
+			PM_QOS_CPUIDLE_BLOCK_AXI_VALUE);
 }
 
 static void uart_timer_handler(unsigned long data)
@@ -2528,7 +3464,13 @@ static void __init emeidkb_init(void)
 
 	mfp_config(ARRAY_AND_SIZE(emeidkb_pin_config));
 
+	if (dvc_flag)
+		mfp_config(ARRAY_AND_SIZE(dvc_pin_config));
+
 	switch (board_id) {
+	case VER_T7: /* t7 tablet */
+		mfp_config(ARRAY_AND_SIZE(t7dkb_pin_config));
+		break;
 	case VER_1V1:
 		mfp_config(ARRAY_AND_SIZE(dkb1v1_pin_config));
 		break;
@@ -2564,16 +3506,53 @@ static void __init emeidkb_init(void)
 
 	/* soc-rtc */
 	platform_device_register(&pxa988_device_rtc);
-	/* backlight */
-	platform_device_register(&emei_dkb_lcd_backlight_devices);
 	/* set pm800 dvc information,must before pm800 init */
-	pm800_dvctable_init();
-	pxa988_add_twsi(0, &emeidkb_ci2c_pdata,
-			ARRAY_AND_SIZE(emeidkb_i2c_info));
-	pxa988_add_twsi(1, &emeidkb_ci2c2_pdata,
-			ARRAY_AND_SIZE(emeidkb_i2c2_info));
-	pxa988_add_twsi(2, &emeidkb_pwr_i2c_pdata,
-			ARRAY_AND_SIZE(emeidkb_pwr_i2c_info));
+	if (!dvc_flag)
+		pm800_dvctable_init();
+	else {
+		pm80x_dvc.gpio_dvc = 0;
+		pm80x_dvc.reg_dvc = 1;
+		pm80x_dvc.set_dvc = dvc_set_voltage;
+		pm80x_dvc.write_reg = PMUM_DVC_AP;
+		pm80x_dvc.read_reg = PMUM_DVC_STATUS;
+	}
+	if (board_id == VER_1V1)
+		pm800_info.headset = &pm80x_headset[1];
+	else if (board_id == VER_1V0)
+		pm800_info.headset = &pm80x_headset[0];
+	else if (board_id == VER_T7) {
+		pm800_info.headset = &pm80x_headset[1];
+		/* T7 headset circuit is different with EMEI_DKB */
+		pm800_info.headset->headset_flag = 0;
+	}
+
+	if (board_id == VER_T7) {
+		/* customization for T7 battery */
+		pm800_info.bat = &pm80x_t7_bat;
+
+		pxa988_add_twsi(0, &emeidkb_ci2c_pdata,
+			ARRAY_AND_SIZE(t7_i2c_info));
+		pxa988_add_twsi(1, &emeidkb_ci2c2_pdata,
+				ARRAY_AND_SIZE(t7_i2c2_info));
+		pxa988_add_twsi(2, &emeidkb_pwr_i2c_pdata,
+				ARRAY_AND_SIZE(t7dkb_pwr_i2c_info));
+		/* i2c-gpio for t7 */
+		platform_device_register(&i2c_gpio_device);
+		i2c_register_board_info(3, t7dkb_gpio_i2c_info, 1);
+	} else {
+		pxa988_add_twsi(0, &emeidkb_ci2c_pdata,
+				ARRAY_AND_SIZE(emeidkb_i2c_info));
+
+		pxa988_add_twsi(1, &emeidkb_ci2c2_pdata,
+				ARRAY_AND_SIZE(emeidkb_i2c2_info));
+
+		pxa988_add_twsi(2, &emeidkb_pwr_i2c_pdata,
+				ARRAY_AND_SIZE(emeidkb_pwr_i2c_info));
+	}
+	if (board_id == VER_T7) {
+		/* charger for t7 */
+		platform_device_register(&t7_charger_device);
+	}
 
 	/* add audio device: sram, ssp2, squ(tdma), pxa-ssp, mmp-pcm */
 	pxa988_add_asram(&pxa988_asram_info);
@@ -2590,10 +3569,20 @@ static void __init emeidkb_init(void)
 	platform_add_devices(ARRAY_AND_SIZE(dkb_platform_devices));
 
 #ifdef CONFIG_FB_PXA168
-	emeidkb_add_lcd_mipi();
-	if (cpu_pxa98x_stepping() < PXA98X_Z3)
-		emeidkb_add_tv_out();
+	if (board_id == VER_T7)
+		t7_add_lcd_mipi();
+	else {
+		emeidkb_add_lcd_mipi();
+		if (has_feat_video_replace_graphics_dma())
+			emeidkb_add_tv_out();
+	}
 #endif
+	/* backlight */
+	if (board_id == VER_T7) {
+		pxa988_add_pwm(4);
+		platform_device_register(&t7_lcd_backlight_devices);
+	} else
+		platform_device_register(&emei_dkb_lcd_backlight_devices);
 
 #ifdef CONFIG_UIO_CODA7542
 	pxa_register_coda7542();
@@ -2613,7 +3602,8 @@ static void __init emeidkb_init(void)
 #endif
 
 #if (defined CONFIG_CMMB)
-	emeidkb_init_spi();
+	if (board_id != VER_T7)
+		emeidkb_init_spi();
 #endif
 
 #ifdef CONFIG_VPU_DEVFREQ
@@ -2630,8 +3620,10 @@ static void __init emeidkb_init(void)
 	pxa988_add_thermal();
 
 #ifdef CONFIG_PROC_FS
-	/* create proc for sirf GPS control */
-	create_sirf_proc_file();
+	/* create proc for gps GPS control */
+	create_gps_proc_file();
+	/* create proc for gssp mfp control */
+	create_pcm_mfp_proc_file();
 #endif
 	/* add uart pad wakeup */
 	mmp_gpio_edge_add(&uart_rx_pad);
@@ -2648,6 +3640,7 @@ static void __init emeidkb_init(void)
 
 MACHINE_START(EMEIDKB, "PXA988")
 	.map_io		= mmp_map_io,
+	.init_early	= pxa988_init_early,
 	.init_irq	= pxa988_init_irq,
 	.timer		= &pxa988_timer,
 	.reserve	= pxa988_reserve,

@@ -15,6 +15,7 @@
 
 #define TIMERS1_VIRT_BASE	(APB_VIRT_BASE + 0x14000)
 #define TIMERS2_VIRT_BASE	(APB_VIRT_BASE + 0x16000)
+#define TIMERS3_VIRT_BASE	(APB_VIRT_BASE + 0x1F000) /* for PXA1088 */
 #define CP_TIMERS2_VIRT_BASE    (APB_VIRT_BASE + 0x80000)
 
 #define TMR_CCR		(0x0000)
@@ -38,8 +39,14 @@
 #define TMR_WSAR	(0x00A0)
 #define TMR_CVWR(n)	(0x00A4 + ((n) << 2))
 
+#define TMR_CRSR	(0x00B0) /* for EDEN and PXA1088 */
+
 #define TMR_CCR_CS_0(x)	(((x) & 0x3) << 0)
-#define TMR_CCR_CS_1(x)	(((x) & 0x7) << 2)
+#define TMR_CCR_CS_1(x)	(((x) & 0x3) << 2)
 #define TMR_CCR_CS_2(x)	(((x) & 0x3) << 5)
+
+#ifdef CONFIG_CPU_PXA1088
+#define GENERIC_COUNTER_VIRT_BASE       (APB_VIRT_BASE + 0x101000)
+#endif
 
 #endif /* __ASM_MACH_REGS_TIMERS_H */

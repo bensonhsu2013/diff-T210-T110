@@ -145,7 +145,7 @@ config MEMORY_HOTPLUG
 	bool "Allow for memory hot-add"
 	depends on SPARSEMEM || X86_64_ACPI_NUMA
 	depends on HOTPLUG && ARCH_ENABLE_MEMORY_HOTPLUG
-	depends on (IA64 || X86 || PPC_BOOK3S_64 || SUPERH || S390)
+	depends on (IA64 || X86 || PPC_BOOK3S_64 || SUPERH || S390 || ARM)
 
 config MEMORY_HOTPLUG_SPARSE
 	def_bool y
@@ -155,6 +155,10 @@ config MEMORY_HOTREMOVE
 	bool "Allow for memory hot remove"
 	depends on MEMORY_HOTPLUG && ARCH_ENABLE_MEMORY_HOTREMOVE
 	depends on MIGRATION
+
+config MEMORY_FORCE_MOVABLE_HIGHMEM
+	bool "force movable zone as highmem"
+	depends on MEMORY_HOTPLUG && HIGHMEM
 
 #
 # If we have space for more page flags then we can enable additional
@@ -198,7 +202,7 @@ config COMPACTION
 config MIGRATION
 	bool "Page migration"
 	def_bool y
-	depends on NUMA || ARCH_ENABLE_MEMORY_HOTREMOVE || COMPACTION
+	depends on NUMA || ARCH_ENABLE_MEMORY_HOTREMOVE || COMPACTION || CMA
 	help
 	  Allows the migration of the physical location of pages of processes
 	  while the virtual addresses are not changed. This is useful in

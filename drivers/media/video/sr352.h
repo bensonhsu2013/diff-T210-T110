@@ -1,7 +1,7 @@
 /*
- * drivers/media/video/sr200pc20m.h
+ * drivers/media/video/sr352.h
  *
- * Register definitions for the SR200PC20M camera from Samsung Electronics
+ * Register definitions for the SR352 camera from Samsung Electronics
  *
  *
  * Copyright (C) 2010 Samsung Electronics
@@ -10,29 +10,29 @@
  * version 2. This program is licensed "as is" without any warranty of any
  * kind, whether express or implied.
  */
-//#ifndef SR200PC20M_H
-//#define SR200PC20M_H
+//#ifndef SR352_H
+//#define SR352_H
 
-//#ifndef __SR200PC20M_H__
-//#define __SR200PC20M_H__
+//#ifndef __SR352_H__
+//#define __SR352_H__
 
-#define SR200PC20M_DELAY		0xFF00
+#define SR352_DELAY		0xFF00
 
-#define CAM_SR200PC20M_DBG_MSG            1
+#define CAM_SR352_DBG_MSG            1
 //#define USE_SD_CARD_TUNE
-#define SR200PC20M_DRIVER_NAME            "sr200pc20m"
-#define SR200PC20M_MOD_NAME               "SR200PC20M: "
+#define SR352_DRIVER_NAME            "sr352"
+#define SR352_MOD_NAME               "sr352: "
 
 /*Sysfs*/
 #define CAM_MAJOR       119
 extern struct class *camera_class;
 
-#define SR200PC20M_THUMBNAIL_OFFSET	0x271000		// 0x271000		0x1EA000
-#define SR200PC20M_YUV_OFFSET		0x280A00		// 0x280A00		0x224980
+#define SR352_THUMBNAIL_OFFSET	0x271000		// 0x271000		0x1EA000
+#define SR352_YUV_OFFSET		0x280A00		// 0x280A00		0x224980
 
-#define SR200PC20M_I2C_ADDR		0x5A >> 1
-#define SR200PC20M_I2C_RETRY		1
-#define SR200PC20M_XCLK			24000000
+#define SR352_I2C_ADDR		0x40 >> 1
+#define SR352_I2C_RETRY		1
+#define SR352_XCLK			24000000
 
 #define SENSOR_DETECTED			1
 #define SENSOR_NOT_DETECTED		0
@@ -40,12 +40,12 @@ extern struct class *camera_class;
 #define JPEG_CAPTURE_WIDTH  960
 #define JPEG_CAPTURE_HEIGHT 3072
 
-struct sr200pc20m_position {
+struct sr352_position {
 	int x;
 	int y;
 }; 
 
-struct sr200pc20m_datafmt {
+struct sr352_datafmt {
 	enum v4l2_mbus_pixelcode	code;
 	enum v4l2_colorspace		colorspace;
 };
@@ -71,34 +71,34 @@ typedef struct v4l2_exif_info{
 }v4l2_exif_info_t;
 
 /**
- * struct sr200pc20m_platform_data - platform data values and access functions
+ * struct sr352_platform_data - platform data values and access functions
  * @power_set: Power state access function, zero is off, non-zero is on.
  * @ifparm: Interface parameters access function
  * @priv_data_set: device private data (pointer) access function
  */
-struct sr200pc20m_platform_data {
+struct sr352_platform_data {
 	int (*power_set)(enum v4l2_power power);
 	int (*ifparm)(struct v4l2_ifparm *p);
 	int (*priv_data_set)(void *);
 };
 
 /**   
- * struct sr200pc20m_sensor - main structure for storage of sensor information
+ * struct sr352_sensor - main structure for storage of sensor information
  * @pdata: access functions and data for platform level information
  * @v4l2_int_device: V4L2 device structure structure
  * @i2c_client: iic client device structure
  * @pix: V4L2 pixel format information structure
  * @timeperframe: time per frame expressed as V4L fraction
  * @scaler:
- * @ver: sr200pc20m chip version
+ * @ver: sr352 chip version
  * @fps: frames per second value   
  */
-struct sr200pc20m_sensor {
-	const struct sr200pc20m_platform_data *pdata;
+struct sr352_sensor {
+	const struct sr352_platform_data *pdata;
 	struct v4l2_int_device *v4l2_int_device;
 	struct v4l2_pix_format pix;
 	struct v4l2_fract timeperframe;
-	struct sr200pc20m_position position;
+	struct sr352_position position;
 	int check_dataline;  
 	u32 state;
 	u8 mode;
@@ -142,100 +142,102 @@ struct sr200pc20m_sensor {
 	enum preview_aspect_ratio preview_ratio;
 	u8 initial;
 	bool check_init;
+	u8 cam_mode;
 };
 
-#define SR200PC20M_STATE_INITIAL		0x0000
-#define SR200PC20M_STATE_STABLE		0x0001
+#define SR352_STATE_INITIAL		0x0000
+#define SR352_STATE_STABLE		0x0001
 
 /* State */
-#define SR200PC20M_STATE_PREVIEW	  0x0000	/*  preview state */
-#define SR200PC20M_STATE_CAPTURE	  0x0001	/*  capture state */
-#define SR200PC20M_STATE_CAMCORDER		0x0002	/*  camcorder state */
-#define SR200PC20M_STATE_HD_CAMCORDER	0x0003	/*  HD camcorder state */
-#define SR200PC20M_STATE_INVALID			0x0004	/*  invalid state */
+#define SR352_STATE_PREVIEW	  0x0000	/*  preview state */
+#define SR352_STATE_CAPTURE	  0x0001	/*  capture state */
+#define SR352_STATE_CAMCORDER		0x0002	/*  camcorder state */
+#define SR352_STATE_HD_CAMCORDER	0x0003	/*  HD camcorder state */
+#define SR352_STATE_INVALID			0x0004	/*  invalid state */
 
 /* Mode */
-#define SR200PC20M_MODE_CAMERA     1
-#define SR200PC20M_MODE_CAMCORDER  2
-#define SR200PC20M_MODE_VT         3
+#define SR352_MODE_CAMERA     1
+#define SR352_MODE_CAMCORDER  2
+#define SR352_MODE_VT         3
 
 /* Preview Size */
-#define SR200PC20M_PREVIEW_SIZE_144_176    	0
-#define SR200PC20M_PREVIEW_SIZE_176_144    	1
-#define SR200PC20M_PREVIEW_SIZE_320_240    	2	
-#define SR200PC20M_PREVIEW_SIZE_352_288		3
-#define SR200PC20M_PREVIEW_SIZE_640_480		4
-#define SR200PC20M_PREVIEW_SIZE_720_480		5
-#define SR200PC20M_PREVIEW_SIZE_800_480		6
-#define SR200PC20M_PREVIEW_SIZE_1280_720		7
-#define SR200PC20M_PREVIEW_SIZE_160_120		8
+#define SR352_PREVIEW_SIZE_144_176    	0
+#define SR352_PREVIEW_SIZE_176_144    	1
+#define SR352_PREVIEW_SIZE_320_240    	2	
+#define SR352_PREVIEW_SIZE_352_288		3
+#define SR352_PREVIEW_SIZE_640_480		4
+#define SR352_PREVIEW_SIZE_720_480		5
+#define SR352_PREVIEW_SIZE_800_480		6
+#define SR352_PREVIEW_SIZE_1280_720		7
+#define SR352_PREVIEW_SIZE_160_120		8
 
 /* Camcorder Preview Size */
-#define SR200PC20M_CAMCORDER_SIZE_144_176		0
-#define SR200PC20M_CAMCORDER_SIZE_176_144		1
-#define SR200PC20M_CAMCORDER_SIZE_320_240		2	
-#define SR200PC20M_CAMCORDER_SIZE_352_288		3	
-#define SR200PC20M_CAMCORDER_SIZE_640_480		4
-#define SR200PC20M_CAMCORDER_SIZE_720_480		5
-#define SR200PC20M_CAMCORDER_SIZE_800_480		6
-#define SR200PC20M_CAMCORDER_SIZE_1280_720		7
-#define SR200PC20M_CAMCORDER_SIZE_160_120		8
+#define SR352_CAMCORDER_SIZE_144_176		0
+#define SR352_CAMCORDER_SIZE_176_144		1
+#define SR352_CAMCORDER_SIZE_320_240		2	
+#define SR352_CAMCORDER_SIZE_352_288		3	
+#define SR352_CAMCORDER_SIZE_640_480		4
+#define SR352_CAMCORDER_SIZE_720_480		5
+#define SR352_CAMCORDER_SIZE_800_480		6
+#define SR352_CAMCORDER_SIZE_1280_720		7
+#define SR352_CAMCORDER_SIZE_160_120		8
 
 /* Focus Mode */
-#define SR200PC20M_AF_SET_NORMAL		1
-#define SR200PC20M_AF_SET_MACRO		2
-#define SR200PC20M_AF_SET_OFF		3
-#define SR200PC20M_AF_SET_NORMAL_1	10
-#define SR200PC20M_AF_SET_NORMAL_2	11
-#define SR200PC20M_AF_SET_NORMAL_3	12
-#define SR200PC20M_AF_SET_MACRO_1		15
-#define SR200PC20M_AF_SET_MACRO_2		16
-#define SR200PC20M_AF_SET_MACRO_3		17
+#define SR352_AF_SET_NORMAL		1
+#define SR352_AF_SET_MACRO		2
+#define SR352_AF_SET_OFF		3
+#define SR352_AF_SET_NORMAL_1	10
+#define SR352_AF_SET_NORMAL_2	11
+#define SR352_AF_SET_NORMAL_3	12
+#define SR352_AF_SET_MACRO_1		15
+#define SR352_AF_SET_MACRO_2		16
+#define SR352_AF_SET_MACRO_3		17
 
 /* Focust start/stop */
-#define SR200PC20M_AF_START			1
-#define SR200PC20M_AF_STOP			2
-#define SR200PC20M_AF_STOP_STEP_1			10
-#define SR200PC20M_AF_STOP_STEP_2			11
-#define SR200PC20M_AF_STOP_STEP_3			12
+#define SR352_AF_START			1
+#define SR352_AF_STOP			2
+#define SR352_AF_STOP_STEP_1			10
+#define SR352_AF_STOP_STEP_2			11
+#define SR352_AF_STOP_STEP_3			12
 
 /* Auto Focus Status */
-#define SR200PC20M_AF_STATUS_PROGRESS    	1
-#define SR200PC20M_AF_STATUS_SUCCESS     	2
-#define SR200PC20M_AF_STATUS_FAIL        		3
-#define SR200PC20M_AF_STATUS_CANCELED	4       
-#define SR200PC20M_AF_STATUS_TIMEOUT	5       
-#define SR200PC20M_AE_STATUS_STABLE	6
-#define SR200PC20M_AE_STATUS_UNSTABLE	7
+#define SR352_AF_STATUS_PROGRESS    	1
+#define SR352_AF_STATUS_SUCCESS     	2
+#define SR352_AF_STATUS_FAIL        		3
+#define SR352_AF_STATUS_CANCELED	4       
+#define SR352_AF_STATUS_TIMEOUT	5       
+#define SR352_AE_STATUS_STABLE	6
+#define SR352_AE_STATUS_UNSTABLE	7
 
-#define SR200PC20M_AF_CHECK_STATUS	0
-#define SR200PC20M_AF_OFF			1
-#define SR200PC20M_AF_DO			4
-#define SR200PC20M_AF_SET_MANUAL		5
-#define SR200PC20M_AF_CHECK_2nd_STATUS	6
-#define SR200PC20M_AF_SET_AE_FOR_FLASH	7
-#define SR200PC20M_AF_BACK_AE_FOR_FLASH	8
-#define SR200PC20M_AF_CHECK_AE_STATUS	9
-#define SR200PC20M_AF_POWEROFF		10
+#define SR352_AF_CHECK_STATUS	0
+#define SR352_AF_OFF			1
+#define SR352_AF_DO			4
+#define SR352_AF_SET_MANUAL		5
+#define SR352_AF_CHECK_2nd_STATUS	6
+#define SR352_AF_SET_AE_FOR_FLASH	7
+#define SR352_AF_BACK_AE_FOR_FLASH	8
+#define SR352_AF_CHECK_AE_STATUS	9
+#define SR352_AF_POWEROFF		10
 
 
 /* Preview Size */
 enum {
 	PREVIEW_SIZE_176_144,
-	PREVIEW_SIZE_320_240,		
-	PREVIEW_SIZE_424_318,	
-	PREVIEW_SIZE_480_320,	
+	PREVIEW_SIZE_320_240,	
+	PREVIEW_SIZE_352_288,		
 	PREVIEW_SIZE_640_480,	
+	PREVIEW_SIZE_704_576,
 	PREVIEW_SIZE_720_480,
-	PREVIEW_SIZE_160_120
+	PREVIEW_SIZE_800_480,	
+	PREVIEW_SIZE_1280_720,
 };	
 
-struct sr200pc20m_preview_size {
+struct sr352_preview_size {
 	unsigned long width;
 	unsigned long height;
 };
 
-const static struct sr200pc20m_preview_size sr200pc20m_preview_sizes[] = {
+const static struct sr352_preview_size sr352_preview_sizes[] = {
 	{176,144}, 	// QCIF 
 	{320,240},	// QVGA
 	{424,318},	
@@ -269,13 +271,13 @@ enum {
 	CAPTURE_SIZE_2560_1920,
 };
 
-struct sr200pc20m_capture_size {
+struct sr352_capture_size {
 	unsigned long width;
 	unsigned long height;
 };
 
 /* Image sizes */
-const static struct sr200pc20m_capture_size sr200pc20m_image_sizes[] = {
+const static struct sr352_capture_size sr352_image_sizes[] = {
 	{160,120},
 	{176,144},
 	{320,240},
@@ -425,6 +427,13 @@ enum{
 	ESD_NONE,
 };
 
+/* Preview Mode */
+enum{
+	CAMERA_MODE,
+	CAMCORDER_MODE,
+	VT_MODE
+};
+
 typedef enum
 {
 	CAMERA_SENSOR_LIGHT_STATUS_LOW,
@@ -441,5 +450,5 @@ typedef enum
 	SET_FOCUS_ALL
 } camera_set_focus_type;
 
-//#endif /* ifndef SR200PC20M_H */
+//#endif /* ifndef SR352_H */
 

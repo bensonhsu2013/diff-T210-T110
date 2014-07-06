@@ -195,6 +195,7 @@ static const struct platform_device_id ssp_id_table[] = {
 	{ "pxa168-ssp",		PXA168_SSP },
 	{ "pxa910-ssp",		PXA910_SSP },
 	{ "pxa988-ssp",		PXA988_SSP },
+	{ "eden-ssp",		EDEN_SSP },
 	{ },
 };
 

@@ -22,6 +22,6 @@ struct vcm_platform_data {
 	int pwdn_gpio;
 	int pwdn_en;
 };
-
+void ak7343_io_power(struct i2c_client *client, char on);
 
 #endif /* ____LINUX_I2C_ak7343_H */

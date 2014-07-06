@@ -1081,9 +1081,9 @@ rb_allocate_cpu_buffer(struct ring_buffer *buffer, int cpu)
 
 	cpu_buffer->reader_page = bpage;
 	page = alloc_pages_node(cpu_to_node(cpu), GFP_KERNEL, 0);
-	bpage->cached_page = page_address(page);
 	if (!page)
 		goto fail_free_reader;
+	bpage->cached_page = page_address(page);
 
 	bpage->page = page_address(page);
 
@@ -1620,6 +1620,7 @@ int ring_buffer_resize(struct ring_buffer *buffer, unsigned long size)
 		struct_list = vmalloc(sizeof(struct page *) * nr_struct);
 		if (!struct_list) {
 			free_pages_exact(struct_start, size_struct);
+			vfree(pages_list);
 			return -ENOMEM;
 		}
 

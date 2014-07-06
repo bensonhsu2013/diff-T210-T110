@@ -187,12 +187,6 @@ _Link(
 
         default:
             gcmkFATAL("MMU table correcupted at index %u!", Index);
-			{
-			    gctPOINTER File;
-				gctSIZE_T fs = 0;
-				gckOS_OpenFile(gcvNULL, "/proc/sysrq-trigger", &File, &fs);
-				gckOS_WriteFile(gcvNULL, File, "c", 1);
-			}
             return gcvSTATUS_HEAP_CORRUPTED;
         }
     }
@@ -284,12 +278,6 @@ _Collect(
 
         default:
             gcmkFATAL("MMU page table correcupted at index %u!", i);
-			{
-			    gctPOINTER File;
-				gctSIZE_T fs = 0;
-				gckOS_OpenFile(gcvNULL, "/proc/sysrq-trigger", &File, &fs);
-				gckOS_WriteFile(gcvNULL, File, "c", 1);
-			}
             return gcvSTATUS_HEAP_CORRUPTED;
         }
     }
@@ -1272,12 +1260,6 @@ _AllocatePages(
 
             default:
                 gcmkFATAL("MMU table correcupted at index %u!", index);
-				{
-			        gctPOINTER File;
-				    gctSIZE_T fs = 0;
-				    gckOS_OpenFile(gcvNULL, "/proc/sysrq-trigger", &File, &fs);
-				    gckOS_WriteFile(gcvNULL, File, "c", 1);
-			    }
                 gcmkONERROR(gcvSTATUS_OUT_OF_RESOURCES);
             }
         }

@@ -12,6 +12,7 @@ Table of Contents:
     > MPU-6050 + AKM8963 on the secondary I2C interface
     > MPU-6500 + AKM8963 on the secondary I2C interface
     > MPU-9150
+    > MPU-9250
     > MPU-3050 + BMA250 on the secondary I2C interface
 - Board File Modifications for Invensense Devices
     > MPU-3050
@@ -19,11 +20,13 @@ Table of Contents:
     > MPU-6050
     > MPU-6500
     > MPU-9150
+    > MPU-9250
 - IIO Subsystem
     > Communicating with the Driver in Userspace
     > ITG-3500
     > MPU-6050 and MPU-6500
     > MPU-9150
+    > MPU-9250
     > MPU-3050 + BMA250 on the secondary I2C interface
 - Low Power Accelerometer Mode
 - Suspend and Resume
@@ -34,7 +37,7 @@ Table of Contents:
     > With DMP Firmware
     > Without DMP Firmware
 - Test Applications
-    > Running Test Applications with MPU-9150/MPU-6050/MPU-6500
+    > Running Test Applications with MPU-9150/MPU-6050/MPU-6500/MPU-9250
     > Running Test Applications with MPU-3050/ITG-3500
 
 
@@ -47,6 +50,7 @@ Linux kernel. The Invensense driver currently supports the following sensors:
 - MPU-6050
 - MPU-9150
 - MPU-6500
+- MPU-9250
 - MPU-3050
 
 The slave address of each device is either 0x68 or 0x69, depending on the AD0
@@ -109,6 +113,9 @@ Please note that the MPU-9150 it is treated as a MPU-6050 with AKM8975 on the
 device's secondary I2C interface. Thus the secondary I2C address must be
 provided.
 
+Please note that the MPU-9250 it is treated as a MPU-6500 with AKM8963 on the
+device's secondary I2C interface. Thus the secondary I2C address must be
+provided.
 
 Board File Modifications for Secondary I2C Configuration
 ========================================================
@@ -156,6 +163,21 @@ static struct mpu_platform_data gyro_platform_data = {
 	.sec_slave_type = SECONDARY_SLAVE_TYPE_COMPASS,
 	.sec_slave_id   = COMPASS_ID_AK8975,
 	.secondary_i2c_addr = 0x0E
+};
+
+MPU-9250
+--------
+For MPU-9250, please provide the following secondary I2C bus information.
+
+static struct mpu_platform_data gyro_platform_data = {
+        .int_config  = 0x10,
+        .level_shifter = 0,
+        .orientation = {  -1,  0,  0,
+                           0,  1,  0,
+                           0,  0, -1 },
+        .sec_slave_type = SECONDARY_SLAVE_TYPE_COMPASS,
+        .sec_slave_id   = COMPASS_ID_AK8963,
+        .secondary_i2c_addr = 0x0C
 };
 
 MPU-3050 + BMA250 on the secondary I2C interface
@@ -238,6 +260,16 @@ static struct i2c_board_info __initdata single_chip_board_info[] = {
 	},
 };
 
+MPU9250
+-------
+arch/arm/mach-omap2/board-omap4panda.c
+static struct i2c_board_info __initdata single_chip_board_info[] = {
+        {
+                I2C_BOARD_INFO("mpu9250", 0x68),
+                .irq = (IH_GPIO_BASE + MPUIRQ_GPIO),
+                .platform_data = &gyro_platform_data,
+        },
+};
 
 IIO subsystem
 =============
@@ -350,6 +382,7 @@ pedometer_steps,
 event_tap
 event_orientation
 event_display_orientation
+event_accel_motion
 --Event related entries.
 Please poll these entries to read their values. Direct reads will yield
 meaningless results.
@@ -372,6 +405,23 @@ display_orientation_on
 quaternion_on
 --Turn on/off quaterniion data output. DMP is required for this feature.
 
+Low power accel motion interrupt related settings.
+if motion_lpa_on is set, this will disable all engines except accel. Accel will
+enter low power mode and the whole chip will be turned on/off at specific frequency.
+-----------------------------------------------------------------------------
+motion_lpa_duration
+--set motion duration. in ms. This means filtered out all the motino interrupts
+  during this period.
+
+motion_lpa_threshold
+--set motion threshold. in mg. The maximum is 1020mg and resolution is 32mg.
+
+motion_lpa_on
+--turn on/off motion function.
+
+motion_lpa_freq
+--motion lpa frequency. which determines power on/off frequency.
+------------------------------------------------------------------------------
 MPU-9150
 --------
 MPU-9150 has all of MPU-6050's entries. It also has two additional entries,
@@ -429,11 +479,10 @@ DMP Event
 =========
 A DMP Event is an event that is output by the DMP unit within the Invensense
 device (MPU).
-Only the MPU-6050, MPU-6500, and MPU-9150 feature the DMP.
 
+Only the MPU-6050, MPU-6500, MPU-9150, MPU-9250 feature the DMP.
 
 There are three sysfs entries for DMP events:
-
 - event_tap
 - event_orientation
 - event_display_orientation
@@ -473,7 +522,6 @@ turn on/off of motion function.
 
 event_accel_motion:
 pollable event sysfs entry for motion.
-
 event_accel_no_motion:
 pollable event sysfs entry for zero motion.
 -------------------------------------------------------
@@ -544,15 +592,18 @@ Test Applications
 A test application is located under software/simple_apps/mpu_iio.
 This application is stand-alone in that it cannot be run concurrently with other
 entities trying to access the device node(s) or sysfs entries; in particular,
-the Running Test Applications with MPU-9150/MPU-6050/MPU-6500
+the Running Test Applications with MPU-9150/MPU-6050/MPU-6500/MPU-9250
 ---------------------------------------------------------
-To run test applications with MPU-9150, MPU-6050, or MPU-6500 devices,
+To run test applications with MPU-9150, MPU-9250, MPU-6050, or MPU-6500 devices,
 please use the following commands:
 
 1. For orientation/tap/display orientation events:
    mpu_iio -c 10 -l 3 -p
 
-2. For printing data normally:
+2. In addition, to test the motion interrupt (and no_motion on MPU6050) use:
+   mpu_iio -c 10 -l 3 -p -m
+
+3. For printing data normally:
    mpu_iio -c 10 -l 3 -r
 
 Running Test Applications with MPU-3050/ITG-3500

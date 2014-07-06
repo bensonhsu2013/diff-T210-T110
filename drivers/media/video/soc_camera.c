@@ -1122,6 +1122,11 @@ static int soc_camera_probe(struct soc_camera_device *icd)
 	}
 
 	sd = soc_camera_to_subdev(icd);
+
+	if (!sd)
+		/* No device driver attached */
+		return -ENODEV;
+
 	sd->grp_id = soc_camera_grp_id(icd);
 	v4l2_set_subdev_hostdata(sd, icd);
 
@@ -1458,11 +1463,18 @@ static int soc_camera_video_start(struct soc_camera_device *icd)
 {
 	const struct device_type *type = icd->vdev->dev.type;
 	int ret;
+	int nr = -1;
+	struct i2c_client *client = to_i2c_client(to_soc_camera_control(icd));
 
 	if (!icd->parent)
 		return -ENODEV;
 
-	ret = video_register_device(icd->vdev, VFL_TYPE_GRABBER, -1);
+	if (!strcmp(client->name, "samsung_mainsensor"))
+		nr = 0;
+	else
+		nr = 1;
+
+	ret = video_register_device(icd->vdev, VFL_TYPE_GRABBER, nr);
 	if (ret < 0) {
 		dev_err(icd->pdev, "video_register_device failed: %d\n", ret);
 		return ret;

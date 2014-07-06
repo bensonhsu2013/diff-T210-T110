@@ -75,6 +75,7 @@ typedef struct _EehMsgStruct
 	unsigned int msgId;
 	char msgDesc[EEH_MSG_DESC_LEN];   //for save AP assert description
 	char processName[NAME_MAX + 1]; //for save process name
+	int force;    //indicate whether force to reset cp or need to check the configuration in configure file
 }EehMsgStruct;
 
 typedef struct _EehAppAssertParam
@@ -86,6 +87,7 @@ typedef struct _EehAppAssertParam
 typedef struct _EehCpSilentResetParam
 {
 	char msgDesc[EEH_MSG_DESC_LEN];
+	int force;
 }EehCpSilentResetParam;
 
 typedef struct _EehAppCrashParam
@@ -110,6 +112,8 @@ typedef enum _EehModemChipType
 {
 	EEH_MODEM_CHIP_TYPE_PXA988,
 	EEH_MODEM_CHIP_TYPE_PXA986,
+	EEH_MODEM_CHIP_TYPE_PXA1T88,
+	EEH_MODEM_CHIP_TYPE_PXA1088,
 	EEH_MODEM_CHIP_TYPE_UNKNOWN
 }EehModemChipType;
 

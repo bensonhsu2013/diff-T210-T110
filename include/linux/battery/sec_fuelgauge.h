@@ -19,11 +19,21 @@
 #ifndef __SEC_FUELGAUGE_H
 #define __SEC_FUELGAUGE_H __FILE__
 
+#if defined(CONFIG_FUELGAUGE_MFD)
+#define fuelgauge_variable fuelgauge
+#define fuelgauge_variable_t struct sec_fuelgauge_info
+#else
+#define fuelgauge_variable (fuelgauge->client)
+#define fuelgauge_variable_t struct i2c_client
+#endif
+
 #include <linux/battery/sec_charging_common.h>
 
 #if defined(CONFIG_FUELGAUGE_DUMMY) || \
 	defined(CONFIG_FUELGAUGE_PM8917)
 #include <linux/battery/fuelgauge/dummy_fuelgauge.h>
+#elif defined(CONFIG_FUELGAUGE_ADC)
+#include <linux/battery/fuelgauge/adc_fuelgauge.h>
 #elif defined(CONFIG_FUELGAUGE_MAX17042)
 #include <linux/battery/fuelgauge/max17042_fuelgauge.h>
 #elif defined(CONFIG_FUELGAUGE_MAX17048)
@@ -32,6 +42,14 @@
 #include <linux/battery/fuelgauge/max17050_fuelgauge.h>
 #elif defined(CONFIG_FUELGAUGE_STC3115)
 #include <linux/battery/fuelgauge/stc3115_fuelgauge.h>
+#elif defined(CONFIG_FUELGAUGE_D2199)
+#include <linux/battery/fuelgauge/d2199_fuelgauge.h>
+#elif defined(CONFIG_FUELGAUGE_RT5033)
+#include <linux/battery/fuelgauge/rt5033_fuelgauge.h>
+#elif defined(CONFIG_STBC_SAMSUNG)
+#include <linux/battery/fuelgauge/stbcfg01_fuelgauge.h>
+#elif defined (CONFIG_FUELGAUGE_88PM822)
+#include <linux/battery/fuelgauge/88pm80x_fg.h>
 #endif
 
 struct sec_fuelgauge_reg_data {
@@ -53,6 +71,7 @@ struct sec_fuelgauge_info {
 	 * used in individual fuel gauge file only
 	 * (ex. dummy_fuelgauge.c)
 	 */
+
 	struct sec_fg_info	info;
 
 	bool is_fuel_alerted;
@@ -67,20 +86,21 @@ struct sec_fuelgauge_info {
 	/* register programming */
 	int reg_addr;
 	u8 reg_data[2];
+
 };
 
-bool sec_hal_fg_init(struct i2c_client *);
-bool sec_hal_fg_suspend(struct i2c_client *);
-bool sec_hal_fg_resume(struct i2c_client *);
-bool sec_hal_fg_fuelalert_init(struct i2c_client *, int);
-bool sec_hal_fg_is_fuelalerted(struct i2c_client *);
+bool sec_hal_fg_init(fuelgauge_variable_t *);
+bool sec_hal_fg_suspend(fuelgauge_variable_t *);
+bool sec_hal_fg_resume(fuelgauge_variable_t *);
+bool sec_hal_fg_fuelalert_init(fuelgauge_variable_t *, int);
+bool sec_hal_fg_is_fuelalerted(fuelgauge_variable_t *);
 bool sec_hal_fg_fuelalert_process(void *, bool);
-bool sec_hal_fg_full_charged(struct i2c_client *);
-bool sec_hal_fg_reset(struct i2c_client *);
-bool sec_hal_fg_get_property(struct i2c_client *,
+bool sec_hal_fg_full_charged(fuelgauge_variable_t *);
+bool sec_hal_fg_reset(fuelgauge_variable_t *);
+bool sec_hal_fg_get_property(fuelgauge_variable_t *,
 				enum power_supply_property,
 				union power_supply_propval *);
-bool sec_hal_fg_set_property(struct i2c_client *,
+bool sec_hal_fg_set_property(fuelgauge_variable_t *,
 				enum power_supply_property,
 				const union power_supply_propval *);
 
@@ -105,11 +125,19 @@ ssize_t sec_fg_store_attrs(struct device *dev,
 	.store = sec_fg_store_attrs,			\
 }
 
+#if defined(CONFIG_FUELGAUGE_D2199)
+enum {
+	FG_REG = 0,
+	FG_DATA,
+	FG_REGS,
+};
+#else
 enum {
 	FG_CURR_UA = 0,
 	FG_REG,
 	FG_DATA,
 	FG_REGS,
 };
+#endif
 
 #endif /* __SEC_FUELGAUGE_H */

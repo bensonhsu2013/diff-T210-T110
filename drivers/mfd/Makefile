@@ -4,8 +4,13 @@
 
 88pm860x-objs			:= 88pm860x-core.o 88pm860x-i2c.o
 obj-$(CONFIG_MFD_88PM860X)	+= 88pm860x.o
+obj-$(CONFIG_MFD_88PM830)	+= 88pm830.o
 obj-$(CONFIG_MFD_88PM800)	+= 88pm800.o 88pm80x.o
 obj-$(CONFIG_MFD_88PM805)	+= 88pm805.o 88pm80x.o
+obj-$(CONFIG_MFD_88PM822)	+= 88pm822.o
+ifeq ($(CONFIG_SEC_PM_DEBUG),y)
+obj-$(CONFIG_MFD_88PM822)	+= 88pm822-dbg.o
+endif
 obj-$(CONFIG_MFD_SM501)		+= sm501.o
 obj-$(CONFIG_MFD_ASIC3)		+= asic3.o tmio_core.o
 
@@ -18,6 +23,11 @@ obj-$(CONFIG_PXA_DS1WM)		+= pxa-w1.o
 obj-$(CONFIG_MFD_DAVINCI_VOICECODEC)	+= davinci_voicecodec.o
 obj-$(CONFIG_MFD_DM355EVM_MSP)	+= dm355evm_msp.o
 obj-$(CONFIG_MFD_TI_SSP)	+= ti-ssp.o
+
+obj-$(CONFIG_MFD_D2199)		+= d2199-core.o d2199-i2c.o d2199-irq.o
+ifeq ($(CONFIG_SEC_PM_DEBUG),y)
+obj-$(CONFIG_MFD_D2199)		+= d2199-dbg.o
+endif
 
 obj-$(CONFIG_MFD_STMPE)		+= stmpe.o
 obj-$(CONFIG_STMPE_I2C)		+= stmpe-i2c.o
@@ -120,3 +130,6 @@ obj-$(CONFIG_MFD_INTEL_MSIC)	+= intel_msic.o
 obj-$(CONFIG_MFD_RC5T583)	+= rc5t583.o rc5t583-irq.o
 obj-$(CONFIG_MFD_S5M_CORE)	+= s5m-core.o s5m-irq.o
 obj-$(CONFIG_MFD_ANATOP)	+= anatop-mfd.o
+obj-$(CONFIG_MFD_RT8973)	+= rt8973.o
+obj-$(CONFIG_MFD_RT5033) += rt5033_core.o rt5033_irq.o
+obj-$(CONFIG_MFD_STBC) += sec_stbc.o

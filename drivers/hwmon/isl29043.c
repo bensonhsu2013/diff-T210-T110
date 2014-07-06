@@ -594,7 +594,7 @@ static int isl29043_probe(struct i2c_client *client,
 	if (isl29043_dev.pdata->wakup_gpio) {
 		device_set_wakeup_capable(&isl29043_dev.input_dev_ps->dev, 1);
 		INIT_WORK(&ps_wakeup_work, ps_wakeup_worker);
-		edge = kmalloc(sizeof(struct gpio_edge_desc), GFP_KERNEL);
+		edge = kzalloc(sizeof(struct gpio_edge_desc), GFP_KERNEL);
 		edge->mfp = isl29043_dev.pdata->wakup_gpio;
 		edge->handler = ps_edge_wakeup;
 		isl29043_dev.edge_ps_desc = edge;

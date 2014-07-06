@@ -32,6 +32,16 @@ config INPUT_88PM80X_ONKEY
 	  To compile this driver as a module, choose M here: the module
 	  will be called 88pm80x_onkey.
 
+config INPUT_88PM822_ONKEY
+	tristate "88PM822 ONKEY support"
+	depends on MFD_88PM822
+	help
+	  Support the ONKEY of Marvell 88PM822 PMICs as an input device
+	  reporting power button status.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called 88pm822_onkey.
+
 config INPUT_AB8500_PONKEY
 	tristate "AB8500 Pon (PowerOn) Key"
 	depends on AB8500_CORE
@@ -71,6 +81,13 @@ config INPUT_AD714X_SPI
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called ad714x-spi.
+
+config INPUT_D2199_ONKEY
+	tristate "D2199 ONKEY support"
+	depends on MFD_D2199
+	help
+	  Say Y here if you want the ONKEY functionality from the
+	  Dialog D2199 multifunction device
 
 config INPUT_BMA150
 	tristate "BMA150/SMB380 acceleration sensor support"

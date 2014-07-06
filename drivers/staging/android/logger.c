@@ -25,25 +25,24 @@
 #include <linux/poll.h>
 #include <linux/slab.h>
 #include <linux/time.h>
+#ifdef CONFIG_KERNEL_DEBUG_SEC
 #include <linux/fb.h>
+#include <linux/semaphore.h>
+#endif
 #include "logger.h"
 
 #include <asm/ioctls.h>
 
-
 #ifdef CONFIG_KERNEL_DEBUG_SEC
-// GAF
+/* GAF */
 #include <linux/sched.h>
 #include <linux/kthread.h>
 #include <linux/delay.h>
 
-//extern struct GAForensicINFO GAFINFO;
-
-//{{ Add GAForensicINFO
-#pragma once
-#include <linux/fs.h>
 #include <linux/mount.h>
 #include <asm/pgtable.h>
+
+#define MULTI_CHAR4(c0, c1, c2, c3) (((c0)<<24) | ((c1)<<16) | ((c2)<<8) | (c3))
 
 static struct GAForensicINFO{
   unsigned short ver;
@@ -153,7 +152,7 @@ static struct GAForensicINFO{
   .dentry_struct_d_parent=offsetof(struct dentry,d_parent),
   .dentry_struct_d_name=offsetof(struct dentry,d_name),
   .qstr_struct_name=offsetof(struct qstr,name),
-//  .vfsmount_struct_mnt_mountpoint=offsetof(struct vfsmount,mnt_mountpoint),
+  //.vfsmount_struct_mnt_mountpoint=offsetof(struct vfsmount,mnt_mountpoint),
   .vfsmount_struct_mnt_root=offsetof(struct vfsmount,mnt_root),
   //.vfsmount_struct_mnt_parent=offsetof(struct vfsmount,mnt_parent),
   .pgdir_shift=0x15,
@@ -176,10 +175,12 @@ static struct GAForensicINFO{
   .task_struct_struct_se=offsetof(struct task_struct, se),
 
   .sched_entity_struct_exec_start=offsetof(struct sched_entity, exec_start),
-  .sched_entity_struct_sum_exec_runtime=offsetof(struct sched_entity, sum_exec_runtime),
-  .sched_entity_struct_prev_sum_exec_runtime=offsetof(struct sched_entity, prev_sum_exec_runtime),
+  .sched_entity_struct_sum_exec_runtime=
+				offsetof(struct sched_entity, sum_exec_runtime),
+  .sched_entity_struct_prev_sum_exec_runtime=
+				offsetof(struct sched_entity, prev_sum_exec_runtime),
 
-#if defined (CONFIG_SCHEDSTATS) || (CONFIG_TASK_DELAY_ACCT)
+#if defined (CONFIG_SCHEDSTATS) || defined(CONFIG_TASK_DELAY_ACCT)
   .task_struct_struct_sched_info=offsetof(struct task_struct, sched_info),
   .sched_info_struct_pcount=offsetof(struct sched_info, pcount),
   .sched_info_struct_run_delay=offsetof(struct sched_info, run_delay),
@@ -219,26 +220,27 @@ static struct GAForensicINFO{
 
   .GAFINFOCheckSum=0
 };
-//}} Add GAForensicINFO
 
 void dump_one_task_info(struct task_struct *tsk, bool isMain)
 {
+
 	char stat_array[3] = { 'R', 'S', 'D'};
 	char stat_ch;
 	char *pThInf = tsk->stack;
 
-	stat_ch = tsk->state <= TASK_UNINTERRUPTIBLE ? stat_array[tsk->state] : '?';
+	stat_ch = tsk->state <= TASK_UNINTERRUPTIBLE ?
+				stat_array[tsk->state] : '?';
 	printk( "%8d %8d %8d %16lld %c (%d) %3d %08x %c %s\n",
-		tsk->pid, (int)(tsk->utime), (int)(tsk->stime), tsk->se.exec_start, stat_ch, (int)(tsk->state),
+		tsk->pid, (int)(tsk->utime), (int)(tsk->stime),
+		tsk->se.exec_start, stat_ch, (int)(tsk->state),
 		*(int*)(pThInf + GAFINFO.thread_info_struct_cpu),
 		(int)tsk, isMain?'*':' ', tsk->comm );
 	
-	if( tsk->state == TASK_RUNNING || tsk->state == TASK_UNINTERRUPTIBLE ) {
+	if((tsk->state == TASK_RUNNING) || (tsk->state == TASK_UNINTERRUPTIBLE))
 		show_stack(tsk, NULL);
-	}
 }
 
-void dump_all_task_info()
+void dump_all_task_info(void)
 {
 	struct task_struct *frst_tsk;
 	struct task_struct *curr_tsk;
@@ -292,9 +294,9 @@ void dump_all_task_info()
 #define arch_idle_time(cpu) 0
 #endif
 	
-void dump_cpu_stat()
+void dump_cpu_stat(void)
 {
-	int i, j;
+	int cpu_i, irq_j;
 	unsigned long jif;
 	
 	cputime64_t user, nice, system, idle, iowait, irq, softirq, steal;
@@ -310,29 +312,28 @@ void dump_cpu_stat()
 	getboottime(&boottime);
 	jif = boottime.tv_sec;
 	
-	for_each_possible_cpu(i) {
-		user = cputime64_add(user, kcpustat_cpu(i).cpustat[CPUTIME_USER]);
-		nice = cputime64_add(nice, kcpustat_cpu(i).cpustat[CPUTIME_NICE]);
-		system = cputime64_add(system, kcpustat_cpu(i).cpustat[CPUTIME_SYSTEM]);
-		idle = cputime64_add(idle, kcpustat_cpu(i).cpustat[CPUTIME_IDLE]);
-		idle = cputime64_add(idle, arch_idle_time(i));
-		iowait = cputime64_add(iowait, kcpustat_cpu(i).cpustat[CPUTIME_IOWAIT]);
-		irq = cputime64_add(irq, kcpustat_cpu(i).cpustat[CPUTIME_IRQ]);
-		softirq = cputime64_add(softirq, kcpustat_cpu(i).cpustat[CPUTIME_SOFTIRQ]);
-		//steal = cputime64_add(steal, kstat_cpu(i).cpustat.steal);
-		//guest = cputime64_add(guest, kstat_cpu(i).cpustat.guest);
+	for_each_possible_cpu(cpu_i) {
+		user = cputime64_add(user, kcpustat_cpu(cpu_i).cpustat[CPUTIME_USER]);
+		nice = cputime64_add(nice, kcpustat_cpu(cpu_i).cpustat[CPUTIME_NICE]);
+		system = cputime64_add(system, kcpustat_cpu(cpu_i).cpustat[CPUTIME_SYSTEM]);
+		idle = cputime64_add(idle, kcpustat_cpu(cpu_i).cpustat[CPUTIME_IDLE]);
+		idle = cputime64_add(idle, arch_idle_time(cpu_i));
+		iowait = cputime64_add(iowait, kcpustat_cpu(cpu_i).cpustat[CPUTIME_IOWAIT]);
+		irq = cputime64_add(irq, kcpustat_cpu(cpu_i).cpustat[CPUTIME_IRQ]);
+		softirq = cputime64_add(softirq, kcpustat_cpu(cpu_i).cpustat[CPUTIME_SOFTIRQ]);
+		//steal = cputime64_add(steal, kstat_cpu(cpu_i).cpustat.steal);
+		//guest = cputime64_add(guest, kstat_cpu(cpu_i).cpustat.guest);
 		//guest_nice = cputime64_add(guest_nice,
-		//kstat_cpu(i).cpustat.guest_nice);
-		for_each_irq_nr(j) {
-			sum += kstat_irqs_cpu(i, j);
-		}
+		//kstat_cpu(cpu_i).cpustat.guest_nice);
+		for_each_irq_nr(irq_j)
+			sum += kstat_irqs_cpu(irq_j, cpu_i);
 		
-		sum += arch_irq_stat_cpu(i);
+		sum += arch_irq_stat_cpu(cpu_i);
 		
-		for (j=0; j< NR_SOFTIRQS; j++)
+		for (irq_j = 0; irq_j < NR_SOFTIRQS; irq_j++)
 		{
-			unsigned int softirq_stat = kstat_softirqs_cpu(j, i);
-			per_softirq_sums[j] += softirq_stat;
+			unsigned int softirq_stat = kstat_softirqs_cpu(irq_j, cpu_i);
+			per_softirq_sums[irq_j] += softirq_stat;
 			sum_softirq += softirq_stat;
 		}
 	}
@@ -352,22 +353,22 @@ void dump_cpu_stat()
 		(unsigned long long)0);//cputime64_to_clock_t(guest_nice));
 	printk(" -----------------------------------------------------------------------------------\n" );
 	
-	for_each_online_cpu(i) {
+	for_each_online_cpu(cpu_i) {
 		/* Copy values here to work around gcc-2.95.3, gcc-2.96 */
-		user = kcpustat_cpu(i).cpustat[CPUTIME_USER];
-		nice = kcpustat_cpu(i).cpustat[CPUTIME_NICE];
-		system = kcpustat_cpu(i).cpustat[CPUTIME_SYSTEM];
-		idle = kcpustat_cpu(i).cpustat[CPUTIME_IDLE];
+		user = kcpustat_cpu(cpu_i).cpustat[CPUTIME_USER];
+		nice = kcpustat_cpu(cpu_i).cpustat[CPUTIME_NICE];
+		system = kcpustat_cpu(cpu_i).cpustat[CPUTIME_SYSTEM];
+		idle = kcpustat_cpu(cpu_i).cpustat[CPUTIME_IDLE];
 		idle = cputime64_add(idle, arch_idle_time(i));
-		iowait = kcpustat_cpu(i).cpustat[CPUTIME_IOWAIT];
-		irq = kcpustat_cpu(i).cpustat[CPUTIME_IRQ];
-		softirq = kcpustat_cpu(i).cpustat[CPUTIME_SOFTIRQ];
-		//steal = kstat_cpu(i).cpustat.steal;
-		//guest = kstat_cpu(i).cpustat.guest;
-		//guest_nice = kstat_cpu(i).cpustat.guest_nice;
+		iowait = kcpustat_cpu(cpu_i).cpustat[CPUTIME_IOWAIT];
+		irq = kcpustat_cpu(cpu_i).cpustat[CPUTIME_IRQ];
+		softirq = kcpustat_cpu(cpu_i).cpustat[CPUTIME_SOFTIRQ];
+		//steal = kstat_cpu(cpu_i).cpustat.steal;
+		//guest = kstat_cpu(cpu_i).cpustat.guest;
+		//guest_nice = kstat_cpu(cpu_i).cpustat.guest_nice;
 		
 		printk(" cpu %d user:%llu nice:%llu system:%llu idle:%llu iowait:%llu irq:%llu softirq:%llu %llu %llu %llu\n",
-			i,
+			cpu_i,
 			(unsigned long long)cputime64_to_clock_t(user),
 			(unsigned long long)cputime64_to_clock_t(nice),
 			(unsigned long long)cputime64_to_clock_t(system),
@@ -387,11 +388,11 @@ void dump_cpu_stat()
 	printk(" -----------------------------------------------------------------------------------\n" );
 	
 	/* sum again ? it could be updated? */
-	for_each_irq_nr(j) {
+	for_each_irq_nr(irq_j) {
 		per_irq_sum = 0;
-		for_each_possible_cpu(i)
-		per_irq_sum += kstat_irqs_cpu(j, i);
-		if(per_irq_sum) printk(" irq-%d : %u\n", j, per_irq_sum);
+		for_each_possible_cpu(irq_j)
+		per_irq_sum += kstat_irqs_cpu(irq_j, cpu_i);
+		if(per_irq_sum) printk(" irq-%d : %u\n", irq_j, per_irq_sum);
 	}
 	
 	printk(" -----------------------------------------------------------------------------------\n" );
@@ -399,11 +400,12 @@ void dump_cpu_stat()
 	printk(" softirq : %llu", (unsigned long long)sum_softirq);
 	printk(" -----------------------------------------------------------------------------------\n" );
 	
-	for (i = 0; i < NR_SOFTIRQS; i++)
-		if(per_softirq_sums[i]) printk(" softirq-%d : %u", i, per_softirq_sums[i]);
+	for (irq_j = 0; irq_j < NR_SOFTIRQS; irq_j++)
+		if(per_softirq_sums[irq])
+			printk(" softirq-%d : %u", irq_j, per_softirq_sums[irq_j]);
 			
 	printk(" -----------------------------------------------------------------------------------\n" );
-	return 0;
+	return;
 }
 
 static struct GAForensicHELP{
@@ -419,14 +421,18 @@ int gaf_proc(void* data)
 {
 	volatile int stack[2];
 
-	stack[0] = (int)('_fag');
-	stack[1] = (int)('corp');
+	stack[0] = (int)MULTI_CHAR4('_', 'f', 'a', 'g');
+	stack[1] = (int)MULTI_CHAR4('c', 'o', 'r', 'p');;
 
-	down_interruptible(&g_gaf_mutex);
+	if (down_interruptible(&g_gaf_mutex)) {
+		pr_info("%s: Error down_interruptible.\n", __func__);
+		return -ERESTARTSYS;
+	}
+
 	return 1;
 }
 
-void gaf_helper(void)
+int gaf_helper(void)
 {
 	unsigned int *ptr_task_struct;
 	unsigned int *ptr_thread_info;
@@ -435,35 +441,59 @@ void gaf_helper(void)
 	unsigned int fn_down_interruptible = (unsigned int)down_interruptible;
 	unsigned int fn_down = (unsigned int)down;
 
-	down_interruptible(&g_gaf_mutex);
-	ptr_task_struct = kthread_create(gaf_proc, NULL, "gaf-proc");
-	wake_up_process(ptr_task_struct);
+	if (down_interruptible(&g_gaf_mutex)) {
+		pr_info("%s: Error down_interruptible.\n", __func__);
+		return -ERESTARTSYS;
+	}
+	ptr_task_struct = (unsigned int*)kthread_create(gaf_proc, NULL, "gaf-proc");
+	wake_up_process((struct task_struct *)ptr_task_struct);
 	msleep(100);
 
-	ptr_thread_info = *(unsigned int*)((unsigned int)ptr_task_struct + GAFINFO.task_struct_struct_stack);
-	ptr_cpu_cntx = (unsigned int)ptr_thread_info + GAFINFO.thread_info_struct_cpu_context;
+	ptr_thread_info = *(unsigned int*)((unsigned int)ptr_task_struct +
+					GAFINFO.task_struct_struct_stack);
+	ptr_cpu_cntx = (unsigned int)ptr_thread_info +
+					GAFINFO.thread_info_struct_cpu_context;
 
-	GAFHELP.task_struct_of_gaf_proc = ptr_task_struct;
-	GAFHELP.thread_info_of_gaf_proc = ptr_thread_info;
-	GAFHELP.cpu_context_of_gaf_proc = ptr_cpu_cntx;
+	GAFHELP.task_struct_of_gaf_proc = (unsigned int)ptr_task_struct;
+	GAFHELP.thread_info_of_gaf_proc = (unsigned int)ptr_thread_info;
+	GAFHELP.cpu_context_of_gaf_proc = (unsigned int)ptr_cpu_cntx;
 
 	printk("\n========== kernel thread : gaf-proc ==========\n");
-	printk("task_struct at %x\n", ptr_task_struct);
-	printk("thread_info at %x\n\n", ptr_thread_info);
+	printk("task_struct at %x\n", (unsigned int)ptr_task_struct);
+	printk("thread_info at %x\n\n", (unsigned int)ptr_thread_info);
 
-	printk("saved_cpu_context at %x\n", ptr_cpu_cntx);
-	printk("%08x r4 :%08x r5 :%08x r6 :%08x r7 :%08x\n", ((unsigned int)ptr_cpu_cntx + 0x00), *(unsigned int*)((unsigned int)ptr_cpu_cntx + 0x00), *(unsigned int*)((unsigned int)ptr_cpu_cntx + 0x04), *(unsigned int*)((unsigned int)ptr_cpu_cntx + 0x08), *(unsigned int*)((unsigned int)ptr_cpu_cntx + 0x0c));
-	printk("%08x r8 :%08x r9 :%08x r10:%08x r11:%08x\n", ((unsigned int)ptr_cpu_cntx + 0x10), *(unsigned int*)((unsigned int)ptr_cpu_cntx + 0x10), *(unsigned int*)((unsigned int)ptr_cpu_cntx + 0x14), *(unsigned int*)((unsigned int)ptr_cpu_cntx + 0x18), *(unsigned int*)((unsigned int)ptr_cpu_cntx + 0x1c));
-	printk("%08x sp :%08x pc :%08x \n\n", ((unsigned int)ptr_cpu_cntx + 0x20), *(unsigned int*)((unsigned int)ptr_cpu_cntx + 0x20), *(unsigned int*)((unsigned int)ptr_cpu_cntx + 0x24));
-	ptr_sp = context_sp = *(unsigned int*)((unsigned int)ptr_cpu_cntx + GAFINFO.cpu_context_save_struct_sp);
+	printk("saved_cpu_context at %x\n", (unsigned int)ptr_cpu_cntx);
+	printk("%08x r4 :%08x r5 :%08x r6 :%08x r7 :%08x\n",
+		((unsigned int)ptr_cpu_cntx + 0x00),
+		*(unsigned int*)((unsigned int)ptr_cpu_cntx + 0x00),
+		*(unsigned int*)((unsigned int)ptr_cpu_cntx + 0x04),
+		*(unsigned int*)((unsigned int)ptr_cpu_cntx + 0x08),
+		*(unsigned int*)((unsigned int)ptr_cpu_cntx + 0x0c));
+	printk("%08x r8 :%08x r9 :%08x r10:%08x r11:%08x\n",
+		((unsigned int)ptr_cpu_cntx + 0x10),
+		*(unsigned int*)((unsigned int)ptr_cpu_cntx + 0x10),
+		*(unsigned int*)((unsigned int)ptr_cpu_cntx + 0x14),
+		*(unsigned int*)((unsigned int)ptr_cpu_cntx + 0x18),
+		*(unsigned int*)((unsigned int)ptr_cpu_cntx + 0x1c));
+	printk("%08x sp :%08x pc :%08x \n\n",
+		((unsigned int)ptr_cpu_cntx + 0x20),
+		*(unsigned int*)((unsigned int)ptr_cpu_cntx + 0x20),
+		*(unsigned int*)((unsigned int)ptr_cpu_cntx + 0x24));
+	ptr_sp = context_sp = *(unsigned int*)((unsigned int)ptr_cpu_cntx +
+		GAFINFO.cpu_context_save_struct_sp);
 
-	printk("searching saved pc which is stopped in down_interruptible() from %08x to %08x\n", ptr_sp, (unsigned int)ptr_thread_info + THREAD_SIZE);
-	printk("down_interruptible() is from %08x to %08x\n\n", fn_down_interruptible, fn_down);
+	printk("searching saved pc which is stopped in down_interruptible()"
+		" from %08x to %08x\n", ptr_sp,
+		(unsigned int)ptr_thread_info + THREAD_SIZE);
+	printk("down_interruptible() is from %08x to %08x\n\n",
+		fn_down_interruptible, fn_down);
 
 	while(ptr_sp < (unsigned int)ptr_thread_info + THREAD_SIZE) {
-		//printk("%08x at %08x\n", *(unsigned int*)ptr_sp, ptr_sp);
-		if( fn_down_interruptible <= *(unsigned int*)ptr_sp && *(unsigned int*)ptr_sp < fn_down ) {
-			printk("pc (%08x) is found at %08x\n", *(unsigned int*)ptr_sp, ptr_sp);
+		if( fn_down_interruptible <=
+			*(unsigned int*)ptr_sp &&
+				*(unsigned int*)ptr_sp < fn_down ) {
+			printk("pc (%08x) is found at %08x\n",
+				*(unsigned int*)ptr_sp, ptr_sp);
 			break;
 		}
 		ptr_sp += 4;
@@ -472,118 +502,124 @@ void gaf_helper(void)
 	if(ptr_sp < (unsigned int)ptr_thread_info + THREAD_SIZE ) {
 
 		GAFHELP.real_pc_from_context_sp = ptr_sp -context_sp;	
-		printk("%08x r4 :xxxxxxxx r5 :%08x r6 :%08x r7 :%08x\n", (ptr_sp -0x2c), *(unsigned int*)(ptr_sp -0x28), *(unsigned int*)(ptr_sp -0x24), *(unsigned int*)(ptr_sp -0x20));
-		printk("%08x r8 :%08x r9 :%08x r10:%08x r11:%08x\n", (ptr_sp -0x1c), *(unsigned int*)(ptr_sp -0x1c), *(unsigned int*)(ptr_sp -0x18), *(unsigned int*)(ptr_sp -0x14), *(unsigned int*)(ptr_sp -0x10));
-		printk("%08x r12:%08x sp :%08x lr :%08x pc :%08x\n", (ptr_sp -0x0c), *(unsigned int*)(ptr_sp -0x0c), *(unsigned int*)(ptr_sp -0x08), *(unsigned int*)(ptr_sp -0x04), *(unsigned int*)(ptr_sp -0x00));
+		printk("%08x r4 :xxxxxxxx r5 :%08x r6 :%08x r7 :%08x\n",
+			(ptr_sp -0x2c), *(unsigned int*)(ptr_sp -0x28),
+			*(unsigned int*)(ptr_sp -0x24),
+			*(unsigned int*)(ptr_sp -0x20));
+		printk("%08x r8 :%08x r9 :%08x r10:%08x r11:%08x\n",
+			(ptr_sp -0x1c), *(unsigned int*)(ptr_sp -0x1c),
+			*(unsigned int*)(ptr_sp -0x18),
+			*(unsigned int*)(ptr_sp -0x14),
+			*(unsigned int*)(ptr_sp -0x10));
+		printk("%08x r12:%08x sp :%08x lr :%08x pc :%08x\n",
+			(ptr_sp -0x0c), *(unsigned int*)(ptr_sp -0x0c),
+			*(unsigned int*)(ptr_sp -0x08),
+			*(unsigned int*)(ptr_sp -0x04),
+			*(unsigned int*)(ptr_sp -0x00));
 	} else {
 		GAFHELP.real_pc_from_context_sp = 0xFFFFFFFF;
 		printk("pc is not found\n");
 	} 
 	printk("===================\n\n");
+
+	return 0;
 }
-#endif
 
-
-
-#ifdef CONFIG_KERNEL_DEBUG_SEC
-//{{ Mark for GetLog -1/2
+/* Mark for GetLog -1/2 */
 struct struct_plat_log_mark {
-	u32 special_mark_1;
-	u32 special_mark_2;
-	u32 special_mark_3;
-	u32 special_mark_4;
-	void *p_main;
-	void *p_radio;
-	void *p_events;
-	void *p_system;
+       u32 special_mark_1;
+       u32 special_mark_2;
+       u32 special_mark_3;
+       u32 special_mark_4;
+       void *p_main;
+       void *p_radio;
+       void *p_events;
+       void *p_system;
 };
 
 static struct struct_plat_log_mark plat_log_mark = {
-	.special_mark_1 = (('*' << 24) | ('^' << 16) | ('^' << 8) | ('*' << 0)),
-	.special_mark_2 = (('I' << 24) | ('n' << 16) | ('f' << 8) | ('o' << 0)),
-	.special_mark_3 = (('H' << 24) | ('e' << 16) | ('r' << 8) | ('e' << 0)),
-	.special_mark_4 = (('p' << 24) | ('l' << 16) | ('o' << 8) | ('g' << 0)),
-	.p_main = 0,
-	.p_radio = 0,
-	.p_events = 0,
-	.p_system= 0,
+       .special_mark_1 = (('*' << 24) | ('^' << 16) | ('^' << 8) | ('*' << 0)),
+       .special_mark_2 = (('I' << 24) | ('n' << 16) | ('f' << 8) | ('o' << 0)),
+       .special_mark_3 = (('H' << 24) | ('e' << 16) | ('r' << 8) | ('e' << 0)),
+       .special_mark_4 = (('p' << 24) | ('l' << 16) | ('o' << 8) | ('g' << 0)),
+       .p_main = 0,
+       .p_radio = 0,
+       .p_events = 0,
+       .p_system= 0,
 };
 
 struct struct_marks_ver_mark {
-	u32 special_mark_1;
-	u32 special_mark_2;
-	u32 special_mark_3;
-	u32 special_mark_4;
-	u32 log_mark_version;
-	u32 framebuffer_mark_version;
-	void * this;		/* this is used for addressing log buffer in 2 dump files*/
-	u32 first_size;		/* first memory block's size */
-	u32 first_start_addr;	/* first memory block'sPhysical address */
-	u32 second_size;	/* second memory block's size */
-	u32 second_start_addr;	/* second memory block'sPhysical address */
+       u32 special_mark_1;
+       u32 special_mark_2;
+       u32 special_mark_3;
+       u32 special_mark_4;
+       u32 log_mark_version;
+       u32 framebuffer_mark_version;
+       void * this;            /* this is used for addressing log buffer in 2 dump files*/
+       u32 first_size;         /* first memory block's size */
+       u32 first_start_addr;   /* first memory block'sPhysical address */
+       u32 second_size;        /* second memory block's size */
+       u32 second_start_addr;  /* second memory block'sPhysical address */
 };
 
 static struct struct_marks_ver_mark marks_ver_mark = {
-	.special_mark_1 = (('*' << 24) | ('^' << 16) | ('^' << 8) | ('*' << 0)),
-	.special_mark_2 = (('I' << 24) | ('n' << 16) | ('f' << 8) | ('o' << 0)),
-	.special_mark_3 = (('H' << 24) | ('e' << 16) | ('r' << 8) | ('e' << 0)),
-	.special_mark_4 = (('v' << 24) | ('e' << 16) | ('r' << 8) | ('s' << 0)),
-	.log_mark_version = 1,
-	.framebuffer_mark_version = 1,
-	.this=&marks_ver_mark,
-	.first_size=512*1024*1024,	// it has dependency on h/w
-	.first_start_addr=0x00000000,	// it has dependency on h/w
-	.second_size=0,	// it has dependency on h/w
-	.second_start_addr=0	// it has dependency on h/w
+       .special_mark_1 = (('*' << 24) | ('^' << 16) | ('^' << 8) | ('*' << 0)),
+       .special_mark_2 = (('I' << 24) | ('n' << 16) | ('f' << 8) | ('o' << 0)),
+       .special_mark_3 = (('H' << 24) | ('e' << 16) | ('r' << 8) | ('e' << 0)),
+       .special_mark_4 = (('v' << 24) | ('e' << 16) | ('r' << 8) | ('s' << 0)),
+       .log_mark_version = 1,
+       .framebuffer_mark_version = 1,
+       .this=&marks_ver_mark,
+       .first_size=512*1024*1024,      // it has dependency on h/w
+       .first_start_addr=0x00000000,   // it has dependency on h/w
+       .second_size=0, // it has dependency on h/w
+       .second_start_addr=0    // it has dependency on h/w
 };
 
 static struct {
-	u32 special_mark_1;
-	u32 special_mark_2;
-	u32 special_mark_3;
-	u32 special_mark_4;
-	void *p_fb;		/* it must be physical address */
-	u32 xres;
-	u32 yres;
-	u32 bpp;		/* color depth : 16 or 24 */
-	u32 frames;		/* frame buffer count : 2 */
+       u32 special_mark_1;
+       u32 special_mark_2;
+       u32 special_mark_3;
+       u32 special_mark_4;
+       void *p_fb;             /* it must be physical address */
+       u32 xres;
+       u32 yres;
+       u32 bpp;                /* color depth : 16 or 24 */
+       u32 frames;             /* frame buffer count : 2 */
 } frame_buf_mark = {
-	.special_mark_1 = (('*' << 24) | ('^' << 16) | ('^' << 8) | ('*' << 0)),
-	.special_mark_2 = (('I' << 24) | ('n' << 16) | ('f' << 8) | ('o' << 0)),
-	.special_mark_3 = (('H' << 24) | ('e' << 16) | ('r' << 8) | ('e' << 0)),
-	.special_mark_4 = (('f' << 24) | ('b' << 16) | ('u' << 8) | ('f' << 0)),
-};
-//}} Mark for GetLog -1/2
-#endif /* CONFIG_KERNEL_DEBUG_SEC */
+       .special_mark_1 = (('*' << 24) | ('^' << 16) | ('^' << 8) | ('*' << 0)),
+       .special_mark_2 = (('I' << 24) | ('n' << 16) | ('f' << 8) | ('o' << 0)),
+       .special_mark_3 = (('H' << 24) | ('e' << 16) | ('r' << 8) | ('e' << 0)),
+       .special_mark_4 = (('f' << 24) | ('b' << 16) | ('u' << 8) | ('f' << 0)),
+}; /* Mark for GetLog -1/2 */
 
-#ifdef CONFIG_KERNEL_DEBUG_SEC
-//{{ pass platform log to kernel - 1/3
+/* pass platform log to kernel - 1/3 */
 static char klog_buf[512];
 
 static void __sec_getlog_supply_fbinfo(void *p_fb, u32 xres, u32 yres,
-				       u32 bpp, u32 frames)
+                                      u32 bpp, u32 frames)
 {
-	if (p_fb) {
-		pr_debug("%s: 0x%p %d %d %d %d\n", __func__, p_fb, xres, yres,
-			bpp, frames);
-		frame_buf_mark.p_fb = p_fb;
-		frame_buf_mark.xres = xres;
-		frame_buf_mark.yres = yres;
-		frame_buf_mark.bpp = bpp;
-		frame_buf_mark.frames = frames;
-	}
+       if (p_fb) {
+               pr_debug("%s: 0x%p %d %d %d %d\n", __func__, p_fb, xres, yres,
+                       bpp, frames);
+               frame_buf_mark.p_fb = p_fb;
+               frame_buf_mark.xres = xres;
+               frame_buf_mark.yres = yres;
+               frame_buf_mark.bpp = bpp;
+               frame_buf_mark.frames = frames;
+       }
 }
 
 /* TODO: currently there is no other way than injecting this function .*/
 void sec_getlog_supply_fbinfo(struct fb_info *fb)
 {
-	__sec_getlog_supply_fbinfo((void *)fb->fix.smem_start,
-				   fb->var.xres,
-				   fb->var.yres,
-				   fb->var.bits_per_pixel, 2);
+       __sec_getlog_supply_fbinfo((void *)fb->fix.smem_start,
+                                  fb->var.xres,
+                                  fb->var.yres,
+                                  fb->var.bits_per_pixel, 2);
 }
 EXPORT_SYMBOL(sec_getlog_supply_fbinfo);
-//}} pass platform log to kernel - 1/3
+/* pass platform log to kernel - 1/3 */
 #endif /* CONFIG_KERNEL_DEBUG_SEC */
 
 /*
@@ -959,6 +995,18 @@ static void do_write_log(struct logger_log *log, const void *buf, size_t count)
 	if (count != len)
 		memcpy(log->buffer, buf + len, count - len);
 
+#ifdef CONFIG_KERNEL_DEBUG_SEC
+	/* pass platform log (!@hello) to kernel - 2/3 */
+	memset(klog_buf,0,511);
+	if(strncmp(log->buffer  + log->w_off,  "!@", 2) == 0) {
+		if (count < 511)
+			memcpy(klog_buf,log->buffer  + log->w_off, count);
+		else
+			memcpy(klog_buf,log->buffer  + log->w_off, 511);
+		klog_buf[511]=0;
+	}
+	/* pass platform log (!@hello) to kernel - 2/3 */
+#endif
 	log->w_off = logger_offset(log, log->w_off + count);
 
 }
@@ -991,16 +1039,16 @@ static ssize_t do_write_log_from_user(struct logger_log *log,
 			return -EFAULT;
 
 #ifdef CONFIG_KERNEL_DEBUG_SEC
-	//{{ pass platform log (!@hello) to kernel - 2/3
-	memset(klog_buf,0,255);
+	/* pass platform log (!@hello) to kernel - 2/3 */
+	memset(klog_buf,0,511);
 	if(strncmp(log->buffer  + log->w_off,  "!@", 2) == 0) {
-		if (count < 255)
+		if (count < 511)
 			memcpy(klog_buf,log->buffer  + log->w_off, count);
 		else
-			memcpy(klog_buf,log->buffer  + log->w_off, 255);
-		klog_buf[255]=0;
+			memcpy(klog_buf,log->buffer  + log->w_off, 511);
+		klog_buf[511]=0;
 	}
-	//}} pass platform log (!@hello) to kernel - 2/3
+	/* pass platform log (!@hello) to kernel - 2/3 */
 #endif /* CONFIG_KERNEL_DEBUG_SEC */
 	log->w_off = logger_offset(log, log->w_off + count);
 
@@ -1072,12 +1120,12 @@ ssize_t logger_aio_write(struct kiocb *iocb, const struct iovec *iov,
 	wake_up_interruptible(&log->wq);
 	
 #ifdef CONFIG_KERNEL_DEBUG_SEC
-	//{{ pass platform log (!@hello) to kernel - 3/3
+	/* pass platform log (!@hello) to kernel - 3/3 */
 	if(strncmp(klog_buf, "!@", 2) == 0)
 	{
 		printk("%s\n",klog_buf);
 	}
-	//}} pass platform log (!@hello) to kernel - 3/3
+	/* pass platform log (!@hello) to kernel - 3/3 */
 #endif /* CONFIG_KERNEL_DEBUG_SEC */
 
 	return ret;
@@ -1344,21 +1392,21 @@ static int __init init_log(struct logger_log *log)
 static int __init logger_init(void)
 {
 	int ret;
-	unsigned int address_mask =0x0fffffff;
 
 #ifdef CONFIG_KERNEL_DEBUG_SEC
-	//{{ Mark for GetLog -2/2
+	/* Mark for GetLog -2/2 */
 	plat_log_mark.p_main = _buf_log_main;
 	plat_log_mark.p_radio = _buf_log_radio;
 	plat_log_mark.p_events = _buf_log_events;
 	plat_log_mark.p_system = _buf_log_system;
 	marks_ver_mark.log_mark_version = 1;
-	//}} Mark for GetLog -2/2
+	/* Mark for GetLog -2/2 */
 #endif /* CONFIG_KERNEL_DEBUG_SEC */
 
 #ifdef CONFIG_KERNEL_DEBUG_SEC
-// GAF
-	gaf_helper();
+	/* GAF */
+	if (gaf_helper() < 0)
+		pr_info("%s: acquire the semaphore request failed\n",__func__);
 #endif
 
 

@@ -48,7 +48,7 @@
 #endif
 
 #if defined(CONFIG_SPA)
-#include <linux/power/spa.h>
+#include <mach/spa.h>
 static void (*spa_external_event)(int, int) = NULL;
 #endif
 
@@ -72,10 +72,11 @@ static irqreturn_t sa1100_rtc_interrupt(int irq, void *dev_id)
 	unsigned long events = 0;
 
 #if defined(CONFIG_SPA)
+	printk("sa1100_rtc_interrupt\n");
+
 	if(spa_external_event)
 		spa_external_event(SPA_CATEGORY_BATTERY, SPA_BATTERY_EVENT_SLEEP_MONITOR);
 #endif
-
 	spin_lock(&info->lock);
 
 	rtsr = RTSR;
@@ -293,6 +294,7 @@ static int sa1100_rtc_probe(struct platform_device *pdev)
 	rtc_irq_set_freq(rtc, NULL, RTC_FREQ);
 
 #if defined(CONFIG_SPA)
+	printk("sa1100_rtc_probe get ext event\n");
 	spa_external_event = spa_get_external_event_handler();
 #endif
 

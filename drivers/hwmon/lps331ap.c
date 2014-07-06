@@ -628,14 +628,11 @@ static void lps331ap_prs_input_work_func(struct work_struct *work)
 
 int lps331ap_prs_input_open(struct input_dev *input)
 {
-	struct lps331ap_prs_data *prs = input_get_drvdata(input);
-
-	return lps331ap_prs_enable(prs);
+	return 0;
 }
 
 void lps331ap_prs_input_close(struct input_dev *dev)
 {
-	lps331ap_prs_disable(input_get_drvdata(dev));
 }
 
 static int lps331ap_prs_validate_pdata(struct lps331ap_prs_data *prs)

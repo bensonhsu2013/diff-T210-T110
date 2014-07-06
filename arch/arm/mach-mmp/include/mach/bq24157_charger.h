@@ -23,18 +23,6 @@ struct bq24157_platform_data{
 	struct wake_lock	stat_irq_wakelock;
 	struct delayed_work	set_current_limit_work;
 	struct wake_lock	set_current_limit_wakelock;
-	unsigned int max_charger_current;
-	unsigned int max_charger_voltage;
-	unsigned int regulation_voltage;
-	unsigned int cin_limit_current;
-	unsigned int weak_bat_voltage;
-	unsigned int charge_ta_current;
-	unsigned int charge_usb_current;
-	bool low_charge_mode;
-	unsigned int dpm_voltage;
-	unsigned int temination_current;
-	unsigned int lpm_temination_current;
-	bool termination_en;
 };
 
 
@@ -80,10 +68,10 @@ struct bq24157_platform_data{
 #define LIN_LIMIT1	(1 << 6)
 #define	V_LOWV2		(1 << 5)
 #define V_LOWV1		(1 << 4)
-#define TE		(1 << 3)
+#define BQ_TE		(1 << 3)
 #define CE		(1 << 2)
 #define HZ_MODE		(1 << 1)
-#define OPA_MODE	(1 << 0)
+#define BQ_OPA_MODE	(1 << 0)
 
 #define LIN_LIMIT		(LIN_LIMIT1 | LIN_LIMIT2)
 #define USB_100MA		0
@@ -97,29 +85,25 @@ struct bq24157_platform_data{
 #define WEAK_BATTERY_3500MV	(V_LOWV1)
 #define WEAK_BATTERY_3400MV	0
 
-#define TE_ENABLE 	(TE)
+#define TE_ENABLE	(BQ_TE)
 #define TE_DISABLE	0
-#define	INPUT_CURRENT_LIMIT_SHIFT	6
-#define	ENABLE_ITERM_SHIFT		3
-#define	WEAK_BATTERY_VOLTAGE_SHIFT	4
 
 /* BQ24157_BATTERY_VOLTAGE REGISTER */
 #define VO_REG5		(1 << 7)
-#define VO_REG4		(1 << 6)	
+#define VO_REG4		(1 << 6)
 #define VO_REG3		(1 << 5)
 #define VO_REG2		(1 << 4)
 #define VO_REG1		(1 << 3)
 #define VO_REG0		(1 << 2)
-#define OTG_PL		(1 << 1)
-#define OTG_EN		(1 << 0)
+#define BQ_OTG_PL		(1 << 1)
+#define BQ_OTG_EN		(1 << 0)
 
 #define	VO_REG		(VO_REG0 | VO_REG1 | VO_REG2 | \
 			 VO_REG3 | VO_REG4 | VO_REG5 )
- 
+
 #define VOLTAGE_4200MV	(VO_REG5 | VO_REG1 | VO_REG0)
 #define VOLTAGE_4350MV	(VO_REG5 | VO_REG3 | VO_REG1)
-#define VOLTAGE_4360MV	(VO_REG5 | VO_REG3 | VO_REG1 | VO_REG0)
-#define VOLTAGE_SHIFT	2
+#define VOLTAGE_4380MV	(VO_REG5 | VO_REG3 | VO_REG2)
 
 /* BQ24157_VENDER_PART_REVISION REGISTER */
 #define VENDER2		(1 << 7)
@@ -160,7 +144,7 @@ struct bq24157_platform_data{
 #define VI_TERM_300MA	(VI_TERM0 | VI_TERM2)
 #define VI_TERM_350MA	(VI_TERM1 | VI_TERM2)
 #define VI_TERM_400MA	(VI_TERM0 | VI_TERM1 | VI_TERM2)
-#define CHARGE_CURRENT_SHIFT	4
+
 
 /* BQ24157_CHARGER_VOLTAGE REGISTER */
 #define LOW_CHG		(1 << 5)
@@ -170,8 +154,6 @@ struct bq24157_platform_data{
 #define VSREG1		(1 << 1)
 #define VSREG0		(1 << 0)
 
-#define DPM_MASK (VSREG0 | VSREG1 | VSREG2)
-#define DPM_4600 (VSREG2 | VSREG0)
 
 #define LOW_CHG_CURRENT		LOW_CHG
 #define NORMAL_CHG_CURRENT	0
@@ -186,11 +168,7 @@ struct bq24157_platform_data{
 #define VMREG1		(1 << 1)
 #define VMREG0		(1 << 0)
 
-#define LIMIT_VOLTAGE_MASK (VMREG0 | VMREG1 | VMREG2 | VMREG3)
-#define LIMIT_VOLTAGE_4340MV	(VMREG0 | VMREG1 | VMREG2)
-#define VMREG (VMREG0 | VMREG1 | VMREG2 | VMREG3 | VMCHRG0 | VMCHRG1 | VMCHRG2 | VMCHRG3)
-#define LIMIT_4360MV_1150MA (VMREG3 | VMCHRG1 | VMCHRG2)
-#define LIMIT_4200MV_1150MA (VMCHRG1 | VMCHRG2)
-#define	MAX_CURRENT_SHIFT		4
-
+#define LIMIT_VOLTAGE_CURRENT_MASK (VMREG0 | VMREG1 | VMREG2 | VMREG3 | VMCHRG0 | VMCHRG1 | VMCHRG2 | VMCHRG3)
+#define LIMIT_4340MV_1150MA	(VMREG0 | VMREG1 | VMREG2 | VMCHRG3)
+#define LIMIT_4400MV_1350MA	(VMREG1 | VMREG3 | VMCHRG2 | VMCHRG3)
 #endif

@@ -292,10 +292,19 @@ void die(const char *str, struct pt_regs *regs, int err)
 	raw_spin_unlock_irq(&die_lock);
 	oops_exit();
 
+#ifdef CONFIG_SEC_DEBUG
+	if (in_interrupt())
+		panic("%-51s\nPC is at %-42pS\nLR is at %-42pS",
+				"Fatal exception in interrupt", (void *)regs->ARM_pc, (void *)regs->ARM_lr);
+	if (panic_on_oops)
+		panic("%-51s\nPC is at %-42pS\nLR is at %-42pS",
+				"Fatal exception", (void *)regs->ARM_pc, (void *)regs->ARM_lr);
+#else
 	if (in_interrupt())
 		panic("Fatal exception in interrupt");
 	if (panic_on_oops)
 		panic("Fatal exception");
+#endif
 	if (ret != NOTIFY_STOP)
 		do_exit(SIGSEGV);
 }
@@ -479,14 +488,14 @@ static int bad_syscall(int n, struct pt_regs *regs)
 	return regs->ARM_r0;
 }
 
-static inline void
+static inline int
 do_cache_op(unsigned long start, unsigned long end, int flags)
 {
 	struct mm_struct *mm = current->active_mm;
 	struct vm_area_struct *vma;
 
 	if (end < start || flags)
-		return;
+		return -EINVAL;
 
 	down_read(&mm->mmap_sem);
 	vma = find_vma(mm, start);
@@ -497,10 +506,10 @@ do_cache_op(unsigned long start, unsigned long end, int flags)
 			end = vma->vm_end;
 
 		up_read(&mm->mmap_sem);
-		flush_cache_user_range(start, end);
-		return;
+		return flush_cache_user_range(start, end);
 	}
 	up_read(&mm->mmap_sem);
+	return -EINVAL;
 }
 
 /*
@@ -546,8 +555,7 @@ asmlinkage int arm_syscall(int no, struct pt_regs *regs)
 	 * the specified region).
 	 */
 	case NR(cacheflush):
-		do_cache_op(regs->ARM_r0, regs->ARM_r1, regs->ARM_r2);
-		return 0;
+		return do_cache_op(regs->ARM_r0, regs->ARM_r1, regs->ARM_r2);
 
 	case NR(usr26):
 		if (!(elf_hwcap & HWCAP_26BIT))

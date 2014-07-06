@@ -135,6 +135,13 @@ config RTC_DRV_88PM860X
 	  This driver can also be built as a module. If so, the module
 	  will be called rtc-88pm860x.
 
+config RTC_DRV_D2199
+	tristate "Dialog Semiconductor D2199"
+	depends on MFD_D2199
+	help
+	  If you say yes here you get support for RTC function of the
+	  Dialog Semiconductor D2199 multifunction device.
+
 config RTC_DRV_88PM80X
 	tristate "Marvell 88PM80x"
 	depends on RTC_CLASS && I2C && MFD_88PM800
@@ -144,6 +151,16 @@ config RTC_DRV_88PM80X
 
 	  This driver can also be built as a module. If so, the module
 	  will be called rtc-88pm80x.
+
+config RTC_DRV_88PM822
+	tristate "Marvell 88PM822"
+	depends on RTC_CLASS && I2C && MFD_88PM822
+	help
+	  If you say yes here you get support for RTC function in Marvell
+	  88PM822 chips.
+
+	  This driver can also be built as a module. If so, the module
+	  will be called rtc-88pm822.
 
 config RTC_DRV_DS1307
 	tristate "Dallas/Maxim DS1307/37/38/39/40, ST M41T00, EPSON RX-8025"

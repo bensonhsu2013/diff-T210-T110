@@ -16,6 +16,7 @@
 #include <linux/types.h>
 #include <linux/io.h>
 #include <linux/mmc/host.h>
+#include <linux/slab.h>
 
 struct sdhci_host {
 	/* Data set by hardware interface driver */
@@ -96,8 +97,12 @@ struct sdhci_host {
 #define SDHCI_QUIRK2_PRESET_VALUE_BROKEN               	(1<<2)
 /* Controller data timeout counter is 4 times long as spec defined */
 #define SDHCI_QUIRK2_TIMEOUT_DIVIDE_4			(1<<3)
+/* Controller enable HW bus clock gating by default */
+#define SDHCI_QUIRK2_BUS_CLK_GATE_ENABLED		(1<<4)
+/* Controller must disable clock gate by software during CMDs */
+#define SDHCI_QUIRK2_SDIO_SW_CLK_GATE			(1<<5)
 /* After SD host request, prevent system to suspend state for a while */
-#define SDHCI_QUIRK2_HOLDSUSPEND_AFTER_REQUEST	(1<<4)
+#define SDHCI_QUIRK2_HOLDSUSPEND_AFTER_REQUEST		(1<<6)
 
 	int irq;		/* Device IRQ */
 	void __iomem *ioaddr;	/* Mapped address */
@@ -145,7 +150,7 @@ struct sdhci_host {
 
 	struct mmc_request *mrq;	/* Current request */
 	struct mmc_command *cmd;	/* Current command */
-	struct mmc_data *data;	/* Current data request */
+	struct mmc_data *data;		/* Current data request */
 	unsigned int data_early:1;	/* Data finished before cmd */
 
 	struct sg_mapping_iter sg_miter;	/* SG state for PIO */
@@ -156,6 +161,8 @@ struct sdhci_host {
 	u8 *adma_desc;		/* ADMA descriptor table */
 	u8 *align_buffer;	/* Bounce buffer */
 
+	struct kmem_cache *adma_cache;
+	struct kmem_cache *align_cache;
 	dma_addr_t adma_addr;	/* Mapped ADMA descr. table */
 	dma_addr_t align_addr;	/* Mapped bounce buffer */
 
@@ -176,27 +183,18 @@ struct sdhci_host {
 
 	unsigned int		tuning_count;	/* Timer count for re-tuning */
 	unsigned int		tuning_mode;	/* Re-tuning mode supported by host */
+	unsigned int		power_mode;	/* Contain the current power mode of the host */
 #define SDHCI_TUNING_MODE_1	0
 	struct timer_list	tuning_timer;	/* Timer for tuning */
 	int	constrain_ref;
 
 	/*
-	* A workaroud to improve the muti-blocks R/W performance
-	* Example:
-	* The user APP iperf doesn't claim system suspend lock in some case,
-	* so the system may enter to suspend state even iperf is running.
-	* And the iperf throughput test result would decrease.
-	*
-	* If R/W are called so frequently, we use this timeout wakelock to
-	* pervent suspend. But if the R/W stops for a while, the wakelock
-	* will be releaseed and system has chance to enter suspend.
-	*
-	* if the system want to support this feature,
-	* set "SDHCI_QUIRK_HOLDSUSPEND_AFTER_REQUEST" in the quirks2
+	* New feature: prevent suspend if bus is keepping busy
+	* enabled by "SDHCI_QUIRK_HOLDSUSPEND_AFTER_REQUEST" in the quirks2
 	*/
-	struct wake_lock muti_trans_lock;
-	int	muti_trans_lock_en;
-	int	muti_trans_timeout;
+	struct wake_lock busbusy_wakelock;
+	int	busbusy_wakelock_en;
+	int	busbusy_timeout;
 
 	unsigned long private[0] ____cacheline_aligned;
 };

@@ -19,7 +19,6 @@
 #include <linux/io.h>
 
 #include <linux/mmc/sdhci.h>
-#include <plat/clock.h>
 
 /*
  * Controller registers
@@ -396,8 +395,6 @@ static inline void *sdhci_priv(struct sdhci_host *host)
 extern void sdhci_card_detect(struct sdhci_host *host);
 extern int sdhci_add_host(struct sdhci_host *host);
 extern void sdhci_remove_host(struct sdhci_host *host, int dead);
-extern void gic_dump(void);
-extern void sdh_clk_dump(struct clk *clk);
 
 #ifdef CONFIG_PM
 extern int sdhci_suspend_host(struct sdhci_host *host);

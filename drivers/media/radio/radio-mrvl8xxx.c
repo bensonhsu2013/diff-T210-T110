@@ -81,7 +81,6 @@ static int radio_nr = -1;
 #define FM_SET_AFC		0x98
 #define FM_SET_MPX		0x9A
 #define FM_SET_CHANNEL_STEP_SIZE 0x35
-#define FM_POWERDOWN		0x9F
 
 #define FM_EVENT_RDS_DATA	0x81
 #define FM_EVENT_CUR_RSSI	0x82
@@ -93,7 +92,6 @@ static int radio_nr = -1;
 #define FM_EVENT_HCI_GENE	0xA0
 #define FM_EVENT_FOUND_CHANNEL 0x88
 
-#define FM_STOP_SEARCH		0x57
 
 #define FM_FREQ_LOW			87500
 #define FM_FREQ_HIGT		108100
@@ -113,9 +111,9 @@ static int radio_nr = -1;
 
 #define PINMUX_OPCODE	CMD_OPCODE(0x3F, 0x2A)
 #define FM_PINMUX	0x03
-#define DEFAULT_CMD_WAIT_TIME 8
+#define DEFAULT_CMD_WAIT_TIME 10
 /* scan all takes 40+ seconds before sending reply */
-#define SCAN_ALL_WAIT_TIME 20
+#define SCAN_ALL_WAIT_TIME 80
 
 struct cmdrequest {
 	uint8_t		idx;
@@ -127,6 +125,7 @@ struct mrvl8xxx_device {
 	struct v4l2_device	v4l2_dev;
 	struct video_device	vdev;
 	struct mutex		lock;
+	struct mutex		o_r_lock;
 	struct socket		*sock;
 
 	struct task_struct	*thread;
@@ -152,21 +151,6 @@ struct mrvl8xxx_device {
 
 static struct mrvl8xxx_device mrvl8xxx_dev;
 
-#define FM_RADIO_FREQLIST_MAX			(99)
-
-/* for full search, it is Samsung requirement*/
-enum
-{
-	FULL_SEARCH_NONE		= 0x00,
-	FULL_SEARCH_PROCESSING,
-	FULL_SEARCH_COMPLETE
-};
-
-static int mrvl8xxx_setcaps(gid_t grp);
-static int	found_ch_count = 0;
-static uint32_t found_channel_list[FM_RADIO_FREQLIST_MAX];
-static int current_ch_pos = 0;
-static uint8_t	fullSearchstate = FULL_SEARCH_NONE; 
 
 static int mrvl8xxx_hci_open_device(struct mrvl8xxx_device *dev)
 {
@@ -220,7 +204,6 @@ static int mrvl8xxx_hci_sendcmd(struct mrvl8xxx_device *dev,
 	uint8_t cmdlen;
 	int err = 0;
 
-	printk(KERN_ERR "[## [marvell fm] mrvl8xxx_hci_sendcmd: idx : 0x%02x , len:%d, val = 0x%08x\n",idx, len, val);
 	dev->request.idx = idx;
 	dev->request.val = val;
 	dev->request.len = len;
@@ -243,11 +226,6 @@ static int mrvl8xxx_hci_sendcmd(struct mrvl8xxx_device *dev,
 
 	memset(&msg, 0, sizeof(msg));
 
-#ifdef CONFIG_ANDROID_PARANOID_NETWORK
-	mrvl8xxx_setcaps(AID_NET_BT_ADMIN);
-	mrvl8xxx_setcaps(AID_NET_RAW);
-#endif
-
 	err = kernel_sendmsg(sock, &msg, vec, 3, cmdlen+4);
 	if (err < 0)
 		printk(KERN_ERR "[fm] mrvl8xxx_hci_sendcmd: failed to kernel_sendmsg, return: %d\n", err);
@@ -259,21 +237,9 @@ static int mrvl8xxx_hci_sendcmd_sync(struct mrvl8xxx_device *dev,
 	uint16_t opcode, uint8_t idx, uint64_t val, int len, int wait_time)
 {
 	DECLARE_COMPLETION_ONSTACK(complete);
-	int retry_count = 0;
+	int retry_count = 3;
 	int ret = -1;
 
-	if (idx == FM_STOP_SEARCH)
-	{
-		if (mrvl8xxx_hci_sendcmd(dev, opcode, idx, val, len) < 0)
-			return -1;
-
-		mutex_lock(&dev->lock);
-		printk(KERN_ERR "[fm] mrvl8xxx_hci_sendcmd_sync: Full Search Stop");
-		mutex_unlock(&dev->lock);
-		
-		return 0;
-	}
-	
 	mutex_lock(&dev->lock);
 
 cmd_start:
@@ -282,12 +248,6 @@ cmd_start:
 	else
 		goto cmd_end;
 
-	if (idx == FM_SET_INT_MASK)
-	{
-		/* set interrupt mask */
-		dev->intr_mask = val;
-	}
-	
 	if (mrvl8xxx_hci_sendcmd(dev, opcode, idx, val, len) < 0)
 		goto cmd_end;
 
@@ -305,91 +265,6 @@ cmd_end:
 
 	mutex_unlock(&dev->lock);
 	return ret;
-}
-
-/* for full search, it is Samsung requirement*/
-static int mrvl8xxx_hci_sendcmd_async(struct mrvl8xxx_device *dev,
-	uint16_t opcode, uint8_t idx, uint64_t val, int len, int wait_time)
-{
-	DECLARE_COMPLETION_ONSTACK(complete);
-	int retry_count = 0;
-	int ret = -1;
-
-	mutex_lock(&dev->lock);
-cmd_start:
-	if (dev->sock)
-		dev->cmd_done = &complete;
-	else
-		goto cmd_end;
-
-	if (mrvl8xxx_hci_sendcmd(dev, opcode, idx, val, len) < 0)
-		goto cmd_end;
-
-	if (!wait_for_completion_timeout(&complete, HZ*wait_time)) {
-		if (retry_count) {
-			retry_count--;
-			goto cmd_start;
-		}
-	} else
-		ret = 0;
-
-cmd_end:
-	mutex_unlock(&dev->lock);
-	return ret;
-}
-
-static int mrvl8xxx_get_search_result(struct mrvl8xxx_device *dev)
-{
-	DECLARE_COMPLETION_ONSTACK(complete);
-	int retry_count = 0;
-
-	mutex_lock(&dev->lock);
-cmd_start:
-	if (found_ch_count > current_ch_pos)
-		goto cmd_end;
-	
-	if (fullSearchstate == FULL_SEARCH_COMPLETE)
-	{
-		printk(KERN_ERR "[MRVL-mrvl8xxx_get_search_result] : Search is complete \n");
-		fullSearchstate = FULL_SEARCH_NONE;
-		goto cmd_end;
-	}
-	
-	if (dev->sock)
-		dev->cmd_done = &complete;
-	else
-		goto cmd_end;
-	
-	if (!wait_for_completion_timeout(&complete, HZ*DEFAULT_CMD_WAIT_TIME)) {
-		if (retry_count) {
-			retry_count--;
-			goto cmd_start;
-		}
-	}
-cmd_end:
-	mutex_unlock(&dev->lock);
-
-	dev->cmd_done = NULL;
-
-	if (found_ch_count > current_ch_pos)
-	{
-		printk(KERN_ERR "[MRVL-mrvl8xxx_get_search_result] : found channel = %d \n", found_channel_list[current_ch_pos]);
-		return found_channel_list[current_ch_pos++];
-	}
-	else
-	{
-		printk(KERN_ERR "[MRVL-mrvl8xxx_get_search_result] : Search is Error \n");
-	}
-		
-	if (fullSearchstate == FULL_SEARCH_COMPLETE)
-	{
-		printk(KERN_ERR "[MRVL-mrvl8xxx_get_search_result] : Search is complete \n");
-		fullSearchstate = FULL_SEARCH_NONE;
-		return 0;
-	}
-
-	// search error
-	return 0;
 }
 
 static int mrvl8xxx_hci_recvmsg(struct socket *sock, char *pbuf, uint32_t len)
@@ -421,17 +296,11 @@ static int mrvl8xxx_hci_parse_response(struct mrvl8xxx_device *dev, char *buf, i
 			printk(KERN_ERR "[fm] hci_parse_cmdevent: data len incorrect:%d\n", rlen);
 			return -1;
 		}
-//		if (buf[7] != dev->request.idx) {
-//			printk(KERN_ERR "[fm] hci_parse_cmdevent: command not match:%x:%x\n", buf[7], dev->request.idx);
-//			return -1;
-//		}
+		if (buf[7] != dev->request.idx) {
+			printk(KERN_ERR "[fm] hci_parse_cmdevent: command not match:%x:%x\n", buf[7], dev->request.idx);
+			return -1;
+		}
 		rlen -= 6;
-	}
-
-	if (buf[4] != 0x80 || buf[5] != 0xFE)
-	{
-	        //printk(KERN_ERR "[fm] hci_parse_cmdevent: Non-FM Command Complete Event Received :%x:%x\n", buf[4], buf[5]);
-	        return -1;
 	}
 
 	dev->request.len = rlen;
@@ -439,12 +308,6 @@ static int mrvl8xxx_hci_parse_response(struct mrvl8xxx_device *dev, char *buf, i
 
 	if (rlen) {
 		memcpy(&dev->request.val, &buf[9], rlen);
-	}
-
-	if ((buf[7] == FM_SET_CHANNEL) && fullSearchstate == FULL_SEARCH_PROCESSING)
-	{
-		printk(KERN_ERR "[fm] hci_parse_cmdevent: command matched:%x:%x\n", buf[7], dev->request.idx);
-		fullSearchstate = FULL_SEARCH_COMPLETE;
 	}
 
 	if (dev->cmd_done){
@@ -456,15 +319,6 @@ static int mrvl8xxx_hci_parse_response(struct mrvl8xxx_device *dev, char *buf, i
 
 	return 0;
 }
-
-#define FMRX_GET32(buff) ((long)(buff)[0] |		  \
-						 ((long)(buff)[1] << 8UL) | \
-						 ((long)(buff)[2] << 16UL) |\
-						 ((long)(buff)[3] << 24UL))
-
-
-
-#define FMRX_GET16(buff) ((buff)[0] | ((buff)[1] << 8U))
 
 static int mrvl8xxx_hci_parse_event(struct mrvl8xxx_device *dev, char *buf, int len)
 {
@@ -507,33 +361,6 @@ static int mrvl8xxx_hci_parse_event(struct mrvl8xxx_device *dev, char *buf, int 
 			else
 				dev->ein++;
 			dev->ein = dev->ein % DEPTH_EVENTS;
-
-			printk(KERN_ERR "[MRVL-mrvl8xxx_hci_parse_event] : received event %d\n", type);
-			if (type == FM_EVENT_FOUND_CHANNEL)
-			{
-				int found_ch;
-				unsigned short found_ch_RSSI;
-				int index = 4;
-				
-				printk(KERN_ERR "[MRVL-mrvl8xxx_hci_parse_event] : received event %d\n", type);
-
-				found_ch	= FMRX_GET32(&buf[index]); index+=4;
-				found_ch_RSSI = FMRX_GET16(&buf[index]); index+=2;
-
-				printk(KERN_ERR "[MRVL-mrvl8xxx_hci_parse_event] : found channel = %d, RSSI = %d\n", found_ch, found_ch_RSSI);
-				found_channel_list[found_ch_count++] = found_ch;
-
-				if (dev->cmd_done)
-				{
-					struct completion	*done;
-
-					printk(KERN_ERR "[MRVL-mrvl8xxx_hci_parse_event] : command is done\n");
-						
-					done = dev->cmd_done;
-					dev->cmd_done = NULL;
-					complete(done);
-				}
-			}
 			break;
 	}
 
@@ -545,7 +372,7 @@ static int mrvl8xxx_hci_parse_event(struct mrvl8xxx_device *dev, char *buf, int 
 
 static void mrvl8xxx_op_mode_receiver(struct mrvl8xxx_device *dev, int audio_mode)
 {
-	printk(KERN_DEBUG "[fm] select radio mode: %d\n", audio_mode);
+	printk(KERN_DEBUG "[fm] select radio mode\n");
 
 	mrvl8xxx_hci_sendcmd_sync(dev, FM_OPCODE,
 		FM_RESET, 0, 0, DEFAULT_CMD_WAIT_TIME);
@@ -586,13 +413,9 @@ static void mrvl8xxx_op_mode_receiver(struct mrvl8xxx_device *dev, int audio_mod
 		bit[0], RSSI low
 		bit[1], New RDS data
 		bit[2], RSSI indication */
-	/* must to be set by UI or FM Stack */
-	/* dev->intr_mask = 0x05; // RDS disable
+	dev->intr_mask = 0x07;
 	mrvl8xxx_hci_sendcmd_sync(dev, FM_OPCODE,
 		FM_SET_INT_MASK, dev->intr_mask, 4, DEFAULT_CMD_WAIT_TIME);
-	*/
-	dev->intr_mask = 0x00;
-	
 	/* Set step to 100 kHz */
 	mrvl8xxx_hci_sendcmd_sync(dev, FM_OPCODE,
 		FM_SET_CHANNEL_STEP_SIZE, 0x0064, 4, DEFAULT_CMD_WAIT_TIME);
@@ -785,10 +608,7 @@ static int mrvl8xxx_vidioc_g_ctrl(struct file *file, void *priv,
 				DEFAULT_CMD_WAIT_TIME);
 			ctrl->value = dev->request.val;
 			break;
-		case MRVL8XXX_CID_SCAN_ALL:
-			retval = mrvl8xxx_get_search_result(dev);
-			ctrl->value = retval;
-			break;
+
 		default:
 			return -EINVAL;
 	}
@@ -796,11 +616,6 @@ static int mrvl8xxx_vidioc_g_ctrl(struct file *file, void *priv,
 	return retval;
 }
 
-#define StoreLE32(buff,num) ( ((buff)[3] = (U8) ((num)>>24)),  \
-                              ((buff)[2] = (U8) ((num)>>16)),  \
-                              ((buff)[1] = (U8) ((num)>>8)),   \
-                              ((buff)[0] = (U8) (num)) )
-                              
 static int mrvl8xxx_vidioc_s_ctrl (struct file *file, void *priv,
 					struct v4l2_control *ctrl)
 {
@@ -833,28 +648,10 @@ static int mrvl8xxx_vidioc_s_ctrl (struct file *file, void *priv,
 
 	case MRVL8XXX_CID_SCAN_ALL:
 		cmd_send = ctrl->value | ((uint64_t) 0x100000000LL);
-#if 1
-		/* for full search, it is Samsung requirement*/
-		if (fullSearchstate != FULL_SEARCH_PROCESSING)
-		{
-			found_ch_count = 0;
-			memset (found_channel_list, 0x00, sizeof(uint32_t)*FM_RADIO_FREQLIST_MAX);
-			current_ch_pos = 0;
-			fullSearchstate = FULL_SEARCH_PROCESSING;
-
-			retval = retval = mrvl8xxx_hci_sendcmd_async(dev,
-												FM_OPCODE, FM_SET_CHANNEL, cmd_send, 5,
-												SCAN_ALL_WAIT_TIME);
-			/* set timeout to 80 seconds */
-		}
-		else
-			retval = 0;
-#else
 		retval = mrvl8xxx_hci_sendcmd_sync(dev,
 			FM_OPCODE, FM_SET_CHANNEL, cmd_send, 5,
 			SCAN_ALL_WAIT_TIME);
 			/* set timeout to 80 seconds */
-#endif
 	break;
 
 	case MRVL8XXX_CID_OP_MODE:
@@ -967,13 +764,12 @@ static int mrvl8xxx_fops_open(struct file *file)
 	struct mrvl8xxx_device *dev = &mrvl8xxx_dev;
 	int err = 0;
 
-	printk(KERN_DEBUG "[fm] mrvl8xxx_fops_open : current usage = %d\n", dev->usage);
-	if (atomic_inc_return(&dev->usage) > 1)
-	{
-		printk(KERN_DEBUG "[fm] mrvl8xxx_fops_open : Radio is already ready state(%d)\n", dev->usage);
+	mutex_lock(&dev->o_r_lock);
+
+	if (atomic_inc_return(&dev->usage) > 1) {
+		mutex_unlock(&dev->o_r_lock);
 		return 0;
 	}
-
 #ifdef CONFIG_ANDROID_PARANOID_NETWORK
 	mrvl8xxx_setcaps(AID_NET_BT_ADMIN);
 	mrvl8xxx_setcaps(AID_NET_RAW);
@@ -989,19 +785,20 @@ static int mrvl8xxx_fops_open(struct file *file)
 
 	err = mrvl8xxx_hci_open_device(dev);
 	if (err < 0) {
+		mutex_unlock(&dev->o_r_lock);
 		printk(KERN_ERR "[fm] failed to open hci device!\n");
-		atomic_dec_return(&dev->usage);
 		return err;
 	}
 
 	dev->stop_thread = 0;
 	dev->thread = kthread_run(mrvl8xxx_thread, dev, "mrvlfm");
 	if (IS_ERR(dev->thread)) {
+		mutex_unlock(&dev->o_r_lock);
 		printk(KERN_ERR "[fm] mrvl8xxx_fops_open: fail to kthread_run\n");
-		atomic_dec_return(&dev->usage);
 		return PTR_ERR(dev->thread);
 	}
 
+	mutex_unlock(&dev->o_r_lock);
 	return 0;
 }
 
@@ -1009,10 +806,10 @@ static int mrvl8xxx_fops_release(struct file *file)
 {
 	struct mrvl8xxx_device *dev = &mrvl8xxx_dev;
 
-	printk(KERN_DEBUG "[fm] mrvl8xxx_fops_release : current usage = %d\n", dev->usage);
-	if (atomic_dec_return(&dev->usage) > 0)
-	{
-		printk(KERN_DEBUG "[fm] mrvl8xxx_fops_release : Radio is used another module(%d)\n", dev->usage);
+	mutex_lock(&dev->o_r_lock);
+
+	if (atomic_dec_return(&dev->usage) > 0) {
+		mutex_unlock(&dev->o_r_lock);
 		return 0;
 	}
 
@@ -1025,9 +822,6 @@ static int mrvl8xxx_fops_release(struct file *file)
 			DEFAULT_CMD_WAIT_TIME);
 		mrvl8xxx_hci_sendcmd_sync(dev,
 			FM_OPCODE, FM_SET_MODE, 0x00, 1,
-			DEFAULT_CMD_WAIT_TIME);
-		mrvl8xxx_hci_sendcmd_sync(dev,
-			FM_OPCODE, FM_POWERDOWN, 0x00, 0,
 			DEFAULT_CMD_WAIT_TIME);
 
 		get_task_struct(dev->thread);
@@ -1050,6 +844,8 @@ static int mrvl8xxx_fops_release(struct file *file)
 		sock_release(dev->sock);
 		dev->sock = NULL;
 	}
+
+	mutex_unlock(&dev->o_r_lock);
 
 	printk(KERN_DEBUG "[fm] mrvl8xxx_fops_release exit......\n");
 	return 0;
@@ -1139,33 +935,18 @@ static const struct v4l2_ioctl_ops mrvl8xxx_ioctl_ops = {
 #ifdef CONFIG_HAS_EARLYSUSPEND
 static void mrvl8xxx_sleep_early_suspend(struct early_suspend *h)
 {
-	/* Samsung TD model has not used */
-#if 1
-	return;
-#else
 	struct mrvl8xxx_device *dev = &mrvl8xxx_dev;
-
 	/* disable all the fm events after early suspend */
 	mrvl8xxx_hci_sendcmd_sync(dev, FM_OPCODE,
-			FM_SET_INT_MASK, 0x00000000, 4, DEFAULT_CMD_WAIT_TIME);
-#endif
+		FM_SET_INT_MASK, 0x00000000, 4, DEFAULT_CMD_WAIT_TIME);
 }
 
 static void mrvl8xxx_normal_late_resume(struct early_suspend *h)
 {
-	/* Samsung TD model has not used */
-#if 1
-	return;
-#else
 	struct mrvl8xxx_device *dev = &mrvl8xxx_dev;
-
-	if (dev->intr_mask)
-	{
-		/* re-enable the events after resume */
-		mrvl8xxx_hci_sendcmd_sync(dev, FM_OPCODE,
-						FM_SET_INT_MASK, dev->intr_mask, 4, DEFAULT_CMD_WAIT_TIME);
-	}
-#endif
+	/* re-enable the events after resume */
+	mrvl8xxx_hci_sendcmd_sync(dev, FM_OPCODE,
+		FM_SET_INT_MASK, dev->intr_mask, 4, DEFAULT_CMD_WAIT_TIME);
 }
 
 static struct early_suspend mrvl8xxx_early_suspend_desc = {
@@ -1178,10 +959,6 @@ static struct early_suspend mrvl8xxx_early_suspend_desc = {
 #ifdef CONFIG_PM
 static int mrvl8xxx_fm_suspend(struct device *pltdev)
 {
-	/* Samsung TD model has not used */
-#if 1
-	return 0;
-#else
 	struct mrvl8xxx_device *dev = &mrvl8xxx_dev;
 
 	/* disable all the fm events after early suspend */
@@ -1190,15 +967,10 @@ static int mrvl8xxx_fm_suspend(struct device *pltdev)
 		FM_SET_INT_MASK, 0x00000000, 4, DEFAULT_CMD_WAIT_TIME);
 
 	return 0;
-#endif
 }
 
 static int mrvl8xxx_fm_resume(struct device *pltdev)
 {
-	/* Samsung TD model has not used */
-#if 1
-	return 0;
-#else
 	struct mrvl8xxx_device *dev = &mrvl8xxx_dev;
 
 	/* re-enable the events after resume */
@@ -1207,7 +979,6 @@ static int mrvl8xxx_fm_resume(struct device *pltdev)
 		FM_SET_INT_MASK, dev->intr_mask, 4, DEFAULT_CMD_WAIT_TIME);
 
 	return 0;
-#endif
 }
 
 static const struct dev_pm_ops mrvl8xxx_fm_pmops = {
@@ -1225,6 +996,7 @@ static int mrvl8xxx_init(void)
 
 	strlcpy(v4l2_dev->name, "mrvl8xxx", sizeof(v4l2_dev->name));
 	mutex_init(&mdev->lock);
+	mutex_init(&mdev->o_r_lock);
 	atomic_set(&mdev->usage, 0);
 
 	res = v4l2_device_register(NULL, v4l2_dev);

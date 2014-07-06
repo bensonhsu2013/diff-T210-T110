@@ -459,6 +459,18 @@ retry:
 
 	handle = ion_handle_create(client, buffer);
 
+	if (!ion_buffer_cached(buffer)) {
+		struct scatterlist *sg;
+		int i;
+
+		mutex_lock(&buffer->lock);
+		for_each_sg(buffer->sg_table->sgl, sg,
+			buffer->sg_table->nents, i) {
+			dma_sync_sg_for_device(NULL, sg, 1, DMA_BIDIRECTIONAL);
+		}
+		mutex_unlock(&buffer->lock);
+	}
+
 	/*
 	 * ion_buffer_create will create a buffer with a ref_cnt of 1,
 	 * and ion_handle_create will take a second reference, drop one here
@@ -1310,7 +1322,7 @@ static int ion_debug_heap_show(struct seq_file *s, void *unused)
 
 	seq_printf(s, "\n");
 	seq_printf(s, "%8.s %8.s %10.s %6.s %6.s %6.s %6.s %s\n",
-		"handle", "buf", "size", "flags", "cnt", "pid", "oom", "task");
+		"handle", "phy", "size", "flags", "cnt", "pid", "oom", "task");
 	for (n = rb_first(&dev->clients); n; n = rb_next(n)) {
 		struct ion_client *c;
 		struct rb_node *m;
@@ -1319,8 +1331,9 @@ static int ion_debug_heap_show(struct seq_file *s, void *unused)
 			struct ion_handle *h;
 			h = rb_entry(m, struct ion_handle, node);
 			seq_printf(s,
-				"%8.x %8.x %10.d %6.lx %6.u %6.u %6.d %s\n",
-				(unsigned int)h, (unsigned int)h->buffer,
+				"%08x %08x %10.d %6.lx %6.u %6.u %6.d %s\n",
+				(unsigned int)h,
+				(unsigned int)h->buffer->priv_phys,
 				h->buffer->size, h->buffer->flags,
 				h->buffer->handle_count, h->pid,
 				h->task->signal->oom_score_adj, h->task->comm);
@@ -1328,9 +1341,6 @@ static int ion_debug_heap_show(struct seq_file *s, void *unused)
 	}
 
 	seq_printf(s, "\n");
-	seq_printf(s, "%16.s %16.u\n", "total size /bytes", heap->size);
-	seq_printf(s, "%16.s %16.u\n", "left  size /bytes",
-		heap->size - total_size);
 	return 0;
 }
 

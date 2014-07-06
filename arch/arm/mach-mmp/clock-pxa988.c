@@ -29,13 +29,51 @@
 #include <mach/regs-mpmu.h>
 #include <mach/regs-ciu.h>
 #include <mach/cputype.h>
+#include <mach/features.h>
 #include <mach/clock-pxa988.h>
+#include <mach/pxa168fb.h>
 #include <plat/pxa_trace.h>
 #include <plat/clock.h>
 #include <plat/debugfs.h>
 #include <plat/pm.h>
+#include <plat/devfreq.h>
 
-static int t32clock;
+#define MHZ_TO_HZ	(1000000UL)
+#define MHZ_TO_KHZ	(1000)
+static unsigned long pll2_vco_default;
+static unsigned long pll2_default;
+static unsigned long pll2p_default;
+static unsigned long pll3_vco_default;
+static unsigned long pll3_default;
+static unsigned long pll3p_default;
+
+unsigned long max_freq;
+
+static int __init max_freq_setup(char *str)
+{
+	int n;
+	if (!get_option(&str, &n))
+		return 0;
+	max_freq = n;
+	return 1;
+}
+__setup("max_freq=", max_freq_setup);
+
+/*
+ * uboot pass pll3_vco = xxx (unit is Mhz), it is used
+ * to distinguish whether core and display can share pll3.
+ * if core can use it, core max_freq is setup, else core
+ * will not use pll3p, pll3 will only be used by display
+*/
+static int __init pll3_vco_value_setup(char *str)
+{
+	int n;
+	if (!get_option(&str, &n))
+		return 0;
+	pll3_vco_default = n * MHZ_TO_HZ;
+	return 1;
+}
+__setup("pll3_vco=", pll3_vco_value_setup);
 
 static int __clk_periph_set_rate(struct clk *clk, unsigned long rate);
 static unsigned long __clk_periph_get_rate(struct clk *clk);
@@ -55,7 +93,14 @@ struct periph_clk_tbl {
 
 	/* combined clck rate, such as bus clk that will changed with fclk */
 	unsigned long comclk_rate;
+	unsigned long rtcwtc;
 };
+
+struct xpu_rtcwtc {
+	unsigned long max_rate;
+	unsigned long rtcwtc;
+};
+
 
 union pmum_pll2cr {
 	struct {
@@ -132,15 +177,6 @@ static DEFINE_SPINLOCK(pll3_lock);
 static DEFINE_SPINLOCK(gc_lock);
 static DEFINE_SPINLOCK(vpu_lock);
 
-#define MHZ	(1000000UL)
-#define MHZ_TO_KHZ	(1000)
-static unsigned long pll2_vco_default;
-static unsigned long pll2_default;
-static unsigned long pll2p_default;
-static unsigned long pll3_vco_default;
-static unsigned long pll3_default;
-static unsigned long pll3p_default;
-
 #ifdef CONFIG_DEBUG_FS
 static LIST_HEAD(clk_dcstat_list);
 #endif
@@ -163,12 +199,6 @@ static struct pll_post_div pll_post_div_tbl[] = {
 	tmp |= (set);				\
 	__raw_writel(tmp, clk->clk_rst);	\
 }						\
-
-void sdh_clk_dump(struct clk *clk)
-{
-	printk("clk_ctl: %x\n", __raw_readl(clk->clk_rst));
-}
-EXPORT_SYMBOL_GPL(sdh_clk_dump);
 
 static struct clk ref_vco = {
 	.name = "ref_vco",
@@ -330,8 +360,8 @@ static unsigned int __clk_pll_calc_div(unsigned long rate,
 	unsigned int i;
 	*div = 0;
 
-	rate /= MHZ;
-	parent_rate /= MHZ;
+	rate /= MHZ_TO_HZ;
+	parent_rate /= MHZ_TO_HZ;
 
 	for (i = 0; i < ARRAY_SIZE(pll_post_div_tbl); i++) {
 		if (rate == (parent_rate / pll_post_div_tbl[i].div)) {
@@ -404,9 +434,9 @@ static void clk_pll2_vco_init(struct clk *clk)
 	if (__pll2_is_enabled()) {
 		pll2vco = __get_pll2_freq(&pll2, &pll2p);
 		pr_info("PLL2_VCO is already enabled @ %lu, Expected @ %lu\n",
-			pll2vco * MHZ, pll2_vco_default);
+			pll2vco * MHZ_TO_HZ, pll2_vco_default);
 		/* check whether pll2 is in the range of 2% our expectation */
-		tmp = pll2_vco_default / MHZ;
+		tmp = pll2_vco_default / MHZ_TO_HZ;
 		if (tmp != pll2vco) {
 			pll2_rngh = tmp + tmp * 2 / 100;
 			pll2_rngl = tmp - tmp * 2 / 100;
@@ -438,7 +468,7 @@ static int clk_pll2_vco_enable(struct clk *clk)
 
 	spin_unlock_irqrestore(&pll2_lock, flags);
 
-	if (cpu_pxa98x_stepping() >= PXA98X_A0) {
+	if (has_feat_pll_lock_signal()) {
 		udelay(30);
 		while ((!(__raw_readl(MPMU_POSR) & POSR_PLL2_LOCK)) &&\
 			delaytime) {
@@ -490,14 +520,14 @@ static int clk_pll2_vco_setrate(struct clk *clk, unsigned long rate)
 		return -EPERM;
 	}
 
-	rate = rate / MHZ;
+	rate = rate / MHZ_TO_HZ;
 	if (rate > 2500 || rate < 1200)	{
 		pr_err("%lu rate out of range!\n", rate);
 		return -EINVAL;
 	}
 
 	pr_debug("PLL2_VCO rate %lu -> %lu\n",
-		clk->rate/MHZ, rate);
+		clk->rate/MHZ_TO_HZ, rate);
 
 	spin_lock_irqsave(&pll2_lock, flags);
 	__clk_pll_rate2rng(rate, &kvco, &vcovnrg);
@@ -525,7 +555,7 @@ static int clk_pll2_vco_setrate(struct clk *clk, unsigned long rate)
 	pll2cr.b.en = 0;
 	__raw_writel(pll2cr.v, MPMU_PLL2CR);
 
-	clk->rate = rate * MHZ;
+	clk->rate = rate * MHZ_TO_HZ;
 	spin_unlock_irqrestore(&pll2_lock, flags);
 
 	cur_rate = 26 * pll2cr.b.pll2fbd / pll2cr.b.pll2refd;
@@ -572,7 +602,7 @@ static void clk_pll2_init(struct clk *clk)
 	if (__pll2_is_enabled()) {
 		__get_pll2_freq(&pll2, &pll2p);
 		pr_info("PLL2 is already enabled @ %lu\n",
-			pll2 * MHZ);
+			pll2 * MHZ_TO_HZ);
 		return;
 	}
 	pr_info("PLL2 default rate %lu\n", clk->rate);
@@ -627,7 +657,7 @@ static void clk_pll2p_init(struct clk *clk)
 	if (__pll2_is_enabled()) {
 		__get_pll2_freq(&pll2, &pll2p);
 		pr_info("PLL2P is already enabled @ %lu\n",
-			pll2p * MHZ);
+			pll2p * MHZ_TO_HZ);
 		return;
 	}
 	pr_info("PLL2P default rate %lu\n", clk->rate);
@@ -673,6 +703,22 @@ static struct clk pll2p = {
 	.ops = &clk_pll2p_ops,
 };
 
+static inline int pll3_best_mul(unsigned long rate)
+{
+	int i;
+	unsigned long vco;
+	for (i = 0; i < ARRAY_SIZE(pll_post_div_tbl); i++) {
+		vco = rate * pll_post_div_tbl[i].div;
+		if ((vco > 1200 * MHZ_TO_HZ) && (vco < 2500 * MHZ_TO_HZ))
+			break;
+	}
+	if (i == ARRAY_SIZE(pll_post_div_tbl)) {
+		printk(KERN_ERR "Multiplier is out of range!\n");
+		return -1;
+	}
+	return pll_post_div_tbl[i].div;
+}
+
 static unsigned int __pll3_is_enabled(void)
 {
 	union pmum_pll3cr pll3cr;
@@ -682,7 +728,11 @@ static unsigned int __pll3_is_enabled(void)
 	 * PLL3CR[19:18] = 0x1, 0x2, 0x3 means PLL3 is enabled.
 	 * PLL3CR[19:18] = 0x0 means PLL3 is disabled
 	 */
+#if !defined(CONFIG_CORE_1248)
 	if ((!pll3cr.b.pll3_pu) && (!pll3cr.b.pclk_1248_sel))
+#else
+	if (!pll3cr.b.pll3_pu)
+#endif
 		return 0;
 	else
 		return 1;
@@ -720,7 +770,6 @@ static unsigned int __get_pll3_freq(unsigned int *pll3_freq,
 	return pll3_vco;
 }
 
-/* FIXME: default pll3_vco 2000M, pll3 500M(dsi), pll3p 1000M(cpu) */
 static void clk_pll3_vco_init(struct clk *clk)
 {
 	unsigned int pll3, pll3p, pll3vco;
@@ -730,7 +779,7 @@ static void clk_pll3_vco_init(struct clk *clk)
 	if (__pll3_is_enabled()) {
 		pll3vco = __get_pll3_freq(&pll3, &pll3p);
 		pr_info("PLL3_VCO is already enabled @ %lu\n",
-			pll3vco * MHZ);
+			pll3vco * MHZ_TO_HZ);
 		return;
 	}
 	pr_info("PLL3 VCO default rate %lu\n", clk->rate);
@@ -742,29 +791,32 @@ static int clk_pll3_vco_enable(struct clk *clk)
 {
 	union pmum_pll3cr pll3cr;
 	unsigned long flags;
-	unsigned int delaytime = 14;
+	unsigned int delaytime = 194, val; /* max delay 1000 us */
 
 	if (__pll3_is_enabled())
 		return 0;
 
 	spin_lock_irqsave(&pll3_lock, flags);
 	pll3cr.v = __raw_readl(MPMU_PLL3CR);
+#if !defined(CONFIG_CORE_1248)
 	pll3cr.b.pclk_1248_sel = 1;
+#endif
 	pll3cr.b.pll3_pu = 1;
 	__raw_writel(pll3cr.v, MPMU_PLL3CR);
 	spin_unlock_irqrestore(&pll3_lock, flags);
 
-	if (cpu_pxa98x_stepping() >= PXA98X_A0) {
-		udelay(30);
-		while ((!(__raw_readl(MPMU_POSR) & POSR_PLL3_LOCK)) &&\
-			delaytime) {
-			udelay(5); delaytime--;
-		}
-		if (unlikely(!delaytime))
-			BUG_ON("PLL3 is NOT locked after 100us enable!\n");
-	} else
-		udelay(100);
-
+	udelay(30);
+	val = __raw_readl(MPMU_POSR);
+	while ((!(val & POSR_PLL3_LOCK)) && delaytime) {
+		udelay(5);
+		delaytime--;
+		val = __raw_readl(MPMU_POSR);
+	}
+	if (unlikely(!delaytime)) {
+		pr_err("PLL3 is NOT locked after 1000us enable!\
+			MPMU_POSR: 0x%X\n", val);
+		BUG_ON(1);
+	}
 	trace_pxa_pll_vco_enable(3, __raw_readl(APB_SPARE_PLL3CR), pll3cr.v);
 	pr_debug("%s SWCR3[%x] PLL3CR[%x]\n", __func__, \
 		__raw_readl(APB_SPARE_PLL3CR), pll3cr.v);
@@ -798,14 +850,14 @@ static int clk_pll3_vco_setrate(struct clk *clk, unsigned long rate)
 		return -EPERM;
 	}
 
-	rate = rate / MHZ;
+	rate = rate / MHZ_TO_HZ;
 	if (rate > 2500 || rate < 1200)	{
 		pr_err("%lu rate out of range!\n", rate);
 		return -EINVAL;
 	}
 
 	pr_debug("PLL3_VCO rate %lu -> %lu\n",
-		clk->rate/MHZ, rate);
+		clk->rate/MHZ_TO_HZ, rate);
 
 	spin_lock_irqsave(&pll3_lock, flags);
 	__clk_pll_rate2rng(rate, &kvco, &vcovnrg);
@@ -833,7 +885,7 @@ static int clk_pll3_vco_setrate(struct clk *clk, unsigned long rate)
 	pll3cr.b.pll3_pu = 0;
 	__raw_writel(pll3cr.v, MPMU_PLL3CR);
 
-	clk->rate = rate * MHZ;
+	clk->rate = rate * MHZ_TO_HZ;
 	spin_unlock_irqrestore(&pll3_lock, flags);
 
 	cur_rate = 26 * pll3cr.b.pll3fbd / pll3cr.b.pll3refd;
@@ -870,7 +922,7 @@ static void clk_pll3_init(struct clk *clk)
 	if (__pll3_is_enabled()) {
 		__get_pll3_freq(&pll3, &pll3p);
 		pr_info("PLL3 is already enabled @ %lu\n",
-			pll3 * MHZ);
+			pll3 * MHZ_TO_HZ);
 		return;
 	}
 	pr_info("PLL3 default rate %lu\n", clk->rate);
@@ -925,7 +977,7 @@ static void clk_pll3p_init(struct clk *clk)
 	if (__pll3_is_enabled()) {
 		__get_pll3_freq(&pll3, &pll3p);
 		pr_info("PLL3P is already enabled @ %lu\n",
-			pll3p * MHZ);
+			pll3p * MHZ_TO_HZ);
 		return;
 	}
 	pr_info("PLL3P default rate %lu\n", clk->rate);
@@ -1114,9 +1166,9 @@ static struct clk pxa988_clk_sdh2 = {
 		.con_id = "PXA-SDHCLK",
 	},
 	.clk_rst = (void __iomem *)APMU_SDH2,
-	/* Emmc 208M */
+	/* Emmc 104M */
 	.enable_val =
-		SDH_FCLK_SEL(CLK_PLL1_416)|SDH_FCLK_DIV(1)|SDH_FCLK_REQ,
+		SDH_FCLK_SEL(CLK_PLL1_416)|SDH_FCLK_DIV(3)|SDH_FCLK_REQ,
 	.ops = &sdhc_clk_ops,
 	.inputs = sdhc_clk_mux,
 	.dependence = sdhc_share_clk,
@@ -1160,6 +1212,22 @@ static void __clk_fill_periph_tbl(struct clk *clk,
 				break;
 			}
 		}
+	}
+}
+
+static void __clk_fill_periphtbl_xtc(struct periph_clk_tbl *tbl, int tbl_len,
+				     struct xpu_rtcwtc *xtc, int xtctbl_len)
+{
+	int i = 0;
+	int j = 0;
+	while (i < tbl_len) {
+		if (tbl[i].clk_rate <= xtc[j].max_rate) {
+			tbl[i].rtcwtc = xtc[j].rtcwtc;
+			i++;
+		} else if (j < xtctbl_len)
+			j++;
+		if (j == xtctbl_len)
+			tbl[i].rtcwtc = xtc[j - 1].rtcwtc;
 	}
 }
 
@@ -1408,7 +1476,7 @@ static int __clk_periph_set_rate(struct clk *clk, unsigned long rate)
 	return 0;
 }
 
-#ifdef Z1_MCK4_SYNC_WORKAROUND
+#ifdef DDR_COMBINDEDCLK_SOLUTION
 int mck4_wr_enabled = 1;
 static int __init mck4_wr_disable(char *str)
 {
@@ -1419,14 +1487,24 @@ __setup("no_mck4_wr", mck4_wr_disable);
 
 static LIST_HEAD(ddr_combined_clk_list);
 
+struct ddr_combclk_relation {
+	unsigned long dclk_rate;
+	unsigned long combclk_rate;
+};
+
 struct ddr_combined_clk {
 	struct clk *clk;
 	unsigned long maxrate;
 	struct list_head node;
+	/* Describe the relationship with Dclk */
+	struct ddr_combclk_relation *relationtbl;
+	unsigned int num_relationtbl;
 };
 
 static int register_clk_bind2ddr(struct clk *clk,
-	unsigned long max_freq)
+	unsigned long max_freq,
+	struct ddr_combclk_relation *relationtbl,
+	unsigned int num_relationtbl)
 {
 	struct ddr_combined_clk *comclk;
 
@@ -1443,6 +1521,8 @@ static int register_clk_bind2ddr(struct clk *clk,
 
 		comclk->clk = clk;
 		comclk->maxrate = max_freq;
+		comclk->relationtbl = relationtbl;
+		comclk->num_relationtbl = num_relationtbl;
 		list_add(&comclk->node, &ddr_combined_clk_list);
 	}
 	return 0;
@@ -1452,16 +1532,36 @@ int trigger_bind2ddr_clk_rate(unsigned long ddr_rate)
 {
 	struct ddr_combined_clk *comclk;
 	unsigned long tgt, cur;
-	int ret = 0;
+	int ret = 0, i = 0;
 
-	if (!mck4_wr_enabled)
+	/*
+	 * For Z1/Z2 mck4 wr is default enabled, only could be
+	 * disabled for debug.
+	 * For Z3/A0, mck4 wr is always disabled.
+	 */
+	if ((!mck4_wr_enabled) && cpu_is_z1z2())
 		return 0;
 
 	list_for_each_entry(comclk, &ddr_combined_clk_list, node) {
-		if (ddr_rate > comclk->maxrate)
-			tgt = ddr_rate / 2;
-		else
-			tgt = ddr_rate;
+		if (comclk->relationtbl) {
+			i = 0;
+			while (i < comclk->num_relationtbl - 1) {
+				if ((ddr_rate >=
+					comclk->relationtbl[i].dclk_rate) &&\
+				    (ddr_rate <
+					comclk->relationtbl[i + 1].dclk_rate))
+					break;
+				i++;
+			}
+			tgt = comclk->relationtbl[i].combclk_rate;
+		} else {
+			/* For mck4 WR, DDR: ACLK = 1: 1/ 2:1 */
+			if (ddr_rate > comclk->maxrate)
+				tgt = ddr_rate / 2;
+			else
+				tgt = ddr_rate;
+		}
+		tgt = min(tgt, comclk->maxrate);
 		pr_debug("%s Start rate change to %lu\n",
 			comclk->clk->name, tgt);
 		ret = clk_set_rate(comclk->clk, tgt);
@@ -1517,11 +1617,13 @@ int trigger_bind2ddr_clk_rate(unsigned long ddr_rate)
  * 2. FIXME: If DDR 533M is used, 400M bus clk could not be
  * supported due to clk src issue.
  * 3. For 988 Z1/Z2, only uses gc aclk 150/300/400
- * 4. For 988 Z3, only uses gc aclk 156/312/416
- * 5. For 1088, temporarily use 988 Z3 table, will be updated
+ * 4. For 988 Z3/Ax, only uses gc aclk 156/312/416
+ * 5. For 1088, temporarily use 988 Z3/Ax table, will be updated
  *    once DE/SV give the table
  */
 static struct periph_clk_tbl gc_aclk_tbl[] = {
+	{.clk_rate = 78000000, .parent = &pll1_624},
+	{.clk_rate = 104000000, .parent = &pll1_416},
 	{.clk_rate = 150000000, .parent = &pll2},
 	{.clk_rate = 156000000, .parent = &pll1_624},
 	{.clk_rate = 208000000, .parent = &pll1_416},
@@ -1531,15 +1633,35 @@ static struct periph_clk_tbl gc_aclk_tbl[] = {
 	{.clk_rate = 416000000, .parent = &pll1_416},
 };
 
+#ifdef DDR_COMBINDEDCLK_SOLUTION
+struct ddr_combclk_relation gcaclk_dclk_relationtbl[] = {
+	{.dclk_rate = 104000000, .combclk_rate = 78000000},
+	{.dclk_rate = 156000000, .combclk_rate = 104000000},
+	{.dclk_rate = 312000000, .combclk_rate = 208000000},
+	{.dclk_rate = 400000000, .combclk_rate = 312000000},
+	{.dclk_rate = 533000000, .combclk_rate = 416000000},
+};
+#endif
+
 static void gc_aclk_init(struct clk *clk)
 {
 	__clk_fill_periph_tbl(clk, gc_aclk_tbl,
 		ARRAY_SIZE(gc_aclk_tbl));
 	/* default GC aclk = 312M sel = pll1_624, div = 2 */
 	__clk_periph_init(clk, &pll1_624, 2, 1);
-#ifdef Z1_MCK4_SYNC_WORKAROUND
-	register_clk_bind2ddr(clk,
-		gc_aclk_tbl[ARRAY_SIZE(gc_aclk_tbl) - 1].clk_rate);
+
+#ifdef DDR_COMBINDEDCLK_SOLUTION
+	/* use default relationship for z1z2 */
+	if (cpu_is_z1z2())
+		register_clk_bind2ddr(clk,
+			gc_aclk_tbl[ARRAY_SIZE(gc_aclk_tbl) - 1].clk_rate,
+			NULL, 0);
+	/* Use defined relationship for z3Ax */
+	else
+		register_clk_bind2ddr(clk,
+			gc_aclk_tbl[ARRAY_SIZE(gc_aclk_tbl) - 1].clk_rate,
+			gcaclk_dclk_relationtbl,
+			ARRAY_SIZE(gcaclk_dclk_relationtbl));
 #endif
 }
 
@@ -1550,7 +1672,7 @@ static int gc_aclk_enable(struct clk *clk)
 	CLK_SET_BITS(GC_ACLK_REQ, 0);
 	__clk_wait_fc_done(clk);
 	spin_unlock(&gc_lock);
-	pr_debug("%s GC_ACLK %x\n", __func__, __raw_readl(clk->clk_rst));
+	pr_debug("%s %s %x\n", __func__, clk->name, __raw_readl(clk->clk_rst));
 	return 0;
 }
 
@@ -1627,6 +1749,28 @@ static struct clk gc_aclk = {
 
 static struct clk *gc_clk_depend[] = {
 	&gc_aclk,
+};
+
+/*
+ * GC2D aclk node is internal clk node, and
+ * can only be used by GC2D fclk
+ */
+static struct clk gc2d_aclk = {
+	.name = "gc2d_aclk",
+	.lookup = {
+		.con_id = "GC2D_ACLK",
+	},
+	.clk_rst = (void __iomem *)APMU_GC_2D,
+	.enable_val = GC_ACLK_REQ,
+	.inputs = periph_mux_sel,
+	.ops = &gc_aclk_ops,
+	.reg_data = {
+		     { {APMU_GC_2D, 20, 0x3}, {APMU_GC_2D, 20, 0x3} },
+		     { {APMU_GC_2D, 17, 0x7}, {APMU_GC_2D, 17, 0x7} } }
+};
+
+static struct clk *gc2d_clk_depend[] = {
+	&gc2d_aclk,
 };
 
 /* sort ascending */
@@ -1723,7 +1867,7 @@ void dynamic_change_pll3(unsigned int rate)
 
 		if (i == ARRAY_SIZE(pll_post_div_tbl))
 			BUG_ON("Multiplier is out of range\n");
-		pll3_rate *=  MHZ;
+		pll3_rate *=  MHZ_TO_HZ;
 		pll3vco_rate = pll3_rate * 2;
 	}
 
@@ -1731,8 +1875,8 @@ void dynamic_change_pll3(unsigned int rate)
 	clk_set_rate(pll3, pll3_rate);
 	udelay(50);
 	pr_info("%s: pll3_vco is %luMHz, pll3 is %luMHz", __func__,
-		 clk_get_rate(pll3_vco) / MHZ,
-		 clk_get_rate(pll3) / MHZ);
+		 clk_get_rate(pll3_vco) / MHZ_TO_HZ,
+		 clk_get_rate(pll3) / MHZ_TO_HZ);
 }
 EXPORT_SYMBOL(dynamic_change_pll3);
 
@@ -1766,18 +1910,22 @@ static void gc_clk_init(struct clk *clk)
 	pxa988_clk_register_dcstat(clk, op, ARRAY_SIZE(gc_fclk_tbl));
 #endif
 
-	/* initialize the qos list at the first time */
-	gc_lpm_cons.name = "GC";
-	pm_qos_add_request(&gc_lpm_cons,
-		PM_QOS_CPUIDLE_BLOCK,
-		PM_QOS_CPUIDLE_BLOCK_DEFAULT_VALUE);
+	if (has_feat_disable_d1p_gc_on()) {
+		/* initialize the qos list at the first time */
+		gc_lpm_cons.name = "GC";
+		pm_qos_add_request(&gc_lpm_cons,
+				PM_QOS_CPUIDLE_BLOCK,
+				PM_QOS_CPUIDLE_BLOCK_DEFAULT_VALUE);
+	}
 }
 
 static int gc_clk_enable(struct clk *clk)
 {
-	/* block LPM D1P and deeper than D1P */
-	pm_qos_update_request(&gc_lpm_cons,
-		PM_QOS_CPUIDLE_BLOCK_AXI_VALUE);
+	if (has_feat_disable_d1p_gc_on()) {
+		/* block LPM D1P and deeper than D1P */
+		pm_qos_update_request(&gc_lpm_cons,
+				PM_QOS_CPUIDLE_BLOCK_AXI_VALUE);
+	}
 
 	spin_lock(&gc_lock);
 	CLK_SET_BITS((GC_FCLK_EN | GC_HCLK_EN), 0);
@@ -1803,9 +1951,11 @@ static void gc_clk_disable(struct clk *clk)
 	pxa988_clk_dcstat_event(clk, CLK_STATE_OFF, 0);
 #endif
 
-	/* release D1P LPM constraint */
-	pm_qos_update_request(&gc_lpm_cons,
-		PM_QOS_CPUIDLE_BLOCK_DEFAULT_VALUE);
+	if (has_feat_disable_d1p_gc_on()) {
+		/* release D1P LPM constraint */
+		pm_qos_update_request(&gc_lpm_cons,
+				PM_QOS_CPUIDLE_BLOCK_DEFAULT_VALUE);
+	}
 }
 
 static long gc_clk_round_rate(struct clk *clk, unsigned long rate)
@@ -1836,10 +1986,10 @@ static int gc_clk_setrate(struct clk *clk, unsigned long rate)
 		gc_fclk_tbl[i].src_val, (gc_fclk_tbl[i].div_val + 1));
 	spin_unlock(&gc_lock);
 
+#ifndef DDR_COMBINDEDCLK_SOLUTION
 	/* set GC bus clk rate here if aclk is bound with fclk */
-	if (!cpu_is_z1z2())
-		clk_set_rate(&gc_aclk, gc_fclk_tbl[i].comclk_rate);
-
+	clk_set_rate(&gc_aclk, gc_fclk_tbl[i].comclk_rate);
+#endif
 	trace_pxa_gc_clk_chg(clk->rate, rate);
 	pr_debug("%s GC_CLK %x\n", __func__, __raw_readl(clk->clk_rst));
 	pr_debug("%s rate %lu->%lu\n", __func__, old_rate, rate);
@@ -1882,6 +2032,165 @@ static struct clk pxa988_clk_gc = {
 	.is_combined_fc = 1,
 };
 
+static struct periph_clk_tbl gc2d_fclk_tbl[] = {
+	{
+		.clk_rate = 156000000,
+		.parent = &pll1_624,
+		.comclk_rate = 156000000,
+	},
+	{
+		.clk_rate = 312000000,
+		.parent = &pll1_624,
+		.comclk_rate = 312000000,
+	},
+	{
+		.clk_rate = 416000000,
+		.parent = &pll1_416,
+		.comclk_rate = 312000000,
+	},
+};
+
+static void gc2d_clk_init(struct clk *clk)
+{
+#ifdef CONFIG_DEBUG_FS
+	unsigned int i;
+	unsigned long op[ARRAY_SIZE(gc2d_fclk_tbl)];
+#endif
+	__clk_fill_periph_tbl(clk, gc2d_fclk_tbl, ARRAY_SIZE(gc2d_fclk_tbl));
+
+	/* default GC2D fclk = 416M sel = pll1_416, div = 1 */
+	__clk_periph_init(clk, &pll1_416, 1, 1);
+
+#ifdef CONFIG_DEBUG_FS
+	for (i = 0; i < ARRAY_SIZE(gc2d_fclk_tbl); i++)
+		op[i] = gc2d_fclk_tbl[i].clk_rate;
+	pxa988_clk_register_dcstat(clk, op, ARRAY_SIZE(gc2d_fclk_tbl));
+#endif
+
+}
+static int gc2d_clk_enable(struct clk *clk)
+{
+	spin_lock(&gc_lock);
+	CLK_SET_BITS((GC_FCLK_EN | GC_HCLK_EN), 0);
+	CLK_SET_BITS(GC_FCLK_REQ, 0);
+	__clk_wait_fc_done(clk);
+	spin_unlock(&gc_lock);
+	trace_pxa_gc2d_clk(CLK_ENABLE, __raw_readl(clk->clk_rst));
+	pr_debug("%s %s %x\n", __func__, clk->name, __raw_readl(clk->clk_rst));
+#ifdef CONFIG_DEBUG_FS
+	pxa988_clk_dcstat_event(clk, CLK_STATE_ON, 0);
+#endif
+	return 0;
+}
+
+static void gc2d_clk_disable(struct clk *clk)
+{
+	spin_lock(&gc_lock);
+	CLK_SET_BITS(0, (GC_FCLK_EN | GC_HCLK_EN));
+	spin_unlock(&gc_lock);
+	trace_pxa_gc2d_clk(CLK_DISABLE, __raw_readl(clk->clk_rst));
+	pr_debug("%s %s : %x\n", __func__, clk->name,
+		 __raw_readl(clk->clk_rst));
+#ifdef CONFIG_DEBUG_FS
+	pxa988_clk_dcstat_event(clk, CLK_STATE_OFF, 0);
+#endif
+}
+
+static long gc2d_clk_round_rate(struct clk *clk, unsigned long rate)
+{
+	return __clk_round_rate_bytbl(clk, rate, \
+		gc2d_fclk_tbl, ARRAY_SIZE(gc2d_fclk_tbl));
+}
+
+static int gc2d_clk_setrate(struct clk *clk, unsigned long rate)
+{
+	unsigned long old_rate;
+	unsigned int i;
+	struct clk *new_fparent;
+
+	old_rate = clk->rate;
+	if (rate == old_rate)
+		return 0;
+
+	i = 0;
+	while (gc2d_fclk_tbl[i].clk_rate != rate)
+		i++;
+	BUG_ON(i == ARRAY_SIZE(gc2d_fclk_tbl));
+
+	/* set GC2D function clk rate */
+	new_fparent = gc2d_fclk_tbl[i].parent;
+	spin_lock(&gc_lock);
+	__clk_set_mux_div(clk, new_fparent,
+		gc2d_fclk_tbl[i].src_val, (gc2d_fclk_tbl[i].div_val + 1));
+	spin_unlock(&gc_lock);
+
+#ifndef DDR_COMBINDEDCLK_SOLUTION
+	/* set GC bus clk rate here if aclk is bound with fclk */
+	clk_set_rate(&gc2d_aclk, gc2d_fclk_tbl[i].comclk_rate);
+#endif
+
+	trace_pxa_gc2d_clk_chg(clk->rate, rate);
+	pr_debug("%s %s %x\n", __func__, clk->name, __raw_readl(clk->clk_rst));
+	pr_debug("%s rate %lu->%lu\n", __func__, old_rate, rate);
+
+#ifdef CONFIG_DEBUG_FS
+	pxa988_clk_dcstat_event(clk, CLK_RATE_CHANGE, i);
+#endif
+	return 0;
+}
+
+
+struct clkops gc2d_clk_ops = {
+	.init		= gc2d_clk_init,
+	.enable		= gc2d_clk_enable,
+	.disable	= gc2d_clk_disable,
+	.round_rate	= gc2d_clk_round_rate,
+	.setrate	= gc2d_clk_setrate,
+	.getrate	= gc_clk_getrate,
+};
+
+static struct clk pxa988_clk_gc2d = {
+	.name = "gc2d",
+	.lookup = {
+		.con_id = "GC2DCLK",
+	},
+	.clk_rst = (void __iomem *)APMU_GC_2D,
+	.enable_val = GC_FCLK_REQ,
+	.inputs = periph_mux_sel,
+	.ops = &gc2d_clk_ops,
+	.dependence = gc2d_clk_depend,
+	.dependence_count = 1,
+	.reg_data = {
+		     { {APMU_GC_2D, 6, 0x3}, {APMU_GC_2D, 6, 0x3} },
+		     { {APMU_GC_2D, 12, 0x7}, {APMU_GC_2D, 12, 0x7} } },
+	.is_combined_fc = 1,
+};
+
+/* interface used by GC driver to get avaliable GC2D frequencies, unit HZ */
+int get_gcu2d_freqs_table(unsigned long *gcu2d_freqs_table,
+	unsigned int *item_counts, unsigned int max_item_counts)
+{
+	unsigned int index;
+	*item_counts = 0;
+
+	if (!gcu2d_freqs_table) {
+		pr_err("%s NULL ptr!\n", __func__);
+		return -EINVAL;
+	}
+
+	if (max_item_counts < ARRAY_SIZE(gc2d_fclk_tbl)) {
+		pr_err("%s Too many GC2D frequencies %u!\n", __func__,
+			max_item_counts);
+		return -EINVAL;
+	}
+
+	for (index = 0; index < ARRAY_SIZE(gc2d_fclk_tbl); index++)
+		gcu2d_freqs_table[index] = gc2d_fclk_tbl[index].clk_rate;
+	*item_counts = index;
+	return 0;
+}
+EXPORT_SYMBOL(get_gcu2d_freqs_table);
+
 #define VPU_ACLK_EN	(0x1 << 3)
 #define VPU_FCLK_EN	(0x1 << 4)
 #define	VPU_AHBCLK_EN	(0x1 << 5)
@@ -1908,6 +2217,12 @@ static struct clk pxa988_clk_gc = {
 	(VPU_FCLK_SEL_MASK | VPU_FCLK_DIV_MASK		\
 	| VPU_ACLK_SEL_MASK | VPU_ACLK_DIV_MASK)	\
 
+struct xpu_rtcwtc vpu_rtcwtc_1088[] = {
+	{.max_rate = 156000000, .rtcwtc = 0x00B04444,},
+	{.max_rate = 208000000, .rtcwtc = 0x00B05544,},
+	{.max_rate = 416000000, .rtcwtc = 0x00B06655,},
+};
+
 /*
  * 1. sort ascending
  * 2. FIXME: If DDR 533M is used, 400M bus clk could not be
@@ -1931,11 +2246,13 @@ static void vpu_aclk_init(struct clk *clk)
 {
 	__clk_fill_periph_tbl(clk, vpu_aclk_tbl,
 		ARRAY_SIZE(vpu_aclk_tbl));
-	/* default VPU aclk = 312M sel = pll1_624, div = 2 */
-	__clk_periph_init(clk, &pll1_624, 2, 1);
-#ifdef Z1_MCK4_SYNC_WORKAROUND
-	register_clk_bind2ddr(clk,
-		vpu_aclk_tbl[ARRAY_SIZE(vpu_aclk_tbl) - 1].clk_rate);
+	/* default VPU aclk = 416M sel = pll1_416, div = 1 */
+	__clk_periph_init(clk, &pll1_416, 1, 1);
+#ifdef DDR_COMBINDEDCLK_SOLUTION
+	if (cpu_is_z1z2())
+		register_clk_bind2ddr(clk,
+			vpu_aclk_tbl[ARRAY_SIZE(vpu_aclk_tbl) - 1].clk_rate,
+			NULL, 0);
 #endif
 }
 
@@ -2086,26 +2403,47 @@ unsigned int pxa988_get_vpu_op_rate(unsigned int index)
 	return vpu_fclk_tbl[index].clk_rate / MHZ_TO_KHZ;
 }
 
+static struct pm_qos_request vpu_qos_idle;
 static void vpu_clk_init(struct clk *clk)
 {
 #ifdef CONFIG_DEBUG_FS
 	unsigned int i;
 	unsigned long op[ARRAY_SIZE(vpu_fclk_tbl)];
 #endif
+	unsigned long cur_rate;
+	int index;
+
+	if (has_feat_disable_d1P_vpu_on()) {
+		vpu_qos_idle.name = "VPU";
+		pm_qos_add_request(&vpu_qos_idle, PM_QOS_CPUIDLE_BLOCK,
+				PM_QOS_CPUIDLE_BLOCK_DEFAULT_VALUE);
+	}
+
 	if (cpu_is_z1z2())
 		memcpy(&vpu_fclk_tbl, &vpu_fclk_tbl_z1z2,
 			sizeof(struct periph_clk_tbl) *\
 				ARRAY_SIZE(vpu_fclk_tbl));
 
 	__clk_fill_periph_tbl(clk, vpu_fclk_tbl, ARRAY_SIZE(vpu_fclk_tbl));
+	if (cpu_is_pxa1088())
+		__clk_fill_periphtbl_xtc(vpu_fclk_tbl, ARRAY_SIZE(vpu_fclk_tbl),
+				vpu_rtcwtc_1088, ARRAY_SIZE(vpu_rtcwtc_1088));
 
 	if (cpu_is_z1z2())
 		/* default VPU fclk = 300M sel = pll2 = 1200M, div = 4 */
 		__clk_periph_init(clk, &pll2, 4, 1);
 	else
-		/* default VPU fclk = 312M sel = pll1_624, div = 2 */
-		__clk_periph_init(clk, &pll1_624, 2, 1);
+		/* default VPU fclk = 416M sel = pll1_416, div = 1 */
+		__clk_periph_init(clk, &pll1_416, 1, 1);
 
+	cur_rate  = __clk_periph_get_rate(clk);
+	for (index = 0; index < ARRAY_SIZE(vpu_fclk_tbl); index++)
+		if (vpu_fclk_tbl[index].clk_rate >= cur_rate)
+			break;
+	if (index == ARRAY_SIZE(vpu_fclk_tbl))
+		index--;
+	if (vpu_fclk_tbl[index].rtcwtc)
+		writel_relaxed(vpu_fclk_tbl[index].rtcwtc, CIU_VPU_XTC_REG);
 #ifdef CONFIG_DEBUG_FS
 	for (i = 0; i < ARRAY_SIZE(vpu_fclk_tbl); i++)
 		op[i] = vpu_fclk_tbl[i].clk_rate;
@@ -2115,6 +2453,10 @@ static void vpu_clk_init(struct clk *clk)
 
 static int vpu_clk_enable(struct clk *clk)
 {
+	if (has_feat_disable_d1P_vpu_on())
+		pm_qos_update_request(&vpu_qos_idle,
+				PM_QOS_CPUIDLE_BLOCK_AXI_VALUE);
+
 	spin_lock(&vpu_lock);
 	CLK_SET_BITS((VPU_FCLK_EN | VPU_AHBCLK_EN), 0);
 	CLK_SET_BITS(VPU_FCLK_REQ, 0);
@@ -2140,6 +2482,10 @@ static void vpu_clk_disable(struct clk *clk)
 #ifdef CONFIG_DEBUG_FS
 	pxa988_clk_dcstat_event(clk, CLK_STATE_OFF, 0);
 #endif
+
+	if (has_feat_disable_d1P_vpu_on())
+		pm_qos_update_request(&vpu_qos_idle,
+				PM_QOS_CPUIDLE_BLOCK_DEFAULT_VALUE);
 }
 
 static long vpu_clk_round_rate(struct clk *clk, unsigned long rate)
@@ -2163,6 +2509,9 @@ static int vpu_clk_setrate(struct clk *clk, unsigned long rate)
 		i++;
 	BUG_ON(i == ARRAY_SIZE(vpu_fclk_tbl));
 
+	if (vpu_fclk_tbl[i].rtcwtc && (clk->rate < rate))
+		writel_relaxed(vpu_fclk_tbl[i].rtcwtc, CIU_VPU_XTC_REG);
+
 	/* set VPU function clk rate */
 	new_fparent = vpu_fclk_tbl[i].parent;
 	spin_lock(&vpu_lock);
@@ -2173,6 +2522,9 @@ static int vpu_clk_setrate(struct clk *clk, unsigned long rate)
 	/* set VPU bus clk rate here if aclk is bound with fclk */
 	if (!cpu_is_z1z2())
 		clk_set_rate(&vpu_aclk, vpu_fclk_tbl[i].comclk_rate);
+
+	if (vpu_fclk_tbl[i].rtcwtc && (clk->rate > rate))
+		writel_relaxed(vpu_fclk_tbl[i].rtcwtc, CIU_VPU_XTC_REG);
 
 	trace_pxa_vpu_clk_chg(clk->rate, rate);
 	pr_debug("%s VPU_CLK : %x\n", __func__,  __raw_readl(clk->clk_rst));
@@ -2244,9 +2596,11 @@ static void lcd_ci_isp_axi_clk_init(struct clk *clk)
 	__clk_fill_periph_tbl(clk, lcd_ci_isp_axi_clk_tbl,\
 		ARRAY_SIZE(lcd_ci_isp_axi_clk_tbl));
 	__clk_periph_init(clk, &pll1_416, 2, 1);
-#ifdef Z1_MCK4_SYNC_WORKAROUND
-	register_clk_bind2ddr(clk,
-		lcd_ci_isp_axi_clk_tbl[ARRAY_SIZE(lcd_ci_isp_axi_clk_tbl) - 1].clk_rate);
+#ifdef DDR_COMBINDEDCLK_SOLUTION
+	if (cpu_is_z1z2())
+		register_clk_bind2ddr(clk,
+			lcd_ci_isp_axi_clk_tbl[ARRAY_SIZE(lcd_ci_isp_axi_clk_tbl) - 1].clk_rate,
+			NULL, 0);
 #endif
 }
 
@@ -2463,14 +2817,22 @@ static struct clk pxa988_ccic_phy_clk = {
 #define CI_FUNC_CLK_EN		((1 << 1) | (1 << 4))
 #define CI_FUNC_CLK_DIS		(1 << 4)
 
+/* used for CCIC LPM constraint */
+static struct pm_qos_request ccic_lpm_cons;
 static void ccic_func_clk_init(struct clk *clk)
 {
+	/* initialize the qos list at the first time */
+	ccic_lpm_cons.name = "CCIC";
+	pm_qos_add_request(&ccic_lpm_cons, PM_QOS_CPUIDLE_BLOCK,
+			PM_QOS_CPUIDLE_BLOCK_DEFAULT_VALUE);
+
 	/* default 312M pll1_624/2 */
 	__clk_periph_init(clk, &pll1_624, 2, 0);
 }
 
 static int ccic_func_clk_enable(struct clk *clk)
 {
+	pm_qos_update_request(&ccic_lpm_cons, PM_QOS_CPUIDLE_BLOCK_AXI_VALUE);
 	__ccic_clk_common_enable(clk, CI_FUNC_CLK_EN);
 	return __ccic_clk_common_enable(clk, \
 		CI_FUNC_CLK_REQ);
@@ -2479,6 +2841,9 @@ static int ccic_func_clk_enable(struct clk *clk)
 static void ccic_func_clk_disable(struct clk *clk)
 {
 	__ccic_clk_common_disable(clk, CI_FUNC_CLK_DIS);
+	pm_qos_update_request(&ccic_lpm_cons,
+			PM_QOS_CPUIDLE_BLOCK_DEFAULT_VALUE);
+
 }
 
 static int ccic_func_clk_setrate(struct clk *clk, unsigned long rate)
@@ -2571,32 +2936,41 @@ static struct clk lcd_dsi_phy_clk = {
 #define LCD_DEF_FCLK_SEL	(1 << 6)
 #define LCD_FCLK_SEL_MASK	(1 << 6)
 
+static struct pm_qos_request ddrfreq_qos_req_min;
+
 /* Actually this clock is the src of LCD controller and DSI */
 /* Will be further divided in LCD */
-#if defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
-static void lcd_func_clk_init(struct clk *clk)
-{
-	clk_reparent(clk, &pll1_624);
-	clk->mul = clk->div = 1;
-	clk->rate = clk_get_rate(clk->parent);
-}
-#else
 static void lcd_func_clk_init(struct clk *clk)
 {
 
+#ifdef CONFIG_CORE_1248
+	clk_reparent(clk, &pll3);
+#elif defined(CONFIG_MACH_WILCOX) || defined(CONFIG_MACH_CT01) || defined(CONFIG_MACH_GOYA)
+	clk_reparent(clk, &pll1_624);
+#else
 	/* 1 --- 416M by default */
 	CLK_SET_BITS(LCD_DEF_FCLK_SEL, LCD_FCLK_SEL_MASK);
 	/* Default enable the post divider */
 	CLK_SET_BITS(LCD_PST_CKEN, LCD_PST_OUTDIS);
-
 	clk_reparent(clk, &pll1_416);
+#endif
 	clk->mul = clk->div = 1;
 	clk->rate = clk_get_rate(clk->parent);
+	if (has_feat_fhd_ddr_rqs()) {
+		ddrfreq_qos_req_min.name = "LCD";
+		pm_qos_add_request(&ddrfreq_qos_req_min,
+				PM_QOS_DDR_DEVFREQ_MIN,
+				PM_QOS_DEFAULT_VALUE);
+	}
 }
-#endif
+
 static int lcd_func_clk_enable(struct clk *clk)
 {
 	unsigned long flags;
+	if (has_feat_fhd_ddr_rqs())
+		/* Request DDR at least 312M */
+		pm_qos_update_request(&ddrfreq_qos_req_min,
+					DDR_CONSTRAINT_LVL1);
 	spin_lock_irqsave(&lcd_ci_share_lock, flags);
 	CLK_SET_BITS((LCD_CLK_EN | LCD_CLK_RST), 0);
 	spin_unlock_irqrestore(&lcd_ci_share_lock, flags);
@@ -2609,6 +2983,10 @@ static void lcd_func_clk_disable(struct clk *clk)
 	spin_lock_irqsave(&lcd_ci_share_lock, flags);
 	CLK_SET_BITS(0, LCD_CLK_EN);
 	spin_unlock_irqrestore(&lcd_ci_share_lock, flags);
+	if (has_feat_fhd_ddr_rqs())
+		/* Release DDR freq constraint */
+		pm_qos_update_request(&ddrfreq_qos_req_min,
+					PM_QOS_DEFAULT_VALUE);
 }
 
 static long lcd_func_clk_round_rate(struct clk *clk, unsigned long rate)
@@ -2633,16 +3011,14 @@ static int lcd_func_clk_setrate(struct clk *clk, unsigned long rate)
 
 	new_rate =
 		__clk_sel_mux_div(clk, rate, &mux, &div, &best_parent);
-	if (1 == div)
-		div = 0;
-
-	set = (mux << clk->reg_data[SOURCE][CONTROL].reg_shift) | \
-		(div << clk->reg_data[DIV][CONTROL].reg_shift);
-	clear = (clk->reg_data[SOURCE][CONTROL].reg_mask << \
-		clk->reg_data[SOURCE][CONTROL].reg_shift) | \
-		(clk->reg_data[DIV][CONTROL].reg_mask << \
-		clk->reg_data[DIV][CONTROL].reg_shift);
-	CLK_SET_BITS(set, clear);
+	if (best_parent != &pll3) {
+		set = mux << clk->reg_data[SOURCE][CONTROL].reg_shift;
+		clear = (clk->reg_data[SOURCE][CONTROL].reg_mask << \
+			clk->reg_data[SOURCE][CONTROL].reg_shift) | \
+                        (clk->reg_data[DIV][CONTROL].reg_mask << \
+                         clk->reg_data[DIV][CONTROL].reg_shift);
+		CLK_SET_BITS(set, clear);
+	}
 	clk_reparent(clk, best_parent);
 	if (new_rate != rate)
 		pr_debug("%s tgt%lu sel%lu\n", __func__, rate, new_rate);
@@ -2654,7 +3030,7 @@ static unsigned long lcd_func_clk_getrate(struct clk *clk)
 	unsigned int mux, div;
 	__clk_get_mux_div(clk, &mux, &div);
 	div = div - 1;
-	if (0 == div)
+	if (0 == div || (clk->parent == &pll3))
 		div = 1;
 	return clk_get_rate(clk->parent) / div;
 }
@@ -2668,6 +3044,7 @@ static struct clk *lcd_depend_clk[] = {
 static struct clk_mux_sel lcd_fclk_clk_mux[] = {
 	{.input = &pll1_416, .value = 1},
 	{.input = &pll1_624, .value = 0},
+	{.input = &pll3, .value = 0},
 	{0, 0},
 };
 
@@ -2683,7 +3060,7 @@ struct clkops lcd_fclk_clk_ops = {
 static struct clk pxa988_lcd_clk = {
 	.name = "lcd",
 	.lookup = {
-		.con_id = "LCDCLK",
+		.con_id = "mmp_disp",
 	},
 	.clk_rst = (void __iomem *)APMU_LCD,
 	.dependence = lcd_depend_clk,
@@ -2693,6 +3070,279 @@ static struct clk pxa988_lcd_clk = {
 	.reg_data = {
 		{ {APMU_LCD, 6, 0x1}, {APMU_LCD, 6, 0x1} },
 		{ {APMU_LCD, 10, 0x1f}, {APMU_LCD, 10, 0x1f} } }
+};
+
+/* in 988/1088 TV/PN clk looks symmetric */
+#define LCD_PN_SCLK	(0xd420b1a8)
+#define LCD_TV_SCLK	(0xd420b09c)
+#define LCD_SCLK_SRC_PLL1	(1 << 30)
+#define LCD_SCLK_SRC_PLL3	(3 << 30)
+#define LCD_SCLK_SRC_MASK	(3 << 30)
+#define LCD_SCLK_DISABLE	(1 << 28)
+#define LCD_PATHCLK_DIV_MASK	(0xff)
+#define LCD_DSICLK_DIV_SHIFT	8
+#define LCD_DSICLK_DIV_MAX	0xf
+static DEFINE_SPINLOCK(mmp_disp_sclk_lock);
+
+static void disp_sclk_init(struct clk *clk)
+{
+	unsigned long flags;
+	u32 clk_src = LCD_SCLK_SRC_PLL1;
+
+	/* get clk rst */
+	if (!strcmp(clk->name, "disp_pn_sclk"))
+		clk->clk_rst = ioremap(LCD_PN_SCLK, 4);
+	else
+		clk->clk_rst = ioremap(LCD_TV_SCLK, 4);
+
+	clk_reparent(clk, clk->inputs[0].input);
+	if (clk->parent->parent == &pll3)
+		clk_src = LCD_SCLK_SRC_PLL3;
+	clk_enable(&pxa988_lcd_ci_hclk);
+	spin_lock_irqsave(&mmp_disp_sclk_lock, flags);
+	CLK_SET_BITS(clk_src, LCD_SCLK_SRC_MASK);
+	spin_unlock_irqrestore(&mmp_disp_sclk_lock, flags);
+	clk_disable(&pxa988_lcd_ci_hclk);
+
+	/* check rate */
+	clk->rate = clk_get_rate(clk->parent);
+}
+
+static int disp_sclk_enable(struct clk *clk)
+{
+	unsigned long flags;
+	spin_lock_irqsave(&mmp_disp_sclk_lock, flags);
+	CLK_SET_BITS(0, LCD_SCLK_DISABLE);
+	spin_unlock_irqrestore(&mmp_disp_sclk_lock, flags);
+	return 0;
+}
+
+static void disp_sclk_disable(struct clk *clk)
+{
+	unsigned long flags;
+	spin_lock_irqsave(&mmp_disp_sclk_lock, flags);
+	CLK_SET_BITS(LCD_SCLK_DISABLE, LCD_SCLK_DISABLE);
+	spin_unlock_irqrestore(&mmp_disp_sclk_lock, flags);
+}
+
+/* FIXME: possible higher rate period when set rate at clk is running */
+static int disp_sclk_setrate(struct clk *clk, unsigned long rate)
+{
+	unsigned long flags;
+	u32 clk_src = LCD_SCLK_SRC_PLL1;
+
+	if (rate == clk->rate)
+		return 0;
+
+	clk_set_rate(clk->parent, rate);
+	if (clk->parent->parent == &pll3)
+		clk_src = LCD_SCLK_SRC_PLL3;
+	clk_enable(&pxa988_lcd_ci_hclk);
+	spin_lock_irqsave(&mmp_disp_sclk_lock, flags);
+	CLK_SET_BITS(clk_src, LCD_SCLK_SRC_MASK);
+	spin_unlock_irqrestore(&mmp_disp_sclk_lock, flags);
+	clk_disable(&pxa988_lcd_ci_hclk);
+
+	return 0;
+}
+
+static unsigned long disp_sclk_getrate(struct clk *clk)
+{
+	return clk_get_rate(clk->parent);
+}
+
+struct clkops disp_sclk_ops = {
+	.init = disp_sclk_init,
+	.enable = disp_sclk_enable,
+	.disable = disp_sclk_disable,
+	.setrate = disp_sclk_setrate,
+	.getrate = disp_sclk_getrate,
+};
+
+static struct clk_mux_sel disp_sclk_mux[] = {
+	{.input = &pxa988_lcd_clk},
+	{0, 0},
+};
+
+/*
+ * lcd sclk
+ * descendant of LCDCLK
+ * parent of path clk and phy clk
+ * includes source selection and enable/disable
+ */
+static struct clk disp_pn_sclk = {
+	.name = "disp_pn_sclk",
+	.lookup = {
+		.con_id = "mmp_disp_pn_sclk",
+	},
+	.inputs = disp_sclk_mux,
+	.ops = &disp_sclk_ops,
+};
+
+static struct clk disp_tv_sclk = {
+	.name = "disp_tv_sclk",
+	.lookup = {
+		.con_id = "mmp_disp_tv_sclk",
+	},
+	.inputs = disp_sclk_mux,
+	.ops = &disp_sclk_ops,
+};
+
+static void disp_sclk_descendant_init(struct clk *clk)
+{
+	clk_reparent(clk, clk->inputs[0].input);
+	clk->clk_rst = clk->parent->clk_rst;
+	clk->rate = clk_get_rate(clk->parent);
+}
+
+/* FIXME: possible higher rate period when set rate at clk is running */
+static int disp_pathclk_setrate(struct clk *clk, unsigned long rate)
+{
+	unsigned long flags;
+	u32 div;
+
+	if (rate == clk->rate)
+		return 0;
+
+	/*
+	 * as pathclk source is shared with phy clock
+	 * path clk would not set sclk and its parent
+	 * path clk aways use default or phy setted source
+	 */
+	div = (clk_get_rate(clk->parent) + rate / 2) / rate;
+
+	if (!div)
+		div = 1;
+	if (div > LCD_PATHCLK_DIV_MASK)
+		div = LCD_PATHCLK_DIV_MASK;
+
+	clk_enable(&pxa988_lcd_ci_hclk);
+	spin_lock_irqsave(&mmp_disp_sclk_lock, flags);
+	CLK_SET_BITS(div, LCD_PATHCLK_DIV_MASK);
+	spin_unlock_irqrestore(&mmp_disp_sclk_lock, flags);
+	clk_disable(&pxa988_lcd_ci_hclk);
+
+	return 0;
+}
+
+static unsigned long disp_pathclk_getrate(struct clk *clk)
+{
+	u32 div;
+
+	clk_enable(&pxa988_lcd_ci_hclk);
+	div = __raw_readl(clk->clk_rst) & LCD_PATHCLK_DIV_MASK;
+	pr_info("%s:get_rate: source %s rate %dMhz, reg %x\n",
+		clk->name,
+		clk->parent->parent->parent->name,
+		(int) clk_get_rate(clk->parent) / 1000000,
+		__raw_readl(clk->clk_rst));
+	clk_disable(&pxa988_lcd_ci_hclk);
+	return clk_get_rate(clk->parent) / div;
+}
+
+struct clkops disp_pathclk_ops = {
+	.init = disp_sclk_descendant_init,
+	.setrate = disp_pathclk_setrate,
+	.getrate = disp_pathclk_getrate,
+	.enable = clk_pll_dummy_enable,
+	.disable = clk_pll_dummy_disable,
+};
+
+static struct clk_mux_sel disp_pn_sclk_descendant_mux[] = {
+	{.input = &disp_pn_sclk},
+	{0, 0},
+};
+
+static struct clk_mux_sel disp_tv_sclk_descendant_mux[] = {
+	{.input = &disp_tv_sclk},
+	{0, 0},
+};
+
+/*
+ * lcd sclk
+ * descendant of sclk
+ * includes divider
+ */
+static struct clk disp_pnclk = {
+	.name = "pnpath_clk",
+	.lookup = {
+		.con_id = "mmp_pnpath",
+	},
+	.inputs = disp_pn_sclk_descendant_mux,
+	.ops = &disp_pathclk_ops,
+};
+
+static struct clk disp_tvclk = {
+	.name = "tvpath_clk",
+	.lookup = {
+		.con_id = "mmp_tvpath",
+	},
+	.inputs = disp_tv_sclk_descendant_mux,
+	.ops = &disp_pathclk_ops,
+};
+
+static int disp_phyclk_setrate(struct clk *clk, unsigned long rate)
+{
+	u32 div, parent_rate;
+	unsigned long flags;
+
+	if (rate == clk->rate)
+		return 0;
+
+	clk_set_rate(clk->parent, rate);
+	parent_rate = clk_get_rate(clk->parent);
+
+	parent_rate+= rate/2;
+
+	/* multi 1M as pll3 are set in MHz, avoid align issue */
+	div = (parent_rate / 1000000) / (rate / 1000000);
+
+	if (!div)
+		div = 1;
+	if (div > LCD_DSICLK_DIV_MAX)
+		div = LCD_DSICLK_DIV_MAX;
+
+	clk_enable(&pxa988_lcd_ci_hclk);
+	spin_lock_irqsave(&mmp_disp_sclk_lock, flags);
+	CLK_SET_BITS(div << LCD_DSICLK_DIV_SHIFT,
+		LCD_DSICLK_DIV_MAX << LCD_DSICLK_DIV_SHIFT);
+	spin_unlock_irqrestore(&mmp_disp_sclk_lock, flags);
+	clk_disable(&pxa988_lcd_ci_hclk);
+	return 0;
+}
+
+static unsigned long disp_phyclk_getrate(struct clk *clk)
+{
+	u32 div;
+
+	clk_enable(&pxa988_lcd_ci_hclk);
+	div = (__raw_readl(clk->clk_rst) >> LCD_DSICLK_DIV_SHIFT)
+			& LCD_DSICLK_DIV_MAX;
+	pr_info("%s:get_rate: source %s, rate %dMhz, reg %x\n",
+		clk->name,
+		clk->parent->parent->parent->name,
+		(int) clk_get_rate(clk->parent) / 1000000,
+		__raw_readl(clk->clk_rst));
+	clk_disable(&pxa988_lcd_ci_hclk);
+
+	return clk_get_rate(clk->parent) / div;
+}
+
+struct clkops disp_phyclk_ops = {
+	.init = disp_sclk_descendant_init,
+	.setrate = disp_phyclk_setrate,
+	.getrate = disp_phyclk_getrate,
+	.enable = clk_pll_dummy_enable,
+	.disable = clk_pll_dummy_disable,
+};
+
+static struct clk disp_dsi1clk = {
+	.name = "dsi1_clk",
+	.lookup = {
+		.con_id = "mmp_dsi1",
+	},
+	.inputs = disp_pn_sclk_descendant_mux,
+	.ops = &disp_phyclk_ops,
 };
 
 #define ISP_DXO_CLK_EN		\
@@ -2705,6 +3355,7 @@ static void isp_dxo_clk_init(struct clk *clk)
 {
 	/* default 312M pll1_624/2 */
 	__clk_periph_init(clk, &pll1_624, 2, 0);
+	clk->dynamic_change = 1;
 }
 
 static int isp_dxo_clk_enable(struct clk *clk)
@@ -2724,6 +3375,7 @@ static void isp_dxo_clk_disable(struct clk *clk)
 static int isp_dxo_clk_setrate(struct clk *clk, unsigned long rate)
 {
 	__clk_periph_set_rate(clk, rate);
+	CLK_SET_BITS(ISP_DXO_CLK_REQ, 0);
 	trace_pxa_isp_dxo_clk_chg(rate);
 	return 0;
 }
@@ -2807,26 +3459,25 @@ static int pwm_clk_enable(struct clk *clk)
 		clk_share = clk_get_sys("pxa910-pwm.2", NULL);
 		BUG_ON(IS_ERR(clk_share));
 		clk_apb = clk_share;
-	}
-	if (clk_share && clk_apb && (clk->refcnt + clk_share->refcnt) == 1) {
+	} else
+		return -EINVAL;
+
+	if (clk_share && clk_apb && (clk->refcnt + clk_share->refcnt) == 0) {
 		data = __raw_readl(clk_apb->clk_rst);
 		data |= APBC_APBCLK;
 		__raw_writel(data, clk_apb->clk_rst);
 		udelay(10);
-		if (!strcmp(clk->name, clk_apb->name)) {
-			data = __raw_readl(clk->clk_rst);
-			data &= ~APBC_RST;
-			__raw_writel(data, clk->clk_rst);
-		} else {
-			data = __raw_readl(clk->clk_rst);
-			data &= ~APBC_RST;
-			__raw_writel(data, clk->clk_rst);
-			data = __raw_readl(clk_apb->clk_rst);
-			data &= ~APBC_RST;
-			__raw_writel(data, clk_apb->clk_rst);
-		}
+		data = __raw_readl(clk_apb->clk_rst);
+		data &= ~APBC_RST;
+		__raw_writel(data, clk_apb->clk_rst);
 	}
 
+	/* slave pwm. eg. pwm1 apb bus clock depend on pwm0 */
+	if (clk_apb && strcmp(clk->name, clk_apb->name) && clk->refcnt == 0) {
+		data = __raw_readl(clk->clk_rst);
+		data &= ~APBC_RST;
+		__raw_writel(data, clk->clk_rst);
+	}
 	return 0;
 }
 
@@ -2855,9 +3506,10 @@ static void pwm_clk_disable(struct clk *clk)
 		clk_share = clk_get_sys("pxa910-pwm.2", NULL);
 		BUG_ON(IS_ERR(clk_share));
 		clk_apb = clk_share;
-	}
+	} else
+		return;
 
-	if (clk_share && clk_apb && (clk->refcnt + clk_share->refcnt) == 0) {
+	if (clk_share && clk_apb && (clk->refcnt + clk_share->refcnt) == 1) {
 		data = __raw_readl(clk_apb->clk_rst);
 		data &= ~APBC_APBCLK;
 		__raw_writel(data, clk_apb->clk_rst);
@@ -2869,7 +3521,7 @@ struct clkops pwm_clk_ops = {
 	.disable = pwm_clk_disable,
 };
 
-static void ssp1_clk_init(struct clk *clk)
+static void isccr1_clk_init(struct clk *clk)
 {
 	/*
 	 * ISCCR1: for low power mp3 playback.
@@ -2878,68 +3530,115 @@ static void ssp1_clk_init(struct clk *clk)
 	 * DENOM: 0x529
 	 * NOM: 0xbe2
 	 */
-	__raw_writel(0x4a948be2, MPMU_ISCCRX1);
-	/* enable ssp1 clock dynamic change */
-	clk->dynamic_change = 1;
+	__raw_writel(0x4a948be2, clk->clk_rst);
 }
 
-static int ssp1_clk_enable(struct clk *clk)
-{
-	return apbc_clk_enable(clk);
-}
-
-static void ssp1_clk_disable(struct clk *clk)
-{
-	apbc_clk_disable(clk);
-}
-
-static int ssp1_clk_setrate(struct clk *clk, unsigned long rate)
+static int isccrx_clk_enable(struct clk *clk)
 {
 	unsigned int val;
-	/*
-	 * currently rate is used to as an indication of clock enable or
-	 * not. since fixed 44.1K is used. in future if multi-rate is
-	 * necessary, we could use rate to set different ISCCRx1 register.
-	 * value 0: disable isccr1. other value: enable isccr1.
-	 */
-
-	if (rate) {
-		val = __raw_readl(MPMU_ISCCRX1);
-		/* set bit 31 & 29 to enable sysclk & bitclk */
-		val |= (0x5 << 29);
-		__raw_writel(val, MPMU_ISCCRX1);
-	} else {
-		val = __raw_readl(MPMU_ISCCRX1);
-		/* clear bit 31 & 29 to disable sysclk & bitclk */
-		val &= ~(0x5 << 29);
-		__raw_writel(val, MPMU_ISCCRX1);
-	}
-
-	pr_debug("%s: ISCCRx1 %x\n", __func__, __raw_readl(MPMU_ISCCRX1));
+	val = __raw_readl(clk->clk_rst);
+	/* set bit 31 & 29 to enable sysclk & bitclk */
+	val |= (0x5 << 29);
+	__raw_writel(val, clk->clk_rst);
 
 	return 0;
 }
 
-struct clkops ssp1_clk_ops = {
-	.init		= ssp1_clk_init,
-	.enable		= ssp1_clk_enable,
-	.disable	= ssp1_clk_disable,
-	.setrate	= ssp1_clk_setrate,
+static void isccrx_clk_disable(struct clk *clk)
+{
+	unsigned int val;
+	val = __raw_readl(clk->clk_rst);
+	/* clear bit 31 & 29 to disable sysclk & bitclk */
+	val &= ~(0x5 << 29);
+	__raw_writel(val, clk->clk_rst);
+}
+
+struct clkops isccr1_clk_ops = {
+	.init		= isccr1_clk_init,
+	.enable		= isccrx_clk_enable,
+	.disable	= isccrx_clk_disable,
 };
 
-static void gssp_clk_init(struct clk *clk)
+static struct clk isccr1 = {
+	.name = "isccr1",
+	.lookup = {
+		.con_id = "ISCCR1",
+	},
+	.clk_rst = (void __iomem *)MPMU_ISCCRX1,
+	.ops = &isccr1_clk_ops,
+};
+
+static void isccr0_clk_init(struct clk *clk)
 {
 	/*
 	 * ISCCR0: gssp I2S clock generation control register.
 	 * Config to 8k frame clock.
-	 * BITCLK_DIV_468: value 1, bit clock is sysclk divided by 4.
+	 * BITCLK_DIV_468: value 0, bit clock is sysclk divided by 2.
 	 * DENOM: 0x180
 	 * NOM: 0x659
 	 */
-	__raw_writel(0x00c00659, MPMU_ISCCRX0);
+	__raw_writel(0x00c00659, clk->clk_rst);
 	/* enable gssp clock dynamic change */
 	clk->dynamic_change = 1;
 }
+
+static int isccr0_clk_setrate(struct clk *clk, unsigned long rate)
+{
+	unsigned int val, nom, denom, factor;
+
+	nom = 0x659;
+	denom = 0x180;
+	factor = 1;
+
+	switch (rate) {
+	case 0:
+		break;
+	case 8000:
+		factor = 1;
+		break;
+	case 16000:
+		factor = 2;
+		break;
+	case 24000:
+		factor = 3;
+		break;
+	case 32000:
+		factor = 4;
+		break;
+	case 48000:
+		factor = 6;
+		break;
+	default:
+		pr_info("rate %ld is not supported, use 8k by default\n", rate);
+		break;
+	}
+
+	denom = (denom * factor) << 15;
+	val = __raw_readl(clk->clk_rst);
+	/* set ISCCRX0 since CP may modify*/
+	val = (val & (~0x5fffffff)) | denom  | nom;
+	__raw_writel(val, clk->clk_rst);
+
+	pr_debug("%s: ISCCRx0 %x\n", __func__, __raw_readl(clk->clk_rst));
+
+	return 0;
+}
+
+struct clkops isccr0_clk_ops = {
+	.init		= isccr0_clk_init,
+	.enable		= isccrx_clk_enable,
+	.disable	= isccrx_clk_disable,
+	.setrate	= isccr0_clk_setrate,
+};
+
+static struct clk isccr0 = {
+	.name = "isccr0",
+	.lookup = {
+		.con_id = "ISCCR0",
+	},
+	.clk_rst = (void __iomem *)MPMU_ISCCRX0,
+	.ops = &isccr0_clk_ops,
+};
 
 /* gssp clk ops: gssp is shared between AP and CP */
 static int gssp_clk_enable(struct clk *clk)
@@ -2979,74 +3678,9 @@ static void gssp_clk_disable(struct clk *clk)
 	pr_debug("gssp clk is closed\n");
 }
 
-static int gssp_clk_setrate(struct clk *clk, unsigned long rate)
-{
-	unsigned int val, nom, denom, factor;
-	static int enable_count;
-	/*
-	 * currently rate is used to as an indication of clock enable or
-	 * not. value 0: disable isccr1. other value: enable isccr1.
-	 */
-
-	nom = 0x659;
-	denom = 0x180;
-	factor = 1;
-
-	switch (rate) {
-	case 0:
-		break;
-	case 8000:
-		factor = 1;
-		break;
-	case 16000:
-		factor = 2;
-		break;
-	case 24000:
-		factor = 3;
-		break;
-	case 32000:
-		factor = 4;
-		break;
-	case 48000:
-		factor = 6;
-		break;
-	default:
-		pr_info("rate %ld is not supported, use 8k by default\n", rate);
-		break;
-	}
-
-	if (rate) {
-		if (enable_count++ == 0) {
-			denom = (denom * factor) << 15;
-			val = __raw_readl(MPMU_ISCCRX0);
-			/* set ISCCRX0 since CP may modify*/
-			val = (val & (~0x5fffffff)) | denom  | nom;
-			/* set bit 31 & 29 to enable sysclk & bitclk */
-			val |= (0x5 << 29);
-			__raw_writel(val, MPMU_ISCCRX0);
-		}
-	} else {
-		if (--enable_count == 0) {
-			denom = (denom * factor) << 15;
-			val = __raw_readl(MPMU_ISCCRX0);
-			/* set ISCCRX0 since CP may modify*/
-			val = (val & (~0x5fffffff)) | denom  | nom;
-			/* clear bit 31 & 29 to disable sysclk & bitclk */
-			val &= ~(0x5 << 29);
-			__raw_writel(val, MPMU_ISCCRX0);
-		}
-	}
-
-	pr_debug("%s: ISCCRx0 %x\n", __func__, __raw_readl(MPMU_ISCCRX0));
-
-	return 0;
-}
-
 struct clkops gssp_clk_ops = {
-	.init = gssp_clk_init,
 	.enable = gssp_clk_enable,
 	.disable = gssp_clk_disable,
-	.setrate = gssp_clk_setrate,
 };
 
 #define USB_AXICLK_EN	(1 << 3)
@@ -3296,12 +3930,18 @@ static struct clk twsi2_clk = {
 }
 
 DEFINE_GATE_CLK(VCTCXO, MPMU_VRCR, 1, NULL, "VCTCXO");
+#if 1	// MCLK setting
+DEFINE_GATE_CLK(VCXO_OUT, MPMU_VRCR, (1 << 8), NULL, "VCXO_OUT");
+#endif
 DEFINE_GATE_CLK(dbgclk, APMU_TRACE, (1 << 3), NULL, "DBGCLK");
 DEFINE_GATE_CLK(traceclk, APMU_TRACE, (1 << 4), NULL, "TRACECLK");
 
 /* all clk src on the board */
 static struct clk *pxa988_clks_src[] = {
 	&VCTCXO,
+#if 1	// MCLK setting
+	&VCXO_OUT,
+#endif
 	&pll1_416,
 	&pll1_624,
 	&pll1_1248,
@@ -3329,12 +3969,24 @@ static struct clk *pxa988_clks_peri[] = {
 	&pxa988_ccic_func_clk,
 	&lcd_dsi_phy_clk,
 	&pxa988_lcd_clk,
+	&disp_pn_sclk,
+	&disp_tv_sclk,
+	&disp_pnclk,
+	&disp_tvclk,
+	&disp_dsi1clk,
 	&pxa988_isp_dxo_clk,
 	&dbgclk,
 	&traceclk,
 	&twsi0_clk,
 	&twsi1_clk,
 	&twsi2_clk,
+	&isccr0,
+	&isccr1,
+};
+
+static struct clk *pxa1088_clks_peri_extra[] = {
+	&gc2d_aclk,	/* internal clk node */
+	&pxa988_clk_gc2d,
 };
 
 /* This clock is used to enable RTC module register r/w */
@@ -3353,13 +4005,10 @@ static struct clk pxa988_list_clks[] = {
 		APBC_PXA988_GPIO, 0, 13000000, NULL),
 	APBC_CLK("ssp0", "pxa988-ssp.0", NULL,
 		APBC_PXA988_SSP0, 4, 3250000, NULL),
-#ifdef CONFIG_ISDBT
-	APBC_CLK("ssp2", "pxa988-ssp.2", NULL,
-		APBC_PXA988_SSP2, 1, 13000000, NULL),
-#else
+	APBC_CLK("ssp1", "pxa988-ssp.1", NULL,
+		APBC_PXA988_SSP1, 0, 26000000, &isccr1),
 	APBC_CLK("ssp2", "pxa988-ssp.2", NULL,
 		APBC_PXA988_SSP2, 2, 26000000, NULL),
-#endif		
 	APBC_CLK("keypad", "pxa27x-keypad", NULL,
 		APBC_PXA988_KPC, 0, 32000, NULL),
 	APBC_CLK("rtc", "sa1100-rtc", NULL,
@@ -3379,13 +4028,11 @@ static struct clk pxa988_list_clks[] = {
 	APBC_CLK_OPS("pwm3", "pxa910-pwm.3", NULL,
 		APBC_PXA988_PWM3, 0, 13000000, NULL, &pwm_clk_ops),
 	APBC_CLK_OPS("gssp", "pxa988-ssp.4", NULL,
-		APBC_PXA988_GCER, 0, 0, NULL, &gssp_clk_ops),
+		APBC_PXA988_GCER, 0, 0, &isccr0, &gssp_clk_ops),
 
 	/* APMU: _name, _dev, _con, _reg, _eval, _rate, _parent */
 	APBC_CLK_OPS("udc", NULL, "UDCCLK", APMU_USB,
 			0x9, 480000000, NULL, &udc_clk_ops),
-	APBC_CLK_OPS("ssp1", "pxa988-ssp.1", NULL,
-		APBC_PXA988_SSP1, 0, 26000000, NULL, &ssp1_clk_ops),
 	APMU_CLK("ire", "pxa910-ire.0", NULL, APMU_IRE,
 			0x9, 480000000, NULL),
 	APMU_CLK("aes", NULL, "AESCLK", APMU_GEU,
@@ -3395,6 +4042,65 @@ static struct clk pxa988_list_clks[] = {
 	APMU_CLK_OPS("nand", "pxa3xx-nand", NULL, APMU_NAND,
 			0x19b, 156000000, NULL, &nand_clk_ops),
 };
+
+/*
+ * max_freq could only be configured to predefined frequency
+ * round it to just use platform allowed frequency.
+ * For 988/986, it is 1205M or 1482M
+ * For 1088, it is 1101M, 1183M or 1283M
+*/
+static inline void round_max_freq(void)
+{
+	if (!max_freq)
+		max_freq = get_max_cpurate();
+
+	if (cpu_is_pxa1088()) {
+		if (max_freq <= CORE_1p1G)
+			max_freq = CORE_1p1G;
+		else if (max_freq <= CORE_1p18G)
+			max_freq = CORE_1p18G;
+		else
+			max_freq = CORE_1p3G;
+	} else if (cpu_is_pxa988() || cpu_is_pxa986()) {
+		if (max_freq <= CORE_1p2G)
+			max_freq = CORE_1p2G;
+		else
+			max_freq = CORE_1p5G;
+	} else
+		max_freq = CORE_1p2G;
+}
+
+/*
+ * uboot may pass pll3_vco value to kernel.
+ * pll3 may be shared between core and display.
+ * if it can be shared, core will use pll3p and it is set to max_freq
+ * or pll3 and pll3p will be set to be the same with pll3_vco
+*/
+static inline void setup_pll3_vco(void)
+{
+	int bestmul;
+	if (!pll3_vco_default) {
+		bestmul = pll3_best_mul(max_freq * MHZ_TO_HZ);
+		if (bestmul == -1) {
+			printk(KERN_ERR "Cannot use PLL3 as max freq!\n");
+			BUG_ON(1);
+		}
+		pll3_vco_default = max_freq * MHZ_TO_HZ * bestmul;
+		pll3_default = max_freq * MHZ_TO_HZ;
+		pll3p_default = max_freq * MHZ_TO_HZ;
+	} else {
+		if ((pll3_vco_default < 1200 * MHZ_TO_HZ) ||
+		   (pll3_vco_default > 2500 * MHZ_TO_HZ)) {
+			printk(KERN_ERR "PLL3 VCO value is out of range !\n");
+			BUG_ON(1);
+		}
+		pll3_default = pll3_vco_default;
+		if (!(pll3_vco_default % max_freq))
+			pll3p_default = max_freq * MHZ_TO_HZ;
+		else /* Core will not use pll3p */
+			pll3p_default = pll3_vco_default;
+	}
+}
 
 static void __init clk_misc_init(void)
 {
@@ -3409,7 +4115,7 @@ static void __init clk_misc_init(void)
 	 * pll2 800M for CPU
 	 * pll2p 800M for DDR
 	 *
-	 * For max DDR rate 500M case
+	 * For max DDR rate 533M case
 	 * pll2 1066M for DDR and CPU
 	 * pll2p 533M for other peripherals
 	 * pll2/pll2p = pll2_vco/div (div = 1,2,3,4,6,8)
@@ -3420,30 +4126,34 @@ static void __init clk_misc_init(void)
 	 *  1088 temproraily uses Z3/Ax setting.
 	 */
 	if (cpu_is_z1z2()) {
-		pll2_vco_default = 2400 * MHZ;
-		pll2_default = 1200 * MHZ;
-		pll2p_default = 800 * MHZ;
+		pll2_vco_default = 2400 * MHZ_TO_HZ;
+		pll2_default = 1200 * MHZ_TO_HZ;
+		pll2p_default = 800 * MHZ_TO_HZ;
 	} else {
 		if (ddr_mode == 0) {
-			pll2_vco_default = 1600 * MHZ;
-			pll2_default = 800 * MHZ;
-			pll2p_default = 800 * MHZ;
+			pll2_vco_default = 1600 * MHZ_TO_HZ;
+			pll2_default = 800 * MHZ_TO_HZ;
+			pll2p_default = 800 * MHZ_TO_HZ;
 		} else if (ddr_mode == 1) {
-			pll2_vco_default = 2132 * MHZ;
-			pll2_default = 1066 * MHZ;
-			pll2p_default = 1066 * MHZ;
+			pll2_vco_default = 2132 * MHZ_TO_HZ;
+			pll2_default = 1066 * MHZ_TO_HZ;
+			pll2p_default = 1066 * MHZ_TO_HZ;
 		} else {
 			/* use 800Mhz by default */
-			pll2_vco_default = 1600 * MHZ;
-			pll2_default = 800 * MHZ;
-			pll2p_default = 800 * MHZ;
+			pll2_vco_default = 1600 * MHZ_TO_HZ;
+			pll2_default = 800 * MHZ_TO_HZ;
+			pll2p_default = 800 * MHZ_TO_HZ;
 		}
 	}
 
-	pll3_vco_default = 1205 * MHZ;
-	pll3_default = 1205 * MHZ;
-	pll3p_default = 1205 * MHZ;
+	round_max_freq();
+	setup_pll3_vco();
 
+#if defined(CONFIG_CORE_1248)
+	pll3_vco_default = 1396 * MHZ_TO_HZ;
+	pll3_default = 698 * MHZ_TO_HZ;
+	pll3p_default = 698 * MHZ_TO_HZ;
+#endif
 	/* DE suggest:enable SQU MP3 playback sleep mode */
 	__raw_writel(__raw_readl(APMU_SQU_CLK_GATE_CTRL) | (1 << 30),
 			APMU_SQU_CLK_GATE_CTRL);
@@ -3465,32 +4175,25 @@ static void __init clk_misc_init(void)
 	dcg_regval &= ~(1 << 16);
 	/* enable dclk gating */
 	dcg_regval &= ~(1 << 19);
-	if (cpu_pxa98x_stepping() <= PXA98X_Z3) {
-		dcg_regval |= (1 << 9) | (1 << 18) | /* Seagull */
-			(1 << 12) | (1 << 27) |  /* Fabric #2 */
-			(1 << 15) | (1 << 20) | (1 << 21) | /* VPU*/
-			(1 << 17) | (1 << 26); /* Fabric#1 CA9 */
-	} else {
+	/* enable 1x2 fabric AXI clock dynamic gating */
+	if (cpu_is_pxa1088())
+		dcg_regval |= (1 << 29) | (1 << 30);
+	if (has_feat_mck4_axi_clock_gate()) {
 		dcg_regval |= (0xff << 8) | /* MCK4 P0~P7*/
 			(1 << 17) | (1 << 18) | /* Fabric 0 */
 			(1 << 20) | (1 << 21) |	/* VPU fabric */
 			(1 << 26) | (1 << 27);  /* Fabric 0/1 */
+	} else {
+		dcg_regval |= (1 << 9) | (1 << 18) | /* Seagull */
+			(1 << 12) | (1 << 27) |  /* Fabric #2 */
+			(1 << 15) | (1 << 20) | (1 << 21) | /* VPU*/
+			(1 << 17) | (1 << 26); /* Fabric#1 CA9 */
 	}
 	__raw_writel(dcg_regval, CIU_MC_CONF);
 }
 
-static int trace_clock_setting_state(char *str)
-{
-	get_option(&str, &t32clock);
-	printk(KERN_INFO "%s: APMU_Trace Clock : %d\n", __func__, t32clock);
-
-	return t32clock;
-}
-__setup("traceclk=", trace_clock_setting_state);
-
 static void __init clk_disable_unused_clock(void)
 {
-	unsigned int regval;
 	/*
 	 * disable nand controller clock as it is not used
 	 * on 988
@@ -3501,15 +4204,6 @@ static void __init clk_disable_unused_clock(void)
 	 * enable it prior to use it
 	 */
 	__raw_writel(0, APMU_GEU);
-
-	if (t32clock) {
-		/* Do Nothing */
-	} else {
-		/* disable trace/debug clock */
-		regval = __raw_readl(APMU_TRACE);
-		regval &=~ ((1 << 3) | (1 << 4) | (1 << 16));
-		__raw_writel(regval, APMU_TRACE);
-	}
 }
 /*
  * init pll default output that used for pxa988
@@ -3548,7 +4242,7 @@ static int __init pxa988_clk_init(void)
 {
 	int i;
 
-#ifdef Z1_MCK4_SYNC_WORKAROUND
+#ifdef DDR_COMBINDEDCLK_SOLUTION
 	/*
 	 * Only Z1/Z2 needs mck4 workaround, disable this workaround
 	 * for other chips
@@ -3562,9 +4256,12 @@ static int __init pxa988_clk_init(void)
 		pxa988_init_one_clock(pxa988_clks_src[i]);
 	for (i = 0; i < ARRAY_SIZE(pxa988_clks_peri); i++)
 		pxa988_init_one_clock(pxa988_clks_peri[i]);
+	if (cpu_is_pxa1088()) {
+		for (i = 0; i < ARRAY_SIZE(pxa1088_clks_peri_extra); i++)
+			pxa988_init_one_clock(pxa1088_clks_peri_extra[i]);
+	}
 	for (i = 0; i < ARRAY_SIZE(pxa988_list_clks); i++)
 		pxa988_init_one_clock(&pxa988_list_clks[i]);
-
 	clk_pll_init();
 	clk_disable_unused_clock();
 	return 0;
@@ -3746,9 +4443,8 @@ int pxa988_show_dc_stat_info(struct clk *clk, char *buf, ssize_t size)
 	}
 
 	len += snprintf(buf + len, size - len, "\n");
-	dc_int = total_time ?
-		calculate_dc(run_total, total_time, &dc_fraction) : 0;
-	dc_fraction = total_time ? dc_fraction : 0;
+	dc_int = calculate_dc(run_total, total_time, &dc_fraction);
+	dc_fraction = dc_fraction;
 	len += snprintf(buf + len, size - len,
 		"| CLK %s | %10s %lums| %10s %lums| %10s %2u.%2u%%|\n",
 		clk->name, "idle time", idle_total,
@@ -3758,10 +4454,9 @@ int pxa988_show_dc_stat_info(struct clk *clk, char *buf, ssize_t size)
 		"| %3s | %12s | %15s | %15s | %15s |\n", "OP#",
 		"rate(HZ)", "run time(ms)", "idle time(ms)", "rt ratio");
 	for (i = 0; i < dc_stat_info->ops_stat_size; i++) {
-		dc_int = total_time ?
-			calculate_dc(dc_stat_info->ops_dcstat[i].busy_time,
-			total_time, &dc_fraction) : 0;
-		dc_fraction = total_time ? dc_fraction : 0;
+		dc_int = calculate_dc(dc_stat_info->ops_dcstat[i].busy_time,
+			total_time, &dc_fraction);
+		dc_fraction = dc_fraction;
 		len += snprintf(buf + len, size - len,
 			"| %3u | %12lu | %15ld | %15ld | %12u.%2u%%|\n",
 			dc_stat_info->ops_dcstat[i].ppindex,
@@ -3837,6 +4532,10 @@ static ssize_t pxa988_gc_dc_read(struct file *filp,
 		return -ENOMEM;
 
 	len = pxa988_show_dc_stat_info(&pxa988_clk_gc, p, size);
+	if (len < 0) {
+		free_pages((unsigned long)p, 0);
+		return -EINVAL;
+	}
 	if (len == size)
 		pr_warn("%s The dump buf is not large enough!\n", __func__);
 
@@ -3850,7 +4549,7 @@ static ssize_t pxa988_gc_dc_write(struct file *filp,
 {
 	unsigned int start;
 	char buf[10] = { 0 };
-	size_t ret = 0;
+	int ret = 0;
 
 	if (copy_from_user(buf, buffer, count))
 		return -EFAULT;
@@ -3868,6 +4567,53 @@ static const struct file_operations pxa988_gc_dc_ops = {
 	.write = pxa988_gc_dc_write,
 };
 
+static ssize_t pxa988_gc2d_dc_read(struct file *filp,
+	char __user *buffer, size_t count, loff_t *ppos)
+{
+	char *p;
+	int len = 0;
+	size_t ret, size = PAGE_SIZE - 1;
+
+	p = (char *)__get_free_pages(GFP_NOIO, 0);
+	if (!p)
+		return -ENOMEM;
+
+	len = pxa988_show_dc_stat_info(&pxa988_clk_gc2d, p, size);
+	if (len < 0) {
+		free_pages((unsigned long)p, 0);
+		return -EINVAL;
+	}
+	if (len == size)
+		pr_warn("%s The dump buf is not large enough!\n", __func__);
+
+	ret = simple_read_from_buffer(buffer, count, ppos, p, len);
+	free_pages((unsigned long)p, 0);
+	return ret;
+}
+
+static ssize_t pxa988_gc2d_dc_write(struct file *filp,
+		const char __user *buffer, size_t count, loff_t *ppos)
+{
+	unsigned int start;
+	char buf[10] = { 0 };
+	int ret = 0;
+
+	if (copy_from_user(buf, buffer, count))
+		return -EFAULT;
+
+	sscanf(buf, "%d", &start);
+	ret = pxa988_start_stop_dc_stat(&pxa988_clk_gc2d, start);
+	if (ret < 0)
+		return ret;
+	return count;
+}
+
+static const struct file_operations pxa988_gc2d_dc_ops = {
+	.owner = THIS_MODULE,
+	.read = pxa988_gc2d_dc_read,
+	.write = pxa988_gc2d_dc_write,
+};
+
 static ssize_t pxa988_vpu_dc_read(struct file *filp,
 	char __user *buffer, size_t count, loff_t *ppos)
 {
@@ -3880,6 +4626,10 @@ static ssize_t pxa988_vpu_dc_read(struct file *filp,
 		return -ENOMEM;
 
 	len = pxa988_show_dc_stat_info(&pxa988_clk_vpu, p, size);
+	if (len < 0) {
+		free_pages((unsigned long)p, 0);
+		return -EINVAL;
+	}
 	if (len == size)
 		pr_warn("%s The dump buf is not large enough!\n", __func__);
 
@@ -3893,7 +4643,7 @@ static ssize_t pxa988_vpu_dc_write(struct file *filp,
 {
 	unsigned int start;
 	char buf[10] = { 0 };
-	size_t ret = 0;
+	int ret = 0;
 
 	if (copy_from_user(buf, buffer, count))
 		return -EFAULT;
@@ -4165,7 +4915,7 @@ struct dentry *stat;
 static int __init __init_dcstat_debugfs_node(void)
 {
 	struct dentry *gc_dc_stat, *vpu_dc_stat, *clock_status;
-
+	struct dentry *gc2d_dc_stat;
 	stat = debugfs_create_dir("stat", pxa);
 	if (!stat)
 		return -ENOENT;
@@ -4184,8 +4934,17 @@ static int __init __init_dcstat_debugfs_node(void)
 	if (!clock_status)
 		goto err_clk_stats;
 
+	if (cpu_is_pxa1088()) {
+		gc2d_dc_stat = debugfs_create_file("gc2d_dc_stat", 0664,
+			stat, NULL, &pxa988_gc2d_dc_ops);
+		if (!gc2d_dc_stat)
+			goto err_gc2d_dc_stat;
+	}
+
 	return 0;
 
+err_gc2d_dc_stat:
+	debugfs_remove(clock_status);
 err_clk_stats:
 	debugfs_remove(vpu_dc_stat);
 err_vpu_dc_stat:

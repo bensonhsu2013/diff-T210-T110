@@ -60,7 +60,6 @@ MODULE_ALIAS("mmc:block");
 #define INAND_CMD38_ARG_SECTRIM2 0x88
 
 static DEFINE_MUTEX(block_mutex);
-#define pm_state_debug 1
 
 /*
  * The defaults come from config options but can be overriden by module
@@ -605,7 +604,6 @@ static int mmc_blk_ioctl(struct block_device *bdev, fmode_t mode,
 	struct mmc_card *card = md->queue.card;
 	int ret = -EINVAL;
 
-
 	if (cmd == MMC_IOC_CMD)
 		ret = mmc_blk_ioctl_cmd(bdev, (struct mmc_ioc_cmd __user *)arg);
 	else if(cmd == MMC_IOC_CLOCK)
@@ -843,11 +841,6 @@ static int mmc_blk_cmd_recovery(struct mmc_card *card, struct request *req,
 		if (!err)
 			break;
 
-#ifdef pm_state_debug
-		/* power state check*/
-		printk("mmc : %d power state check : %u\n",
-			card->type, card->pm_state);
-#endif
 		prev_cmd_status_valid = false;
 		pr_err("%s: error %d sending status command, %sing\n",
 		       req->rq_disk->disk_name, err, retry ? "retry" : "abort");
@@ -1160,7 +1153,8 @@ static int mmc_blk_err_check(struct mmc_card *card,
 	 * initial command - such as address errors.  No data
 	 * has been transferred.
 	 */
-	if ((brq->cmd.resp[0] & CMD_ERRORS) || (brq->stop.resp[0] & CMD_ERRORS)) {
+	if ((brq->cmd.resp[0] & CMD_ERRORS) ||
+		( (brq->stop.resp[0] & CMD_ERRORS) && (rq_data_dir(req) != READ))) {
 		pr_err("%s: r/w command failed, status = %#x, stop status = %#x\n",
 			req->rq_disk->disk_name, brq->cmd.resp[0], brq->stop.resp[0]);
 		return MMC_BLK_ABORT;
@@ -1183,7 +1177,7 @@ static int mmc_blk_err_check(struct mmc_card *card,
 			int err = get_card_status(card, &status, 5);
 			if (err) {
 				pr_err("%s: error %d requesting status\n",
-					req->rq_disk->disk_name, err);
+				       req->rq_disk->disk_name, err);
 				return MMC_BLK_CMD_ERR;
 			}
 			/*
@@ -1222,8 +1216,7 @@ static int mmc_blk_err_check(struct mmc_card *card,
 		} else if ((rq_data_dir(req) == WRITE) &&
 			(brq->data.error == -EILSEQ)) {
 			pr_warning("try to write again as CRC error\n");
-			return MMC_BLK_RETRY;	
-
+			return MMC_BLK_RETRY;
 		} else {
 			return MMC_BLK_CMD_ERR;
 		}
@@ -1505,8 +1498,8 @@ static int mmc_blk_issue_rw_rq(struct mmc_queue *mq, struct request *rqc)
 		case MMC_BLK_ECC_ERR:
 			if (brq->data.blocks > 1) {
 				/* Redo read one sector at a time */
-				pr_warning("%s: retrying using single block %s\n",
-					   req->rq_disk->disk_name, (rq_data_dir(req) == READ) ? "read":"write" );
+				pr_warning("%s: retrying using single block read\n",
+					   req->rq_disk->disk_name);
 				disable_multi = 1;
 				break;
 			}
@@ -1895,6 +1888,7 @@ force_ro_fail:
 #define CID_MANFID_TOSHIBA	0x11
 #define CID_MANFID_MICRON	0x13
 #define CID_MANFID_SAMSUNG 0x15
+#define CID_MANFID_SANDISK_NEW 0x45
 
 
 static const struct mmc_fixup blk_fixups[] =
@@ -1909,6 +1903,9 @@ static const struct mmc_fixup blk_fixups[] =
 		  MMC_QUIRK_INAND_CMD38),
 	MMC_FIXUP("SEM32G", CID_MANFID_SANDISK, 0x100, add_quirk,
 		  MMC_QUIRK_INAND_CMD38),
+
+	MMC_FIXUP("SEM08G", CID_MANFID_SANDISK_NEW, CID_OEMID_ANY, add_quirk_mmc,
+			MMC_QUIRK_SANDISK_MLC),
 
 	/*
 	 * Some MMC cards experience performance degradation with CMD23

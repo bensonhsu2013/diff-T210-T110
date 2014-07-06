@@ -265,7 +265,6 @@ static long alarm_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	enum android_alarm_type alarm_type = ANDROID_ALARM_IOCTL_TO_TYPE(cmd);
 	uint32_t alarm_type_mask = 1U << alarm_type;
 
-
 	if (alarm_type >= ANDROID_ALARM_TYPE_COUNT)
 		return -EINVAL;
 
@@ -311,6 +310,7 @@ static long alarm_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		default:
 			break;
 		}
+		break;
 
 	case ANDROID_ALARM_SET_OLD:
 	case ANDROID_ALARM_SET_AND_WAIT_OLD:
@@ -320,7 +320,6 @@ static long alarm_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		}
 		new_alarm_time.tv_nsec = 0;
 		goto from_old_alarm_set;
-
 #if defined(CONFIG_RTC_CHN_ALARM_BOOT)
 	case ANDROID_ALARM_SET_ALARM:
 	{

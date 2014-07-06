@@ -13,22 +13,77 @@
 #include <linux/clk.h>
 #include <linux/debugfs.h>
 #include <linux/uaccess.h>
+#if defined(CONFIG_MFD_88PM822)
+#include <linux/mfd/88pm822.h>
+#elif defined(CONFIG_MFD_88PM800)
 #include <linux/mfd/88pm80x.h>
+#endif
 #include <asm/io.h>
 #include <asm/delay.h>
 #include <mach/regs-mpmu.h>
 #include <mach/cputype.h>
 #include <mach/clock-pxa988.h>
-#include <plat/clock.h>
 #include <mach/dvfs.h>
+#include <mach/features.h>
+#include <plat/clock.h>
 #include <plat/debugfs.h>
+#include "common.h"
+
+#if defined(CONFIG_MFD_88PM822)
+#define BUCK1_AP_ACTIVE		PM822_ID_BUCK1_AP_ACTIVE
+#define BUCK1_AP_LPM		PM822_ID_BUCK1_AP_LPM
+#define BUCK1_APSUB_IDLE	PM822_ID_BUCK1_APSUB_IDLE
+#define BUCK1_APSUB_SLEEP	PM822_ID_BUCK1_APSUB_SLEEP
+#elif defined(CONFIG_MFD_88PM800)
+#define BUCK1_AP_ACTIVE		PM800_ID_BUCK1_AP_ACTIVE
+#define BUCK1_AP_LPM		PM800_ID_BUCK1_AP_LPM
+#define BUCK1_APSUB_IDLE	PM800_ID_BUCK1_APSUB_IDLE
+#define BUCK1_APSUB_SLEEP	PM800_ID_BUCK1_APSUB_SLEEP
+#else /* CONFIG_MFD_D2199 */
+#define BUCK1_AP_ACTIVE		D2199_ID_BUCK1_AP_ACTIVE
+#define BUCK1_AP_LPM		D2199_ID_BUCK1_AP_LPM
+#define BUCK1_APSUB_IDLE	D2199_ID_BUCK1_APSUB_IDLE
+#define BUCK1_APSUB_SLEEP	D2199_ID_BUCK1_APSUB_SLEEP
+#endif
+
+#if defined(CONFIG_D2199_DVC)
+#include <linux/d2199/core.h>
+#include <linux/d2199/pmic.h>
+#endif
+#ifdef CONFIG_MACH_WILCOX_CMCC
+#define BOARD_ID_CMCC_REV05 (0x7)
+#endif
+/*
+ * for PMU DVC, the GPIO pins are switched or not
+ * 1 - switched
+ * 0 - not switched
+ * set it as 1 by default
+ */
+#if defined(CONFIG_MFD_D2199)
+static int dvc_pin_switch = 0;
+#else
+static int dvc_pin_switch = 1;
+#endif
 
 int dvc_flag = 1;
 EXPORT_SYMBOL(dvc_flag);
 
+#if defined(CONFIG_MFD_D2199)	// DLG
+#define D2199_DVFS
+#define dlg_trace(fmt, ...) printk(KERN_INFO "[WS][DVFS][%s]-"fmt, __func__, ##__VA_ARGS__)
+
+extern int d2199_dvfs_get_voltage(int reg_addr);
+extern int d2199_dvfs_set_voltage(int reg_addr, unsigned int reg_val);
+
+#else
+#define dlg_trace(fmt, ...) 	do { } while(0);
+#endif
 static int __init dvc_flag_setup(char *str)
 {
 	int n;
+
+	dlg_trace("str : %s\n", str);
+
 	if (!get_option(&str, &n))
 		return 0;
 	dvc_flag = n;
@@ -40,6 +95,10 @@ enum {
 	CORE = 0,
 	DDR_AXI,
 	GC,
+#ifdef CONFIG_CPU_PXA1088
+	GC2D,
+	ISP,
+#endif
 	VPU,
 	VM_RAIL_MAX,
 };
@@ -118,10 +177,28 @@ struct voltage_item {
 	int volt_level_L; /* Low power mode voltage or low bits voltage level */
 };
 
-/* voltage tbl is sort ascending, it's default setting for Z1 */
-static int vm_millivolts[VL_MAX] = {
-	1150, 1238, 1250
+#define INIT_DVFS(_clk_name, _auto, _rail, _millivolts,  _freqs)	\
+	{								\
+		.clk_name	= _clk_name,				\
+		.auto_dvfs	= _auto,				\
+		.millivolts	= _millivolts,				\
+		.freqs_mult	= KHZ_TO_HZ,				\
+		.dvfs_rail	= _rail,				\
+		.freqs		= _freqs,				\
+	}
+
+int *vm_millivolts;
+/* voltage tbl is sort ascending, it's default setting */
+#ifdef D2199_DVFS	// DLG DVFS
+static int vm_millivolts_default[VL_MAX] = {
+	1300, 1300, 1350, 1400,
+
 };
+#else
+static int vm_millivolts_default[VL_MAX] = {
+	1300, 1300, 1350, 1400,
+};
+#endif
 
 static int vm_millivolts_z1z2[VL_MAX] = {
 	1300, 1300, 1300
@@ -134,7 +211,7 @@ static int vm_millivolts_988z3_svc[PROFILE_NUM][VL_MAX] = {
 	{1150, 1150, 1275, 1275},	/* profile 1 */
 	{1150, 1150, 1300, 1300},	/* profile 2 */
 	{1150, 1150, 1325, 1325},	/* profile 3 */
-	{1150, 1150, 1325, 1350},	/* profile 4 */
+	{1150, 1150, 1325, 1350},	/* profile 4 */  // --> TEST for 4 leves
 	{1150, 1150, 1325, 1375},	/* profile 5 */
 	{1150, 1150, 1325, 1400},	/* profile 6 */
 	{1150, 1150, 1325, 1400},	/* profile 7 */
@@ -157,35 +234,381 @@ static int vm_millivolts_986z3_svc[PROFILE_NUM][VL_MAX] = {
 
 /* 988 Ax SVC table, CP 416M vote VL1 */
 static int vm_millivolts_988ax_svc[PROFILE_NUM][VL_MAX] = {
-	/* PP <= 312, PP<=624, PP<=1066, PP<=1205 */
-	{1050, 1100, 1275, 1350},       /* profile 0 */
-	{1050, 1100, 1125, 1188},       /* profile 1 */
-	{1050, 1100, 1125, 1200},       /* profile 2 */
-	{1050, 1100, 1138, 1213},       /* profile 3 */
-	{1050, 1100, 1150, 1238},       /* profile 4 */
-	{1050, 1100, 1175, 1263},       /* profile 5 */
-	{1050, 1100, 1200, 1288},       /* profile 6 */
-	{1050, 1138, 1225, 1313},       /* profile 7 */
-	{1050, 1138, 1275, 1350},       /* profile 8 */
-
+	{1025, 1138, 1275, 1350},	/* profile 0 */
+	{1025, 1100, 1100, 1188},	/* profile 1 */
+	{1025, 1100, 1113, 1200},	/* profile 2 */
+	{1025, 1100, 1138, 1213},	/* profile 3 */
+	{1025, 1100, 1150, 1238},	/* profile 4 */
+	{1025, 1100, 1175, 1263},	/* profile 5 */
+	{1025, 1100, 1200, 1288},	/* profile 6 */
+	{1025, 1138, 1225, 1313},	/* profile 7 */
+	{1025, 1138, 1275, 1350},	/* profile 8 */
 };
 
 /* 986 Ax SVC table, CP 624M vote VL2 */
 static int vm_millivolts_986ax_svc[PROFILE_NUM][VL_MAX] = {
-	/* PP <= 312, PP<=624, PP<=1066, PP<=1205 */
-	{1050, 1138, 1275, 1350},	/* profile 0 */
-	{1050, 1100, 1100, 1200},	/* profile 1 */
-	{1050, 1100, 1113, 1200},	/* profile 2 */
-	{1050, 1100, 1138, 1213},	/* profile 3 */
-	{1050, 1100, 1150, 1238},	/* profile 4 */
-	{1050, 1100, 1175, 1263},	/* profile 5 */
-	{1050, 1100, 1200, 1288},	/* profile 6 */
-	{1050, 1138, 1225, 1313},	/* profile 7 */
-	{1050, 1138, 1275, 1350},	/* profile 8 */
+	{1025, 1138, 1275, 1350},	/* profile 0 */
+	{1025, 1100, 1100, 1188},	/* profile 1 */
+	{1025, 1100, 1113, 1200},	/* profile 2 */
+	{1025, 1100, 1138, 1213},	/* profile 3 */
+	{1025, 1100, 1150, 1238},	/* profile 4 */
+	{1025, 1100, 1175, 1263},	/* profile 5 */
+	{1025, 1100, 1200, 1288},	/* profile 6 */
+	{1025, 1138, 1225, 1313},	/* profile 7 */
+	{1025, 1138, 1275, 1350},	/* profile 8 */
 };
+
+/* 988 Ax 1p5G SVC table, CP 416M vote VL1 */
+static int vm_millivolts_988ax_svc_1p5G[PROFILE_NUM][VL_MAX] = {
+	{1025, 1138, 1275, 1375},	/* profile 0 */
+	{1025, 1100, 1100, 1288},	/* profile 1 */
+	{1025, 1100, 1113, 1325},	/* profile 2 */
+	{1025, 1100, 1138, 1363},	/* profile 3 */
+	{1025, 1100, 1150, 1375},	/* profile 4 */
+	{1025, 1100, 1175, 1375},	/* profile 5 */
+	{1025, 1100, 1200, 1375},	/* profile 6 */
+	{1025, 1138, 1225, 1375},	/* profile 7 */
+	{1025, 1138, 1275, 1375},	/* profile 8 */
+};
+
+/* FIXME: hard coding svc of 986ax for harrison bringup*/
+static int vm_millivolts_986ax_1v4_svc[PROFILE_NUM][VL_MAX] = {
+    {1400, 1400, 1400, 1400},   /* profile 0 */
+    {1400, 1400, 1400, 1400},   /* profile 1 */
+    {1400, 1400, 1400, 1400},   /* profile 2 */
+    {1400, 1400, 1400, 1400},   /* profile 3 */
+    {1400, 1400, 1400, 1400},   /* profile 4 */
+    {1400, 1400, 1400, 1400},   /* profile 5 */
+    {1400, 1400, 1400, 1400},   /* profile 6 */
+    {1400, 1400, 1400, 1400},   /* profile 7 */
+    {1400, 1400, 1400, 1400},   /* profile 8 */
+};
+
+#if !defined(CONFIG_CORE_1248)
+/* 986 Ax 1p5G table, CP 624M vote VL2 */
+static int vm_millivolts_986ax_svc_1p5G[PROFILE_NUM][VL_MAX] = {
+	{1025, 1138, 1275, 1375},	/* profile 0 */
+	{1025, 1100, 1100, 1288},	/* profile 1 */
+	{1025, 1100, 1113, 1325},	/* profile 2 */
+	{1025, 1100, 1138, 1363},	/* profile 3 */
+	{1025, 1100, 1150, 1375},	/* profile 4 */
+	{1025, 1100, 1175, 1375},	/* profile 5 */
+	{1025, 1100, 1200, 1375},	/* profile 6 */
+	{1025, 1138, 1225, 1375},	/* profile 7 */
+	{1025, 1138, 1275, 1375},	/* profile 8 */
+};
+#else
+/* 986 Ax 1p5G table, CP 624M vote VL2 */
+static int vm_millivolts_986ax_svc_1p5G[PROFILE_NUM][VL_MAX] = {
+	{1025, 1138, 1275, 1400},	/* profile 0 */
+	{1025, 1100, 1100, 1188},	/* profile 1 */
+	{1025, 1100, 1113, 1213},	/* profile 2 */
+	{1025, 1100, 1138, 1238},	/* profile 3 */
+	{1025, 1100, 1150, 1263},	/* profile 4 */
+	{1025, 1100, 1175, 1300},	/* profile 5 */
+	{1025, 1100, 1200, 1338},	/* profile 6 */
+	{1025, 1138, 1225, 1363},	/* profile 7 */
+	{1025, 1138, 1275, 1400},	/* profile 8 */
+};
+#endif
+/*
+ * 1088 SVC table
+ */
+static int vm_mv_1088a0_svc_1p1G[PROFILE_NUM][VL_MAX] = {
+	{1000, 1075, 1300, 1375},	/* profile 0 */
+	{1000, 1075, 1100, 1138},	/* profile 1 */
+	{1000, 1075, 1100, 1175},	/* profile 2 */
+	{1000, 1075, 1125, 1225},	/* profile 3 */
+	{1000, 1075, 1163, 1238},	/* profile 4 */
+	{1000, 1075, 1200, 1275},	/* profile 5 */
+	{1000, 1075, 1238, 1325},	/* profile 6 */
+	{1000, 1075, 1275, 1350},	/* profile 7 */
+	{1000, 1075, 1300, 1375},	/* profile 8 */
+};
+
+static int vm_mv_1088a0_svc_1p2G[PROFILE_NUM][VL_MAX] = {
+	{1000, 1075, 1300, 1375},	/* profile 0 */
+	{1000, 1075, 1100, 1200},	/* profile 1 */
+	{1000, 1075, 1100, 1200},	/* profile 2 */
+	{1000, 1075, 1125, 1238},	/* profile 3 */
+	{1000, 1075, 1163, 1288},	/* profile 4 */
+	{1000, 1075, 1200, 1325},	/* profile 5 */
+	{1000, 1075, 1238, 1363},	/* profile 6 */
+	{1000, 1075, 1275, 1375},	/* profile 7 */
+	{1000, 1075, 1300, 1375},	/* profile 8 */
+};
+
+static int vm_mv_1088a0_svc_1p3G[PROFILE_NUM][VL_MAX] = {
+	{1000, 1075, 1300, 1375},	/* profile 0 */
+	{1000, 1075, 1100, 1238},	/* profile 1 */
+	{1000, 1075, 1100, 1288},	/* profile 2 */
+	{1000, 1075, 1125, 1338},	/* profile 3 */
+	{1000, 1075, 1163, 1375},	/* profile 4 */
+	{1000, 1075, 1200, 1375},	/* profile 5 */
+	{1000, 1075, 1238, 1375},	/* profile 6 */
+	{1000, 1075, 1275, 1375},	/* profile 7 */
+	{1000, 1075, 1300, 1375},	/* profile 8 */
+};
+
+static int vm_mv_1088a1_svc_1p1G[PROFILE_NUM][VL_MAX] = {
+	{1025, 1075, 1250, 1375},	/* profile 0 */
+	{1025, 1075, 1150, 1138},	/* profile 1 */
+	{1025, 1075, 1150, 1175},	/* profile 2 */
+	{1025, 1075, 1150, 1213},	/* profile 3 */
+	{1025, 1075, 1150, 1263},	/* profile 4 */
+	{1025, 1075, 1150, 1300},	/* profile 5 */
+	{1025, 1075, 1188, 1338},	/* profile 6 */
+	{1025, 1075, 1225, 1375},	/* profile 7 */
+	{1025, 1075, 1250, 1375},	/* profile 8 */
+};
+
+static int vm_mv_1088a1_svc_1p2G[PROFILE_NUM][VL_MAX] = {
+	{1075, 1075, 1250, 1375},	/* profile 0 */
+	{1075, 1075, 1100, 1225},	/* profile 1 */
+	{1075, 1075, 1100, 1225},	/* profile 2 */
+	{1075, 1075, 1100, 1238},	/* profile 3 */
+	{1075, 1075, 1125, 1288},	/* profile 4 */
+	{1075, 1075, 1150, 1325},	/* profile 5 */
+	{1075, 1075, 1188, 1363},	/* profile 6 */
+	{1075, 1075, 1225, 1375},	/* profile 7 */
+	{1075, 1075, 1250, 1375},	/* profile 8 */
+};
+static int vm_mv_1088a1_svc_1p3G[PROFILE_NUM][VL_MAX] = {
+	{1025, 1075, 1250, 1375},	/* profile 0 */
+	{1025, 1075, 1100, 1238},	/* profile 1 */
+	{1025, 1075, 1100, 1288},	/* profile 2 */
+	{1025, 1075, 1100, 1338},	/* profile 3 */
+	{1025, 1075, 1125, 1375},	/* profile 4 */
+	{1025, 1075, 1150, 1375},	/* profile 5 */
+	{1025, 1075, 1188, 1375},	/* profile 6 */
+	{1025, 1075, 1225, 1375},	/* profile 7 */
+	{1025, 1075, 1250, 1375},	/* profile 8 */
+};
+
+/* ptr used for components' freqs combination */
+static unsigned long (*component_freqs)[VL_MAX];
+
+/************************* GPIO DVC **************************/
+/*
+ * NOTES: we set step to 500mV here as we don't want
+ * voltage change step by step, as GPIO based DVC is
+ * used. This can avoid tmp voltage which is not in saved
+ * in 4 level regulator table.
+ */
+static struct dvfs_rail pxa988_dvfs_rail_vm = {
+	.reg_id = "vcc_main",
+	.max_millivolts = 1400,
+	.min_millivolts = 1000,
+	.nominal_millivolts = 1200,
+	.step = 500,
+};
+
+static unsigned long freqs_cmb_z1z2[VM_RAIL_MAX][VL_MAX] = {
+	{ 600000, 800000, 1200000 },	/* CORE */
+	{ 300000, 400000, 400000 },	/* DDR/AXI */
+	{ 600000, 600000, 600000 },	/* GC */
+	{ 400000, 400000, 400000 }	/* VPU */
+};
+
+static struct dvfs_rail_component *vm_rail_comp_tbl;
+static struct dvfs_rail_component vm_rail_comp_tbl_z1z2[VM_RAIL_MAX] = {
+	INIT_DVFS("cpu", true, &pxa988_dvfs_rail_vm, NULL,
+		  freqs_cmb_z1z2[CORE]),
+	INIT_DVFS("ddr", true, &pxa988_dvfs_rail_vm, NULL,
+		  freqs_cmb_z1z2[DDR_AXI]),
+	INIT_DVFS("GCCLK", false, &pxa988_dvfs_rail_vm, NULL,
+		  freqs_cmb_z1z2[GC]),
+	INIT_DVFS("VPUCLK", false, &pxa988_dvfs_rail_vm, NULL,
+		  freqs_cmb_z1z2[VPU]),
+};
+
+static unsigned long freqs_cmb_z3[VM_RAIL_MAX][VL_MAX] = {
+	{ 312000, 624000, 1066000, 1205000 },	/* CORE */
+	{ 312000, 312000, 533000, 533000 },	/* DDR/AXI */
+	{ 0	, 416000, 624000, 624000 },	/* GC */
+	{ 208000, 312000, 416000, 416000 }	/* VPU */
+};
+
+static unsigned long freqs_cmb_ax[VM_RAIL_MAX][VL_MAX] = {
+	{ 624000, 624000, 1066000, 1482000 },	/* CORE */
+	{ 312000, 312000, 312000, 533000 },	/* DDR/AXI */
+	{ 0, 416000, 624000, 624000 },	/* GC */
+	{ 0, 312000, 416000, 416000 }	/* VPU */
+};
+
+static unsigned long freqs_cmb_1088a0[VM_RAIL_MAX][VL_MAX] = {
+	{ 312000, 312000, 1066000, 1300000 },	/* CORE */
+	{ 156000, 156000, 312000, 533000 },	/* DDR/AXI */
+	{ 0, 416000, 624000, 624000 },		/* GC */
+#ifdef	CONFIG_CPU_PXA1088
+	{ 0, 312000, 416000, 624000 },		/* GC2D */
+	{ 312000, 416000, 416000, 416000 },	/* ISP */
+#endif
+	{ 0, 312000, 416000, 624000 }		/* VPU */
+};
+
+static unsigned long freqs_cmb_1088a1[VM_RAIL_MAX][VL_MAX] = {
+	{ 312000, 312000, 800000, 1300000 },	/* CORE */
+	{ 156000, 312000, 400000, 533000 },	/* DDR/AXI */
+	{ 0, 416000, 416000, 624000 },		/* GC */
+#ifdef	CONFIG_CPU_PXA1088
+	{ 0, 312000, 416000, 416000 },		/* GC2D */
+	{ 312000, 416000, 416000, 416000 },	/* ISP */
+#endif
+	{ 0, 312000, 416000, 416000 }		/* VPU */
+};
+
+static struct dvfs_rail_component vm_rail_comp_tbl_gpiodvc[VM_RAIL_MAX] = {
+	INIT_DVFS("cpu", true, &pxa988_dvfs_rail_vm, NULL, NULL),
+	INIT_DVFS("ddr", true, &pxa988_dvfs_rail_vm, NULL, NULL),
+	INIT_DVFS("GCCLK", true, &pxa988_dvfs_rail_vm, NULL, NULL),
+#ifdef CONFIG_CPU_PXA1088
+	INIT_DVFS("GC2DCLK", true,  &pxa988_dvfs_rail_vm, NULL, NULL),
+	INIT_DVFS("ISP-CLK", true,  &pxa988_dvfs_rail_vm, NULL, NULL),
+#endif
+	INIT_DVFS("VPUCLK", true, &pxa988_dvfs_rail_vm, NULL, NULL),
+};
+
+/************************* PMU DVC **************************/
 /* default CP/MSA required PMU DVC VL */
 static unsigned int cp_pmudvc_lvl = VL1;
 static unsigned int msa_pmudvc_lvl = VL1;
+
+/* Rails for pmu dvc */
+static struct dvfs_rail pxa988_dvfs_rail_ap_active = {
+	.reg_id = "vcc_main_ap_active",
+	.max_millivolts = LEVEL3,
+	.min_millivolts = LEVEL0,
+	.nominal_millivolts = LEVEL_START,
+	.step = 0xFF,
+};
+
+static struct dvfs_rail pxa988_dvfs_rail_ap_lpm = {
+	.reg_id = "vcc_main_ap_lpm",
+	.max_millivolts = LEVEL3,
+	.min_millivolts = LEVEL0,
+	.nominal_millivolts = LEVEL_START,
+	.step = 0xFF,
+};
+
+static struct dvfs_rail pxa988_dvfs_rail_apsub_idle = {
+	.reg_id = "vcc_main_apsub_idle",
+	.max_millivolts = LEVEL3,
+	.min_millivolts = LEVEL0,
+	.nominal_millivolts = LEVEL_START,
+	.step = 0xFF,
+};
+
+static struct dvfs_rail pxa988_dvfs_rail_apsub_sleep = {
+	.reg_id = "vcc_main_apsub_sleep",
+	.max_millivolts = LEVEL3,
+	.min_millivolts = LEVEL0,
+	.nominal_millivolts = LEVEL_START,
+	.step = 0xFF,
+};
+
+static struct dvfs_rail *pxa988_dvfs_rails_pmudvc[] = {
+	&pxa988_dvfs_rail_ap_active,
+	&pxa988_dvfs_rail_ap_lpm,
+	&pxa988_dvfs_rail_apsub_idle,
+	&pxa988_dvfs_rail_apsub_sleep,
+};
+
+/* component_voltage table and component_freqs combination is dynamic inited */
+static int component_voltage[][MAX_RAIL_NUM][LEVEL_END] = {
+	[CORE] = {
+	},
+	[DDR_AXI] = {
+	},
+	[GC] = {
+	},
+#ifdef	CONFIG_CPU_PXA1088
+	[GC2D] = {
+	},
+	[ISP] = {
+	},
+#endif
+	[VPU] = {
+	},
+};
+
+/* PMU DVC freq-combination to dynamic filled to support different platform */
+static struct dvfs_rail_component vm_rail_ap_active_tbl[VM_RAIL_MAX] = {
+	INIT_DVFS("cpu", true, &pxa988_dvfs_rail_ap_active,
+		component_voltage[CORE][AP_ACTIVE], NULL),
+	INIT_DVFS("ddr", true, &pxa988_dvfs_rail_ap_active,
+		component_voltage[DDR_AXI][AP_ACTIVE], NULL),
+	INIT_DVFS("GCCLK", true,  &pxa988_dvfs_rail_ap_active,
+		component_voltage[GC][AP_ACTIVE], NULL),
+#ifdef CONFIG_CPU_PXA1088
+	INIT_DVFS("GC2DCLK", true,  &pxa988_dvfs_rail_ap_active,
+		component_voltage[GC2D][AP_ACTIVE], NULL),
+	INIT_DVFS("ISP-CLK", true,  &pxa988_dvfs_rail_ap_active,
+		component_voltage[ISP][AP_ACTIVE], NULL),
+#endif
+	INIT_DVFS("VPUCLK", true, &pxa988_dvfs_rail_ap_active,
+		component_voltage[VPU][AP_ACTIVE], NULL),
+};
+
+static struct dvfs_rail_component vm_rail_ap_lpm_tbl[VM_RAIL_MAX] = {
+	INIT_DVFS("cpu", true, &pxa988_dvfs_rail_ap_lpm,
+		component_voltage[CORE][AP_LPM], NULL),
+	INIT_DVFS("ddr", true, &pxa988_dvfs_rail_ap_lpm,
+		component_voltage[DDR_AXI][AP_LPM], NULL),
+	INIT_DVFS("GCCLK", true, &pxa988_dvfs_rail_ap_lpm,
+		component_voltage[GC][AP_LPM], NULL),
+#ifdef CONFIG_CPU_PXA1088
+	INIT_DVFS("GC2DCLK", true,  &pxa988_dvfs_rail_ap_lpm,
+		component_voltage[GC2D][AP_LPM], NULL),
+	INIT_DVFS("ISP-CLK", true,  &pxa988_dvfs_rail_ap_lpm,
+		component_voltage[ISP][AP_LPM], NULL),
+#endif
+	INIT_DVFS("VPUCLK", true, &pxa988_dvfs_rail_ap_lpm,
+		component_voltage[VPU][AP_LPM], NULL),
+};
+
+static struct dvfs_rail_component vm_rail_apsub_idle_tbl[VM_RAIL_MAX] = {
+	INIT_DVFS("cpu", true, &pxa988_dvfs_rail_apsub_idle,
+		component_voltage[CORE][APSUB_IDLE], NULL),
+	INIT_DVFS("ddr", true, &pxa988_dvfs_rail_apsub_idle,
+		component_voltage[DDR_AXI][APSUB_IDLE], NULL),
+	INIT_DVFS("GCCLK", true, &pxa988_dvfs_rail_apsub_idle,
+		component_voltage[GC][APSUB_IDLE], NULL),
+#ifdef CONFIG_CPU_PXA1088
+	INIT_DVFS("GC2DCLK", true,  &pxa988_dvfs_rail_apsub_idle,
+		component_voltage[GC2D][APSUB_IDLE], NULL),
+	INIT_DVFS("ISP-CLK", true,  &pxa988_dvfs_rail_apsub_idle,
+		component_voltage[ISP][APSUB_IDLE], NULL),
+#endif
+	INIT_DVFS("VPUCLK", true, &pxa988_dvfs_rail_apsub_idle,
+		component_voltage[VPU][APSUB_IDLE], NULL),
+};
+
+static struct dvfs_rail_component vm_rail_apsub_sleep_tbl[VM_RAIL_MAX] = {
+	INIT_DVFS("cpu", true, &pxa988_dvfs_rail_apsub_sleep,
+		component_voltage[CORE][APSUB_SLEEP], NULL),
+	INIT_DVFS("ddr", true, &pxa988_dvfs_rail_apsub_sleep,
+		component_voltage[DDR_AXI][APSUB_SLEEP], NULL),
+	INIT_DVFS("GCCLK", true, &pxa988_dvfs_rail_apsub_sleep,
+		component_voltage[GC][APSUB_SLEEP], NULL),
+#ifdef CONFIG_CPU_PXA1088
+	INIT_DVFS("GC2DCLK", true,  &pxa988_dvfs_rail_apsub_sleep,
+		component_voltage[GC2D][APSUB_SLEEP], NULL),
+	INIT_DVFS("ISP-CLK", true,  &pxa988_dvfs_rail_apsub_sleep,
+		component_voltage[ISP][APSUB_SLEEP], NULL),
+#endif
+	INIT_DVFS("VPUCLK", true, &pxa988_dvfs_rail_apsub_sleep,
+		component_voltage[VPU][APSUB_SLEEP], NULL),
+};
+
+static struct dvfs_rail_component *dvfs_rail_component_list[] = {
+	vm_rail_ap_active_tbl,
+	vm_rail_ap_lpm_tbl,
+	vm_rail_apsub_idle_tbl,
+	vm_rail_apsub_sleep_tbl,
+};
+
+static void update_all_pmudvc_rails_info(void);
 
 static struct dvc_reg dvc_reg_table[DVC_END] = {
 	{
@@ -238,19 +661,64 @@ static struct voltage_item current_volt_table[DVC_END];
 
 static inline int volt_to_reg(int millivolts)
 {
+	//dlg_trace("millivolts : %d, [%d]\n", millivolts, (millivolts - 600) * 100 / 625);
+#ifdef D2199_DVFS	// DLG DVFS
+	return (millivolts - 600) * 100 / 625;
+#else
 	return (millivolts - 600) * 10 / 125;
+#endif
 }
 
 static inline int reg_to_volt(int value)
 {
 	/* Round up to int value, eg, 1287.5 ==> 1288 */
+	//dlg_trace("value : %d, [%d]\n", value, (value * 625 + 60000 + 90) / 100);
+#ifdef D2199_DVFS	// DLG DVFS
+	return (value * 625 + 60000 + 90) / 100;
+#else
 	return (value * 125 + 6000 + 9) / 10;
+#endif
+}
 
+static inline int get_buck1_volt(int level)
+{
+#if defined(CONFIG_MFD_88PM822)
+	return pm822_extern_read(PM822_POWER_PAGE, PM822_BUCK1 + level);
+#elif defined(CONFIG_MFD_88PM800)
+	return pm800_extern_read(PM80X_POWER_PAGE, PM800_BUCK1 + level);
+#else /* CONFIG_MFD_D2199 */
+#ifdef D2199_DVFS
+#if defined(CONFIG_D2199_DVC)
+	return d2199_extern_dvc_read(level);
+#else
+	return d2199_dvfs_get_voltage(level);
+#endif /* CONFIG_D2199_DVC */
+#endif /* D2199_DVFS */
+#endif /* CONFIG_MFD_D2199 */
+}
+
+static inline int set_buck1_volt(int level, int val)
+{
+#if defined(CONFIG_MFD_88PM822)
+	return pm822_extern_write(PM822_POWER_PAGE, PM822_BUCK1 + level, val);
+#elif defined(CONFIG_MFD_88PM800)
+	return pm800_extern_write(PM80X_POWER_PAGE, PM800_BUCK1 + level, val);
+#else /* CONFIG_MFD_D2199 */
+#ifdef D2199_DVFS
+#if defined(CONFIG_D2199_DVC)
+	return d2199_extern_dvc_write(level, val);
+#else
+	return d2199_dvfs_set_voltage(level, val);
+#endif /* CONFIG_D2199_DVC */
+#endif /* D2199_DVFS */
+#endif /* CONFIG_MFD_D2199 */
 }
 
 static int get_stable_ticks(int millivolts1, int millivolts2)
 {
 	int max, min, ticks;
+	//dlg_trace("millivolts1[%d], millivolts2[%d]\n", millivolts1, millivolts2);
+
 	max = max(millivolts1, millivolts2);
 	min = min(millivolts1, millivolts2);
 	/*
@@ -263,6 +731,8 @@ static int get_stable_ticks(int millivolts1, int millivolts2)
 	ticks = ((max - min) * 10 / 125 + 10) * 26;
 	if (ticks > VLXX_ST_MASK)
 		ticks = VLXX_ST_MASK;
+
+	//dlg_trace("ticks[%d]\n", ticks);
 	return ticks;
 }
 
@@ -278,8 +748,9 @@ static int set_voltage_value(int level, int value)
 		return -EINVAL;
 	}
 	regval = volt_to_reg(value);
-	ret = pm800_extern_write(PM80X_POWER_PAGE,
-			PM800_BUCK1 + level, regval);
+	//dlg_trace("level[%d], value[%d], regval[%d]\n", level, value, regval);
+
+	ret = set_buck1_volt(level, regval);
 	if (ret)
 		printk(KERN_ERR "PMIC voltage replacement failed!\n");
 	return ret;
@@ -293,12 +764,13 @@ static int get_voltage_value(int level)
 		printk(KERN_ERR "Wrong level! level should be between 0~3\n");
 		return -EINVAL;
 	}
-	reg = pm800_extern_read(PM80X_POWER_PAGE, PM800_BUCK1 + level);
+	reg = get_buck1_volt(level);
 	if (reg < 0) {
 		printk(KERN_ERR "PMIC voltage reading failed !\n");
 		return -1;
 	}
 	value = reg_to_volt(reg);
+	dlg_trace("level[%d], value[%d]\n", level, value);
 	return value;
 }
 
@@ -327,6 +799,7 @@ static int voltage_millivolts[MAX_RAIL_NUM][LEVEL_END] = {
 static int level_mapping[LEVEL_END];
 static void init_level_mapping(void)
 {
+	dlg_trace("\n");
 	level_mapping[LEVEL0] = 0;
 	level_mapping[LEVEL1] = 1;
 	level_mapping[LEVEL2] = 2;
@@ -351,10 +824,22 @@ static int replace_level_voltage(int buck_id, int *level)
 {
 	int value, ticks;
 	int pmic_level = level_mapping[*level];
-	int volt = voltage_millivolts[buck_id - PM800_ID_BUCK1_AP_ACTIVE][*level];
+	int volt = voltage_millivolts[buck_id - BUCK1_AP_ACTIVE][*level];
 
+	//dlg_trace("buck_id[%d], level[%d], pmic_level[%d], volt[%d]\n", buck_id, *level, pmic_level, volt);
+	//dlg_trace("cur_volt_inited[%d], cur_level_volt[pmic_level][%d], volt[%d]\n",
+	//			cur_volt_inited, cur_level_volt[pmic_level], volt);
+
+#if defined(CONFIG_D2199_DVC)
+	if (cur_volt_inited) {
+#else
 	if (cur_volt_inited && (cur_level_volt[pmic_level] != volt)) {
+#endif
+		//dlg_trace("pmic_level[%d]\n", pmic_level);
+
 		set_voltage_value(pmic_level, volt);
+		pr_debug("Replace pmic level %d from %d -> %d!\n",
+			pmic_level, cur_level_volt[pmic_level], volt);
 		cur_level_volt[pmic_level] = volt;
 		/* Update voltage level change stable time */
 		if ((pmic_level == 0) || (pmic_level == 1)) {
@@ -383,39 +868,62 @@ static int replace_level_voltage(int buck_id, int *level)
 	}
 
 	*level = pmic_level;
+	//dlg_trace("level[%d]\n", *level);
 	return 0;
 }
 
-int dvc_set_voltage(int buck_id, int level)
+#if defined(CONFIG_D2199_DVC)
+static int ramp_up_vol = 2500; /* unit : 100uV */
+int d2199_dvc_set_voltage(int buck_id, int level)
 {
 	unsigned int reg_val;
 	int reg_index = 0, high_bits; /* If this is high bits voltage */
+	static unsigned int pmic_vl_inited = 0;
+	static unsigned int lvl = 0;
 	/*
-	 * Max delay time, unit is us. (1.5v - 1v) / 0.125v = 40
-	 * Also PMIC needs 10us to launch and sync dvc pins
-	 * default delay should be 0xFFFF * 3 ticks(L0-->L3 or L3-->L0)
+	 * Max delay time, unit is us. : (ramp_up_vol / 12.5mv)
+	 * mode transition time = 18
+	 * add some buffer here = 4
+	 * default delay should be 0xFFFF * 1 tick(L2-->L3)
 	 */
 	int max_delay;
-	if (stable_time_inited)
-		max_delay = 40 + 10 * 3; /* pmic sync time may be accumulated */
-	else
-		max_delay = DIV_ROUND_UP(0xFFFF * 3, 26);
+	//dlg_trace("stable_time_inited[%d], buck_id[%d], level[%d]\n", stable_time_inited, buck_id, level);
 
-	if ((buck_id < PM800_ID_BUCK1_AP_ACTIVE) || (buck_id > PM800_ID_BUCK1_APSUB_SLEEP)) {
+	/* updated lvl1 ~ lv3 during init stage */
+	if (unlikely(!pmic_vl_inited)) {
+		/* max vl to pmic leve 3 */
+		lvl = pxa988_get_vl_num() - 1;
+#if 1	// dlg
+		set_voltage_value(level_mapping[LEVEL3], pxa988_get_vl(lvl));
+		set_voltage_value(level_mapping[LEVEL1], pxa988_get_vl(1));
+		set_voltage_value(level_mapping[LEVEL2], pxa988_get_vl(2));
+#endif
+		pmic_vl_inited = 1;
+	}
+
+	if (stable_time_inited)
+		max_delay = ((ramp_up_vol / 125) + 18 + 4) * 1; /* pmic sync time may be accumulated */
+	else
+		max_delay = DIV_ROUND_UP(0xFFFF * 1, 26);
+
+	if ((buck_id < BUCK1_AP_ACTIVE) || (buck_id > BUCK1_APSUB_SLEEP)) {
 		printk(KERN_ERR "Not new dvc regulator, Can't use %s\n", __func__);
 		return 0;
 	}
+
 	replace_level_voltage(buck_id, &level);
-	if (buck_id == PM800_ID_BUCK1_AP_ACTIVE) {
+	//dlg_trace("buck_id[%d], level[%d]\n", buck_id, level);
+
+	if (buck_id == BUCK1_AP_ACTIVE) {
 		reg_index = DVC_AP;
 		high_bits = 1;
-	} else if (buck_id == PM800_ID_BUCK1_AP_LPM) {
+	} else if (buck_id == BUCK1_AP_LPM) {
 		reg_index = DVC_AP;
 		high_bits = 0;
-	} else if (buck_id == PM800_ID_BUCK1_APSUB_IDLE) {
+	} else if (buck_id == BUCK1_APSUB_IDLE) {
 		reg_index = DVC_APSUB;
 		high_bits = 0;
-	} else if (buck_id == PM800_ID_BUCK1_APSUB_SLEEP) {
+	} else if (buck_id == BUCK1_APSUB_SLEEP) {
 		reg_index = DVC_APSUB;
 		high_bits = 1;
 	}
@@ -426,6 +934,126 @@ int dvc_set_voltage(int buck_id, int level)
 	}
 
 	if (high_bits) {
+		//dlg_trace(" if high_bits\n");
+		/* Set high bits voltage */
+		if (current_volt_table[reg_index].volt_level_H == level)
+			return 0;
+
+		//////////////
+		d2199_dvfs_set_voltage(0,level);
+
+		//////////////
+		reg_val = __raw_readl(dvc_reg_table[reg_index].reg);
+		reg_val &= ~dvc_reg_table[reg_index].mask_H;
+		reg_val |= (level << dvc_reg_table[reg_index].offset_H);
+		if (dvc_reg_table[reg_index].offset_trig)
+			reg_val |= (1 << dvc_reg_table[reg_index].offset_trig);
+		pr_debug("%s Active VL[%x] = [%x]\n", __func__,
+			(unsigned int)dvc_reg_table[reg_index].reg, reg_val);
+		__raw_writel(reg_val, dvc_reg_table[reg_index].reg);
+
+		/* Only AP Active voltage change needs polling */
+		if (buck_id == BUCK1_AP_ACTIVE) {
+			if (stable_time_inited) {
+				if ( (level == lvl) &&
+					(level > current_volt_table[reg_index].volt_level_H) )
+					udelay(max_delay);
+			} else {
+				while (max_delay && !(__raw_readl(PMUM_DVC_ISR)
+				       & AP_VC_DONE_INTR_ISR)) {
+					udelay(1);
+					max_delay--;
+				}
+				if (!max_delay) {
+					printk(KERN_ERR "AP active voltage change can't finish!\n");
+					BUG_ON(1);
+				}
+				/*
+				 * Clear AP interrupt status
+				 * write 0 to clear, write 1 has no effect
+				 */
+				__raw_writel(0x6, PMUM_DVC_ISR);
+			}
+		}
+		current_volt_table[reg_index].volt_level_H = level;
+	} else {
+		//dlg_trace(" else high_bits\n");
+		/* Set low bits voltage, no need to poll status */
+		if (current_volt_table[reg_index].volt_level_L == level)
+			return 0;
+		///////////
+		d2199_dvfs_set_voltage(0,level);
+
+		/////////////
+		reg_val = __raw_readl(dvc_reg_table[reg_index].reg);
+		reg_val &= ~dvc_reg_table[reg_index].mask_L;
+		reg_val |= (level << dvc_reg_table[reg_index].offset_L);
+		pr_debug("%s LPM VL[%x] = [%x]\n", __func__,
+			(unsigned int)dvc_reg_table[reg_index].reg, reg_val);
+		__raw_writel(reg_val, dvc_reg_table[reg_index].reg);
+		current_volt_table[reg_index].volt_level_L = level;
+	}
+	return 0;
+}
+EXPORT_SYMBOL(d2199_dvc_set_voltage);
+#endif	// DLG_DVFS
+
+int dvc_set_voltage(int buck_id, int level)
+{
+	unsigned int reg_val;
+	int reg_index = 0, high_bits; /* If this is high bits voltage */
+	static unsigned int pmic_vl_inited = 0;
+	unsigned int lvl = 0;
+	/*
+	 * Max delay time, unit is us. (1.5v - 1v) / 0.125v = 40
+	 * Also PMIC needs 10us to launch and sync dvc pins
+	 * default delay should be 0xFFFF * 3 ticks(L0-->L3 or L3-->L0)
+	 */
+	int max_delay;
+	dlg_trace("stable_time_inited[%d], buck_id[%d], level[%d]\n", stable_time_inited, buck_id, level);
+
+	/* updated lvl1 ~ lv3 during init stage */
+	if (unlikely(!pmic_vl_inited)) {
+		/* max vl to pmic leve 3 */
+		lvl = pxa988_get_vl_num() - 1;
+		set_voltage_value(level_mapping[LEVEL3], pxa988_get_vl(lvl));
+		set_voltage_value(level_mapping[LEVEL1], pxa988_get_vl(1));
+		set_voltage_value(level_mapping[LEVEL2], pxa988_get_vl(2));
+		pmic_vl_inited = 1;
+	}
+
+	if (stable_time_inited)
+		max_delay = 40 + 10 * 3; /* pmic sync time may be accumulated */
+	else
+		max_delay = DIV_ROUND_UP(0xFFFF * 3, 26);
+
+	if ((buck_id < BUCK1_AP_ACTIVE) || (buck_id > BUCK1_APSUB_SLEEP)) {
+		printk(KERN_ERR "Not new dvc regulator, Can't use %s\n", __func__);
+		return 0;
+	}
+	replace_level_voltage(buck_id, &level);
+	dlg_trace("buck_id[%d], level[%d]\n", buck_id, level);
+	if (buck_id == BUCK1_AP_ACTIVE) {
+		reg_index = DVC_AP;
+		high_bits = 1;
+	} else if (buck_id == BUCK1_AP_LPM) {
+		reg_index = DVC_AP;
+		high_bits = 0;
+	} else if (buck_id == BUCK1_APSUB_IDLE) {
+		reg_index = DVC_APSUB;
+		high_bits = 0;
+	} else if (buck_id == BUCK1_APSUB_SLEEP) {
+		reg_index = DVC_APSUB;
+		high_bits = 1;
+	}
+
+	if (!dvc_reg_table[reg_index].allow_ap) {
+		printk(KERN_ERR "AP can't set this register !\n");
+		return 0;
+	}
+
+	if (high_bits) {
+		dlg_trace(" if high_bits\n");
 		/* Set high bits voltage */
 		if (current_volt_table[reg_index].volt_level_H == level)
 			return 0;
@@ -441,9 +1069,11 @@ int dvc_set_voltage(int buck_id, int level)
 		reg_val |= (level << dvc_reg_table[reg_index].offset_H);
 		if (dvc_reg_table[reg_index].offset_trig)
 			reg_val |= (1 << dvc_reg_table[reg_index].offset_trig);
+		pr_debug("%s Active VL[%x] = [%x]\n", __func__,
+			(unsigned int)dvc_reg_table[reg_index].reg, reg_val);
 		__raw_writel(reg_val, dvc_reg_table[reg_index].reg);
 		/* Only AP Active voltage change needs polling */
-		if (buck_id == PM800_ID_BUCK1_AP_ACTIVE) {
+		if (buck_id == BUCK1_AP_ACTIVE) {
 			while (max_delay && !(__raw_readl(PMUM_DVC_ISR)
 			       & AP_VC_DONE_INTR_ISR)) {
 				udelay(1);
@@ -454,106 +1084,29 @@ int dvc_set_voltage(int buck_id, int level)
 				BUG_ON(1);
 			}
 			/*
-			 * Clear AP interrupt status
+			 * Clear interrupt status
 			 * write 0 to clear, write 1 has no effect
 			 */
 			__raw_writel(0x6, PMUM_DVC_ISR);
 		}
 		current_volt_table[reg_index].volt_level_H = level;
 	} else {
+		dlg_trace(" else high_bits\n");
 		/* Set low bits voltage, no need to poll status */
 		if (current_volt_table[reg_index].volt_level_L == level)
 			return 0;
 		reg_val = __raw_readl(dvc_reg_table[reg_index].reg);
 		reg_val &= ~dvc_reg_table[reg_index].mask_L;
 		reg_val |= (level << dvc_reg_table[reg_index].offset_L);
+		pr_debug("%s LPM VL[%x] = [%x]\n", __func__,
+			(unsigned int)dvc_reg_table[reg_index].reg, reg_val);
 		__raw_writel(reg_val, dvc_reg_table[reg_index].reg);
 		current_volt_table[reg_index].volt_level_L = level;
 	}
+
 	return 0;
 }
 EXPORT_SYMBOL(dvc_set_voltage);
-
-/*
- * NOTES: we set step to 500mV here as we don't want
- * voltage change step by step, as GPIO based DVC is
- * used. This can avoid tmp voltage which is not in saved
- * in 4 level regulator table.
- */
-static struct dvfs_rail pxa988_dvfs_rail_vm = {
-	.reg_id = "vcc_main",
-	.max_millivolts = 1400,
-	.min_millivolts = 1000,
-	.nominal_millivolts = 1200,
-	.step = 500,
-};
-
-#define INIT_DVFS(_clk_name, _auto, _rail, _millivolts,  _freqs)	\
-	{								\
-		.clk_name	= _clk_name,				\
-		.auto_dvfs	= _auto,				\
-		.millivolts	= _millivolts,				\
-		.freqs_mult	= KHZ_TO_HZ,				\
-		.dvfs_rail	= _rail,				\
-		.freqs		= _freqs,				\
-	}
-
-static unsigned long freqs_cmb_z1z2[VM_RAIL_MAX][VL_MAX] = {
-	{ 600000, 800000, 1200000 },	/* CORE */
-	{ 300000, 400000, 400000 },	/* DDR/AXI */
-	{ 600000, 600000, 600000 },	/* GC */
-	{ 400000, 400000, 400000 }	/* VPU */
-};
-
-static struct dvfs_rail_component *vm_rail_comp_tbl;
-static struct dvfs_rail_component vm_rail_comp_tbl_z1z2[VM_RAIL_MAX] = {
-	INIT_DVFS("cpu", true, &pxa988_dvfs_rail_vm, vm_millivolts,
-		  freqs_cmb_z1z2[CORE]),
-	INIT_DVFS("ddr", true, &pxa988_dvfs_rail_vm, vm_millivolts,
-		  freqs_cmb_z1z2[DDR_AXI]),
-	INIT_DVFS("GCCLK", false, &pxa988_dvfs_rail_vm, vm_millivolts,
-		  freqs_cmb_z1z2[GC]),
-	INIT_DVFS("VPUCLK", false, &pxa988_dvfs_rail_vm, vm_millivolts,
-		  freqs_cmb_z1z2[VPU]),
-};
-
-static unsigned long freqs_cmb_z3[VM_RAIL_MAX][VL_MAX] = {
-	{ 312000, 624000, 1066000, 1205000 },	/* CORE */
-	{ 312000, 312000, 533000, 533000 },	/* DDR/AXI */
-	{ 0	, 416000, 624000, 624000 },	/* GC */
-	{ 208000, 312000, 416000, 416000 }	/* VPU */
-};
-
-static struct dvfs_rail_component vm_rail_comp_tbl_z3[VM_RAIL_MAX] = {
-	INIT_DVFS("cpu", true, &pxa988_dvfs_rail_vm, vm_millivolts,
-		  freqs_cmb_z3[CORE]),
-	INIT_DVFS("ddr", true, &pxa988_dvfs_rail_vm, vm_millivolts,
-		  freqs_cmb_z3[DDR_AXI]),
-	INIT_DVFS("GCCLK", true, &pxa988_dvfs_rail_vm, vm_millivolts,
-		  freqs_cmb_z3[GC]),
-	INIT_DVFS("VPUCLK", true, &pxa988_dvfs_rail_vm, vm_millivolts,
-		  freqs_cmb_z3[VPU]),
-};
-
-static unsigned long freqs_cmb_ax[VM_RAIL_MAX][VL_MAX] = {
-	{ 624000, 624000, 1066000, 1205000 },	/* CORE */
-	{ 312000, 312000, 312000, 533000 },	/* DDR/AXI */
-	{ 0, 416000, 624000, 624000 },	/* GC */
-	{ 0, 312000, 416000, 416000 }	/* VPU */
-};
-
-static struct dvfs_rail_component vm_rail_comp_tbl_ax[VM_RAIL_MAX] = {
-	INIT_DVFS("cpu", true, &pxa988_dvfs_rail_vm, vm_millivolts,
-		  freqs_cmb_ax[CORE]),
-	INIT_DVFS("ddr", true, &pxa988_dvfs_rail_vm, vm_millivolts,
-		  freqs_cmb_ax[DDR_AXI]),
-	INIT_DVFS("GCCLK", true, &pxa988_dvfs_rail_vm, vm_millivolts,
-		  freqs_cmb_ax[GC]),
-	INIT_DVFS("VPUCLK", true, &pxa988_dvfs_rail_vm, vm_millivolts,
-		  freqs_cmb_ax[VPU]),
-};
-
-static void update_all_component_voltage(void);
 
 /* init the voltage and rail/frequency tbl according to platform info */
 static int __init setup_dvfs_platinfo(void)
@@ -562,56 +1115,90 @@ static int __init setup_dvfs_platinfo(void)
 	int i, j;
 	int min_cp_millivolts = 0;
 
+	dlg_trace(" cpu_is_pxa1088 [%d], uiprofile[%d]\n", cpu_is_pxa1088(), uiprofile);
+
+	if (get_board_id() == VER_T7)
+		dvc_pin_switch = 0;
+
+	vm_millivolts = vm_millivolts_default;
+
 	/* z1/z2/z3/Ax will use different voltage */
 	if (cpu_is_z1z2()) {
-		memcpy(&vm_millivolts, &vm_millivolts_z1z2,\
-			sizeof(int) * ARRAY_SIZE(vm_millivolts));
+		vm_millivolts = vm_millivolts_z1z2;
 		dvc_flag = 0;
 	} else if (cpu_is_pxa988_z3()) {
-		memcpy(&vm_millivolts, &vm_millivolts_988z3_svc[uiprofile],\
-			sizeof(int) * ARRAY_SIZE(vm_millivolts));
+		vm_millivolts = vm_millivolts_988z3_svc[uiprofile];
 		dvc_flag = 0;
+		component_freqs = freqs_cmb_z3;
 	} else if (cpu_is_pxa986_z3()) {
-		memcpy(&vm_millivolts, &vm_millivolts_986z3_svc[uiprofile],\
-			sizeof(int) * ARRAY_SIZE(vm_millivolts));
+		vm_millivolts = vm_millivolts_986z3_svc[uiprofile];
 		dvc_flag = 0;
+		component_freqs = freqs_cmb_z3;
 	} else if (cpu_is_pxa988_a0()) {
 		if (is_pxa988a0svc) {
-			memcpy(&vm_millivolts,\
-				&vm_millivolts_988ax_svc[uiprofile],\
-				sizeof(int) * ARRAY_SIZE(vm_millivolts));
-		} else {
-			memcpy(&vm_millivolts,\
-				&vm_millivolts_988z3_svc[uiprofile],\
-				sizeof(int) * ARRAY_SIZE(vm_millivolts));
-		}
+			vm_millivolts = vm_millivolts_988ax_svc[uiprofile];
+			if (max_freq > 1205)
+				vm_millivolts =
+					vm_millivolts_988ax_svc_1p5G[uiprofile];
+		} else
+			vm_millivolts = vm_millivolts_988z3_svc[uiprofile];
 		/*
 		 * 988 A0 CP/MSA/TD modem requires at least VL1 1.1V
 		 */
 		cp_pmudvc_lvl = msa_pmudvc_lvl = VL1;
+		component_freqs = freqs_cmb_ax;
 	} else if (cpu_is_pxa986_a0()) {
 		if (is_pxa988a0svc) {
-			memcpy(&vm_millivolts,\
-				&vm_millivolts_986ax_svc[uiprofile],\
-			sizeof(int) * ARRAY_SIZE(vm_millivolts));
-		} else {
-			memcpy(&vm_millivolts,\
-				&vm_millivolts_986z3_svc[uiprofile],\
-				sizeof(int) * ARRAY_SIZE(vm_millivolts));
-		}
+			vm_millivolts = vm_millivolts_986ax_svc[uiprofile];
+			if (max_freq > 1205)
+				vm_millivolts =
+					vm_millivolts_986ax_svc_1p5G[uiprofile];
+		} else
+			vm_millivolts = vm_millivolts_986z3_svc[uiprofile];
 		/*
 		 * 986 A0 CP/MSA/TD modem requires at least VL2
 		 */
+		cp_pmudvc_lvl = msa_pmudvc_lvl = VL2;
+		component_freqs = freqs_cmb_ax;
+	} else if (cpu_is_pxa1088()) {
+		if (has_feat_higher_ddr_vmin()) {
+			if (ddr_mode) {
+				pr_err("DDR 533M is not supported on this board!!!\n");
+				BUG_ON(1);
+			}
+
+			if (max_freq > CORE_1p18G)
+				vm_millivolts =
+					vm_mv_1088a0_svc_1p3G[uiprofile];
+			else if (max_freq > CORE_1p1G)
+				vm_millivolts =
+					vm_mv_1088a0_svc_1p2G[uiprofile];
+			else
+				vm_millivolts =
+					vm_mv_1088a0_svc_1p1G[uiprofile];
+
+			component_freqs = freqs_cmb_1088a0;
+		} else {
+			if (max_freq > CORE_1p18G)
+				vm_millivolts =
+					vm_mv_1088a1_svc_1p3G[uiprofile];
+			else if (max_freq > CORE_1p1G)
+				vm_millivolts =
+					vm_mv_1088a1_svc_1p2G[uiprofile];
+			else
+				vm_millivolts =
+					vm_mv_1088a1_svc_1p1G[uiprofile];
+			component_freqs = freqs_cmb_1088a1;
+		}
+		 /* CP 416M/624M are both using level 2 */
 		cp_pmudvc_lvl = msa_pmudvc_lvl = VL2;
 	}
 
 	/* z1/z2 and z3/ax use different PPs */
 	if (cpu_is_z1z2())
 		vm_rail_comp_tbl = vm_rail_comp_tbl_z1z2;
-	else if (cpu_is_pxa988_z3() || cpu_is_pxa986_z3())
-		vm_rail_comp_tbl = vm_rail_comp_tbl_z3;
 	else {
-		vm_rail_comp_tbl = vm_rail_comp_tbl_ax;
+		vm_rail_comp_tbl = vm_rail_comp_tbl_gpiodvc;
 		/*
 		 * For GPIO dvc, make sure all voltages can meet
 		 * CP requirement.
@@ -620,233 +1207,42 @@ static int __init setup_dvfs_platinfo(void)
 			min_cp_millivolts =
 				max(vm_millivolts[cp_pmudvc_lvl],
 					vm_millivolts[msa_pmudvc_lvl]);
-			for (i = 0; i < ARRAY_SIZE(vm_millivolts); i++)
+			for (i = 0; i < VL_MAX; i++)
 				if (vm_millivolts[i] < min_cp_millivolts)
 					vm_millivolts[i] = min_cp_millivolts;
 		}
 	}
+	dlg_trace("dvc_flag[%d]\n", dvc_flag);
 	if (dvc_flag) {
 		/* update pmu dvc voltage table by max freq table */
-		update_all_component_voltage();
+		update_all_pmudvc_rails_info();
 		/*
 		 * init voltage value for voltage_millivolts
 		 * Currently set it the same as svc table
 		 */
 		for (i = 0; i < MAX_RAIL_NUM; i++)
-			for (j = 1; j <= ARRAY_SIZE(vm_millivolts); j++)
+			for (j = 1; j <= VL_MAX; j++)
 				voltage_millivolts[i][j] = vm_millivolts[j - 1];
-#ifdef	DVC_WR
-		/* Need to swap level 1 and level 2's voltage */
-		i = vm_millivolts[1];
-		vm_millivolts[1] = vm_millivolts[2];
-		vm_millivolts[2] = i;
-#endif
+
+		if (dvc_pin_switch) {
+			/* Need to swap level 1 and level 2's voltage */
+			i = vm_millivolts[1];
+			vm_millivolts[1] = vm_millivolts[2];
+			vm_millivolts[2] = i;
+		}
 	}
+#if defined(CONFIG_D2199_DVC)
+	ramp_up_vol = (vm_millivolts[VL3] - vm_millivolts[VL2]) * 10;
+	dlg_trace("ramp_up_vol[%d]\n", ramp_up_vol);
+#endif
 	return 0;
 }
 core_initcall_sync(setup_dvfs_platinfo);
 
-static struct dvfs_rail pxa988_dvfs_rail_ap_active = {
-	.reg_id = "vcc_main_ap_active",
-	.max_millivolts = LEVEL3,
-	.min_millivolts = LEVEL0,
-	.nominal_millivolts = LEVEL0,
-	.step = 0xFF,
-};
-
-static struct dvfs_rail pxa988_dvfs_rail_ap_lpm = {
-	.reg_id = "vcc_main_ap_lpm",
-	.max_millivolts = LEVEL3,
-	.min_millivolts = LEVEL0,
-	.nominal_millivolts = LEVEL0,
-	.step = 0xFF,
-};
-
-static struct dvfs_rail pxa988_dvfs_rail_apsub_idle = {
-	.reg_id = "vcc_main_apsub_idle",
-	.max_millivolts = LEVEL3,
-	.min_millivolts = LEVEL0,
-	.nominal_millivolts = LEVEL0,
-	.step = 0xFF,
-};
-
-static struct dvfs_rail pxa988_dvfs_rail_apsub_sleep = {
-	.reg_id = "vcc_main_apsub_sleep",
-	.max_millivolts = LEVEL3,
-	.min_millivolts = LEVEL0,
-	.nominal_millivolts = LEVEL0,
-	.step = 0xFF,
-};
-
-#define MAX_FREQ_NUM	20
-/* Each components' freq number should be the same with voltage level number */
-static unsigned long component_freqs[VM_RAIL_MAX][MAX_FREQ_NUM] = {
-	{ 312000, 624000, 1066000, 1205000 },		/* CORE */
-	{ 156000, 312000, 533000 },			/* DDR/AXI */
-	{ 156000, 312000, 416000, 624000 },		/* GC */
-	{ 156000, 208000, 312000, 416000 }		/* VPU */
-};
-
-static unsigned int pxa988_get_freq_num(const char *name)
-{
-	unsigned int i = 0, index = 0;
-	if (!strcmp(name, "cpu"))
-		index = CORE;
-	else if (!strcmp(name, "ddr"))
-		index = DDR_AXI;
-	else if (!strcmp(name, "GCCLK"))
-		index = GC;
-	else if (!strcmp(name, "VPUCLK"))
-		index = VPU;
-	else
-		printk(KERN_ERR "%s: Wrong component name %s\n", __func__, name);
-
-	while (component_freqs[index][i] && i < MAX_FREQ_NUM)
-		i++;
-	return i;
-};
-
-/*
- * one frequency is connected to one voltage level.
- * but one voltage can related to several frequencies
- * for example, cpu frequency list is:
- * 312, 624, 1066, 1205
- * and related voltage is:
- * L0,  L1,  L2,   L3
- * table should be defined as below
- */
-
-static int component_voltage[][MAX_RAIL_NUM][LEVEL_END] = {
-		/* 312,  624,    1066,   1205 */
-	[CORE] = {
-		{LEVEL0, LEVEL0, LEVEL2, LEVEL2,}, /* AP Active voltage */
-		{LEVEL0, LEVEL0, LEVEL0, LEVEL0,}, /* AP LPM voltage */
-		{LEVEL0, LEVEL0, LEVEL0, LEVEL0,}, /* APSUB idle voltage */
-		{LEVEL0, LEVEL0, LEVEL0, LEVEL0,}, /* APSUB sleep voltage */
-	},
-		/* 156,  312,    533 */
-	[DDR_AXI] = {
-		{LEVEL0, LEVEL0, LEVEL3,}, /* AP Active voltage */
-		{LEVEL0, LEVEL0, LEVEL3,}, /* AP LPM voltage */
-		{LEVEL0, LEVEL0, LEVEL3,}, /* APSUB idle voltage */
-		{LEVEL0, LEVEL0, LEVEL0,}, /* APSUB sleep voltage */
-	},
-		/* 156,  312,    416,    624 */
-	[GC] = {
-		{LEVEL0, LEVEL0, LEVEL0, LEVEL1 }, /* AP Active voltage */
-		{LEVEL0, LEVEL0, LEVEL0, LEVEL1 }, /* AP LPM voltage */
-		{LEVEL0, LEVEL0, LEVEL0, LEVEL1 }, /* APSUB idle voltage */
-		{LEVEL0, LEVEL0, LEVEL0, LEVEL0 }, /* APSUB sleep voltage */
-	},
-		/* 156,  208,    312,    416 */
-	[VPU] = {
-		{LEVEL0, LEVEL0, LEVEL0, LEVEL1,}, /* AP Active voltage */
-		{LEVEL0, LEVEL0, LEVEL0, LEVEL1,}, /* AP LPM voltage */
-		{LEVEL0, LEVEL0, LEVEL0, LEVEL1,}, /* APSUB idle voltage */
-		{LEVEL0, LEVEL0, LEVEL0, LEVEL0,}, /* APSUB sleep voltage */
-	},
-};
-
-static int update_component_voltage(int comp, unsigned long *max_freq_table,
-				    int num_volt, unsigned long *freq_table,
-				    int num_freq)
-{
-	int i, j = 0;
-
-	for (i = 0; i < num_volt; i++) {
-		if (j == num_freq)
-			break;
-		for (; j < num_freq; j++) {
-			if (freq_table[j] <= max_freq_table[i]) {
-				component_voltage[comp][AP_ACTIVE][j] =
-					LEVEL0 + i;
-				continue;
-			} else
-				break;
-		}
-	}
-	for (i = AP_LPM; i <= APSUB_IDLE; i++)
-		for (j = 0; j < num_freq; j++)
-			component_voltage[comp][i][j] =
-				component_voltage[comp][AP_ACTIVE][j];
-	for (j = 0; j < num_freq; j++)
-		component_voltage[comp][APSUB_SLEEP][j] = LEVEL0;
-	return 0;
-}
-
-static void update_all_component_voltage(void)
-{
-	int num_volt, num_freq;
-	num_volt = pxa988_get_vl_num();
-	num_freq = pxa988_get_freq_num("cpu");
-	update_component_voltage(CORE, freqs_cmb_ax[CORE], num_volt,
-				 component_freqs[CORE], num_freq);
-	num_freq = pxa988_get_freq_num("ddr");
-	update_component_voltage(DDR_AXI, freqs_cmb_ax[DDR_AXI], num_volt,
-				 component_freqs[DDR_AXI], num_freq);
-	num_freq = pxa988_get_freq_num("GCCLK");
-	update_component_voltage(GC, freqs_cmb_ax[GC], num_volt,
-				 component_freqs[GC], num_freq);
-	num_freq = pxa988_get_freq_num("VPUCLK");
-	update_component_voltage(VPU, freqs_cmb_ax[VPU], num_volt,
-				 component_freqs[VPU], num_freq);
-}
-
-static struct dvfs_rail_component vm_rail_ap_active_tbl[VM_RAIL_MAX] = {
-	INIT_DVFS("cpu", true, &pxa988_dvfs_rail_ap_active,
-	component_voltage[CORE][AP_ACTIVE], component_freqs[CORE]),
-	INIT_DVFS("ddr", true, &pxa988_dvfs_rail_ap_active,
-	component_voltage[DDR_AXI][AP_ACTIVE], component_freqs[DDR_AXI]),
-	INIT_DVFS("GCCLK", true,  &pxa988_dvfs_rail_ap_active,
-	component_voltage[GC][AP_ACTIVE], component_freqs[GC]),
-	INIT_DVFS("VPUCLK", true, &pxa988_dvfs_rail_ap_active,
-	component_voltage[VPU][AP_ACTIVE], component_freqs[VPU]),
-};
-
-static struct dvfs_rail_component vm_rail_ap_lpm_tbl[VM_RAIL_MAX] = {
-	INIT_DVFS("cpu", true, &pxa988_dvfs_rail_ap_lpm,
-	component_voltage[CORE][AP_LPM], component_freqs[CORE]),
-	INIT_DVFS("ddr", true, &pxa988_dvfs_rail_ap_lpm,
-	component_voltage[DDR_AXI][AP_LPM], component_freqs[DDR_AXI]),
-	INIT_DVFS("GCCLK", true, &pxa988_dvfs_rail_ap_lpm,
-	component_voltage[GC][AP_LPM], component_freqs[GC]),
-	INIT_DVFS("VPUCLK", true, &pxa988_dvfs_rail_ap_lpm,
-	component_voltage[VPU][AP_LPM], component_freqs[VPU]),
-};
-
-static struct dvfs_rail_component vm_rail_apsub_idle_tbl[VM_RAIL_MAX] = {
-	INIT_DVFS("cpu", true, &pxa988_dvfs_rail_apsub_idle,
-	component_voltage[CORE][APSUB_IDLE], component_freqs[CORE]),
-	INIT_DVFS("ddr", true, &pxa988_dvfs_rail_apsub_idle,
-	component_voltage[DDR_AXI][APSUB_IDLE], component_freqs[DDR_AXI]),
-	INIT_DVFS("GCCLK", true, &pxa988_dvfs_rail_apsub_idle,
-	component_voltage[GC][APSUB_IDLE], component_freqs[GC]),
-	INIT_DVFS("VPUCLK", true, &pxa988_dvfs_rail_apsub_idle,
-	component_voltage[VPU][APSUB_IDLE], component_freqs[VPU]),
-};
-
-static struct dvfs_rail_component vm_rail_apsub_sleep_tbl[VM_RAIL_MAX] = {
-	INIT_DVFS("cpu", true, &pxa988_dvfs_rail_apsub_sleep,
-	component_voltage[CORE][APSUB_SLEEP], component_freqs[CORE]),
-	INIT_DVFS("ddr", true, &pxa988_dvfs_rail_apsub_sleep,
-	component_voltage[DDR_AXI][APSUB_SLEEP], component_freqs[DDR_AXI]),
-	INIT_DVFS("GCCLK", true, &pxa988_dvfs_rail_apsub_sleep,
-	component_voltage[GC][APSUB_SLEEP], component_freqs[GC]),
-	INIT_DVFS("VPUCLK", true, &pxa988_dvfs_rail_apsub_sleep,
-	component_voltage[VPU][APSUB_SLEEP], component_freqs[VPU]),
-};
-
-static struct dvfs_rail_component *dvfs_rail_component_list[] = {
-	vm_rail_ap_active_tbl,
-	vm_rail_ap_lpm_tbl,
-	vm_rail_apsub_idle_tbl,
-	vm_rail_apsub_sleep_tbl,
-};
-
 unsigned int pxa988_get_vl_num(void)
 {
 	unsigned int i = 0;
-	while ((i < VL_MAX) && vm_millivolts[i])
+	while (i < VL_MAX && vm_millivolts[i])
 		i++;
 	return i;
 };
@@ -856,7 +1252,43 @@ unsigned int pxa988_get_vl(unsigned int vl)
 	return vm_millivolts[vl];
 };
 
-static struct dvfs *vcc_main_dvfs_init(struct dvfs_rail_component *dvfs_component, int factor)
+static void update_component_voltage(unsigned int comp,
+	unsigned int num_volt)
+{
+	int i, j = 0;
+
+	for (i = 0; i < num_volt; i++) {
+		component_voltage[comp][AP_ACTIVE][i] = LEVEL0 + i;
+	}
+
+	if (has_feat_dvc_M2D1Pignorecore() && (comp == CORE)) {
+		for (i = AP_LPM; i <= APSUB_IDLE; i++)
+			for (j = 0; j < num_volt; j++)
+				component_voltage[comp][i][j] = LEVEL0;
+	} else {
+		for (i = AP_LPM; i <= APSUB_IDLE; i++)
+			for (j = 0; j < num_volt; j++)
+				component_voltage[comp][i][j] =
+					component_voltage[comp][AP_ACTIVE][j];
+	}
+
+	/* all Components have no request for APSUB_SLEEP */
+	for (j = 0; j < num_volt; j++)
+		component_voltage[comp][APSUB_SLEEP][j] = LEVEL0;
+}
+
+static void update_all_pmudvc_rails_info(void)
+{
+	unsigned int num_volt, idx;
+
+	/* Update all rails corresponding voltage */
+	num_volt = pxa988_get_vl_num();
+	for (idx = 0; idx < VM_RAIL_MAX; idx++)
+		update_component_voltage(idx, num_volt);
+}
+
+static struct dvfs *vcc_main_dvfs_init
+	(struct dvfs_rail_component *dvfs_component, int factor)
 {
 	struct dvfs *vm_dvfs = NULL;
 	struct vol_table *vt = NULL;
@@ -864,6 +1296,7 @@ static struct dvfs *vcc_main_dvfs_init(struct dvfs_rail_component *dvfs_componen
 	unsigned int vl_num = 0;
 	const char *clk_name;
 
+	dlg_trace("factor[%d], dvc_flag[%d]\n", factor, dvc_flag);
 	/* dvfs is not enabled for this factor in vcc_main_threshold */
 	if (!dvfs_component[factor].auto_dvfs)
 		goto err;
@@ -876,10 +1309,7 @@ static struct dvfs *vcc_main_dvfs_init(struct dvfs_rail_component *dvfs_componen
 		goto err;
 	}
 
-	if (!dvc_flag)
-		vl_num = pxa988_get_vl_num();
-	else
-		vl_num = pxa988_get_freq_num(clk_name);
+	vl_num = pxa988_get_vl_num();
 
 	vt = kzalloc(sizeof(struct vol_table) * vl_num, GFP_KERNEL);
 	if (!vt) {
@@ -891,7 +1321,7 @@ static struct dvfs *vcc_main_dvfs_init(struct dvfs_rail_component *dvfs_componen
 		vt[i].freq = dvfs_component[factor].freqs[i] * \
 			dvfs_component[factor].freqs_mult;
 		vt[i].millivolts = dvfs_component[factor].millivolts[i];
-		pr_info("clk[%s] rate[%lu] volt[%d]\n", clk_name, vt[i].freq,
+		dlg_trace("clk[%s] rate[%lu] volt[%d]\n", clk_name, vt[i].freq,
 					vt[i].millivolts);
 	}
 	vm_dvfs->vol_freq_table = vt;
@@ -903,6 +1333,7 @@ static struct dvfs *vcc_main_dvfs_init(struct dvfs_rail_component *dvfs_componen
 		clk_get_sys(NULL, clk_name);
 	dvfs_component[factor].dvfs = vm_dvfs;
 
+	dlg_trace("end of function\n");
 	return vm_dvfs;
 err_vt:
 	kzfree(vm_dvfs);
@@ -915,79 +1346,23 @@ static int get_frequency_from_dvfs(struct dvfs *dvfs, int millivolts)
 {
 	unsigned long max_freq = 0;
 	int i;
+	dlg_trace("millivolts[%d]\n", millivolts);
 	for (i = 0; i < dvfs->num_freqs; i++) {
 		if (dvfs->vol_freq_table[i].millivolts == millivolts) {
 			if (dvfs->vol_freq_table[i].freq > max_freq)
 				max_freq = dvfs->vol_freq_table[i].freq;
 		}
 	}
+
+	dlg_trace("max_freq[%d]\n", max_freq);
 	return max_freq;
 }
-
-static ATOMIC_NOTIFIER_HEAD(dvfs_freq_notifier_list);
-
-int dvfs_notifier_frequency(struct dvfs_freqs *freqs, unsigned int state)
-{
-	int ret;
-
-	switch (state) {
-	case DVFS_FREQ_PRECHANGE:
-		ret = atomic_notifier_call_chain(&dvfs_freq_notifier_list,
-						 DVFS_FREQ_PRECHANGE, freqs);
-		if (ret != NOTIFY_DONE)
-			pr_debug("Failure in device driver before "
-				 "switching frequency\n");
-		break;
-	case DVFS_FREQ_POSTCHANGE:
-		ret = atomic_notifier_call_chain(&dvfs_freq_notifier_list,
-						 DVFS_FREQ_POSTCHANGE, freqs);
-		if (ret != NOTIFY_DONE)
-			pr_debug("Failure in device driver after "
-				 "switching frequency\n");
-		break;
-	default:
-		ret = -EINVAL;
-	}
-	return ret;
-}
-EXPORT_SYMBOL(dvfs_notifier_frequency);
-
-int dvfs_register_notifier(struct notifier_block *nb, unsigned int list)
-{
-	int ret;
-
-	switch (list) {
-	case DVFS_FREQUENCY_NOTIFIER:
-		ret = atomic_notifier_chain_register
-		    (&dvfs_freq_notifier_list, nb);
-		break;
-	default:
-		ret = -EINVAL;
-	}
-	return ret;
-}
-EXPORT_SYMBOL(dvfs_register_notifier);
-
-int dvfs_unregister_notifier(struct notifier_block *nb, unsigned int list)
-{
-	int ret;
-
-	switch (list) {
-	case DVFS_FREQUENCY_NOTIFIER:
-		ret = atomic_notifier_chain_unregister
-		    (&dvfs_freq_notifier_list, nb);
-		break;
-	default:
-		ret = -EINVAL;
-	}
-	return ret;
-}
-EXPORT_SYMBOL(dvfs_unregister_notifier);
 
 static int global_notifier(struct dvfs *dvfs, int state,
 			   int old_rate, int new_rate)
 {
 	struct dvfs_freqs freqs;
+	dlg_trace("state[%d], old_rate[%d], new_rate[%d]\n", state, old_rate, new_rate);
 	freqs.old = old_rate / KHZ_TO_HZ;
 	freqs.new = new_rate / KHZ_TO_HZ;
 	freqs.dvfs = dvfs;
@@ -1019,6 +1394,7 @@ static int vcc_main_solve(struct dvfs_rail *from, struct dvfs_rail *to)
 		return 0;
 	}
 
+	dlg_trace("millivolts[%d], new_millivolts[%d]\n", from->millivolts, from->new_millivolts);
 	mutex_lock(&solve_lock);
 
 	old_millivolts = from->millivolts;
@@ -1101,13 +1477,6 @@ static struct dvfs_rail *pxa988_dvfs_rails[] = {
 	&pxa988_dvfs_rail_vm_dup,
 };
 
-static struct dvfs_rail *pxa988_dvfs_rails_ax[] = {
-	&pxa988_dvfs_rail_ap_active,
-	&pxa988_dvfs_rail_ap_lpm,
-	&pxa988_dvfs_rail_apsub_idle,
-	&pxa988_dvfs_rail_apsub_sleep,
-};
-
 /*
  * "from" is the lpm rails, "to" is active rail
 */
@@ -1119,12 +1488,22 @@ static int vcc_main_solve_lpm(struct dvfs_rail *from, struct dvfs_rail *to)
 	struct regulator *ori_reg = to->reg;
 
 	to->reg = NULL; /* hack here to avoid recursion of dvfs_rail_update */
+	//dlg_trace("\n");
 
 	for (list_from = from->dvfs.next, list_to = to->dvfs.next;
 	     (list_from != &from->dvfs) && (list_to != &to->dvfs);
 	     list_from = list_from->next, list_to = list_to->next) {
 		d_to = list_entry(list_to, struct dvfs, dvfs_node);
 		d_from = list_entry(list_from, struct dvfs, dvfs_node);
+		if (has_feat_dvc_M2D1Pignorecore()) {
+			/*
+			 * CPU won't request voltage on lpm rails
+			 * skip it from comparison
+			*/
+			if (!strcmp(d_to->clk_name, "cpu") &&
+			    !strcmp(d_from->clk_name, "cpu"))
+				continue;
+		}
 		if (d_to->millivolts != d_from->millivolts) {
 			d_from->millivolts = d_to->millivolts;
 			dvfs_rail_update(from);
@@ -1139,11 +1518,12 @@ static int vcc_main_solve_lpm(struct dvfs_rail *from, struct dvfs_rail *to)
 		millivolts = max(d->millivolts, millivolts);
 
 	to->reg = ori_reg;
+	//dlg_trace("millivolts[%d]\n", millivolts);
 
 	return millivolts;
 }
 
-static struct dvfs_relationship pxa988_dvfs_relationships_ax[] = {
+static struct dvfs_relationship pxa988_dvfs_relationships_pmudvc[] = {
 	{
 		.from = &pxa988_dvfs_rail_ap_lpm,
 		.to = &pxa988_dvfs_rail_ap_active,
@@ -1159,8 +1539,13 @@ static struct dvfs_relationship pxa988_dvfs_relationships_ax[] = {
 static void __init enable_ap_dvc(void)
 {
 	int value;
+	dlg_trace("\n");
 	value = __raw_readl(PMUM_DVCR);
+#ifdef CONFIG_MFD_D2199
+	value |= (DVCR_VC_EN);
+#else
 	value |= (DVCR_VC_EN | DVCR_LPM_AVC_EN);
+#endif
 	__raw_writel(value, PMUM_DVCR);
 
 	value = __raw_readl(PMUM_DVC_AP);
@@ -1185,6 +1570,7 @@ static void __init enable_cp_dvc(void)
 {
 	unsigned int value, mask, lvl;
 
+	dlg_trace("\n");
 	/*
 	 * cp_pmudvc_lvl and msa_pmudvc_lvl is set up during init,
 	 * default as VL1
@@ -1194,7 +1580,6 @@ static void __init enable_cp_dvc(void)
 	 * Vote CP active cp_pmudvc_lvl and LPM VL0
 	 * and trigger CP frequency request
 	 */
-
 	value = __raw_readl(dvc_reg_table[DVC_CP].reg);
 	mask = (dvc_reg_table[DVC_CP].mask_H) | \
 		(dvc_reg_table[DVC_CP].mask_L);
@@ -1209,7 +1594,6 @@ static void __init enable_cp_dvc(void)
 	 * Vote MSA active msa_pmudvc_lvl and LPM VL0
 	 * and trigger MSA frequency request
 	 */
-
 	value = __raw_readl(dvc_reg_table[DVC_DP].reg);
 	mask = (dvc_reg_table[DVC_DP].mask_H) | \
 		(dvc_reg_table[DVC_DP].mask_L);
@@ -1233,9 +1617,12 @@ static int __init pxa988_init_dvfs(void)
 	struct clk *c;
 	unsigned long rate;
 
+	dlg_trace("dvc_flag[%d]\n", dvc_flag);
 	if (!dvc_flag) {
 		dvfs_init_rails(pxa988_dvfs_rails, ARRAY_SIZE(pxa988_dvfs_rails));
 		for (i = 0; i < VM_RAIL_MAX; i++) {
+			vm_rail_comp_tbl[i].freqs = component_freqs[i];
+			vm_rail_comp_tbl[i].millivolts = vm_millivolts;
 			d = vcc_main_dvfs_init(vm_rail_comp_tbl, i);
 			if (!d)
 				continue;
@@ -1268,15 +1655,18 @@ static int __init pxa988_init_dvfs(void)
 		}
 	} else {
 		struct dvfs_rail_component *rail_component;
-		dvfs_init_rails(pxa988_dvfs_rails_ax, ARRAY_SIZE(pxa988_dvfs_rails_ax));
-		dvfs_add_relationships(pxa988_dvfs_relationships_ax,
-					ARRAY_SIZE(pxa988_dvfs_relationships_ax));
+		dvfs_init_rails(pxa988_dvfs_rails_pmudvc,
+			ARRAY_SIZE(pxa988_dvfs_rails_pmudvc));
+		dvfs_add_relationships(pxa988_dvfs_relationships_pmudvc,
+			ARRAY_SIZE(pxa988_dvfs_relationships_pmudvc));
 		init_level_mapping();
 		enable_ap_dvc();
 
-		for (r = 0; r < ARRAY_SIZE(pxa988_dvfs_rails_ax); r++) {
+		for (r = 0; r < ARRAY_SIZE(pxa988_dvfs_rails_pmudvc); r++) {
 			rail_component = dvfs_rail_component_list[r];
 			for (i = 0; i < VM_RAIL_MAX; i++) {
+				rail_component[i].freqs = component_freqs[i];
+				vm_rail_comp_tbl[i].millivolts = vm_millivolts;
 				d = vcc_main_dvfs_init(rail_component, i);
 				if (!d)
 					continue;
@@ -1320,17 +1710,28 @@ subsys_initcall(pxa988_init_dvfs);
 static int __init pxa988_init_level_volt(void)
 {
 	int i, value, ticks;
+	u8 data;
+	dlg_trace("dvc_flag[%d]\n", dvc_flag);
 	if (!dvc_flag)
 		return 0;
 
 	/* Write level 0 svc values, level 1~3 are written after pm800 init */
-	value = pm800_extern_write(PM80X_POWER_PAGE,
-			PM800_BUCK1, volt_to_reg(vm_millivolts[0]));
+	value = set_buck1_volt(0, volt_to_reg(vm_millivolts[0]));
 	if (value < 0) {
 		printk(KERN_ERR "SVC table writting failed !\n");
 		return -1;
 	}
-
+#ifdef CONFIG_MACH_WILCOX_CMCC
+#if defined(CONFIG_MFD_D2199)	
+     if (get_board_id() <BOARD_ID_CMCC_REV05) {  
+	/* set ldo6 to be 1.7v only for rB1 Mynah Tranceiver */
+	d2199_extern_reg_read(D2199_LDO6_REG, &data);
+	data &= ~(0x3f);
+	data |= 0xa;
+	d2199_extern_reg_write(D2199_LDO6_REG,data);
+    }
+#endif
+#endif
 	for (i = 0; i < PMIC_LEVEL_NUM; i++) {
 		cur_level_volt[i] = get_voltage_value(i);
 		pr_info("PMIC level %d: %d mV\n", i, cur_level_volt[i]);
@@ -1353,11 +1754,11 @@ static int __init pxa988_init_level_volt(void)
 	}
 	cur_volt_inited = 1;
 
-#ifdef	DVC_WR
-	value = cur_level_volt[1];
-	cur_level_volt[1] = cur_level_volt[2];
-	cur_level_volt[2] = value;
-#endif
+	if (dvc_pin_switch) {
+		value = cur_level_volt[1];
+		cur_level_volt[1] = cur_level_volt[2];
+		cur_level_volt[2] = value;
+	}
 
 	/* Fill the stable time for level transition
 	 * As pmic only supports 4 levels, so only init
@@ -1396,6 +1797,8 @@ static void attach_clk_auto_dvfs(const char *name, unsigned int endis)
 {
 	unsigned int i;
 
+	dlg_trace("endis[%d]\n", endis);
+
 	for (i = 0; i < VM_RAIL_MAX; i++) {
 		if ((vm_rail_comp_tbl[i].auto_dvfs) && \
 			(!strcmp(vm_rail_comp_tbl[i].clk_name, name)))
@@ -1422,6 +1825,7 @@ static ssize_t dc_clk_dvfs_write(struct file *filp,
 	char name[10] = {0};
 	unsigned int enable_dvfs = 0;
 
+	dlg_trace("\n");
 	if (copy_from_user(buf, buffer, count))
 		return -EFAULT;
 
@@ -1443,6 +1847,7 @@ static ssize_t dc_clk_dvfs_read(struct file *filp,
 	struct clk *clk_node;
 	unsigned int i;
 	const char *clk_name;
+	dlg_trace("\n");
 
 	len = snprintf(buf, size, "| name\t| auto_dvfs |\n");
 	for (i = 0; i < VM_RAIL_MAX; i++) {
@@ -1471,6 +1876,7 @@ static ssize_t voltage_based__dvfm_write(struct file *filp,
 {
 	char buf[32] = {0};
 	int prevalue = enable_voltage_based_dvfm;
+	dlg_trace("\n");
 	if (copy_from_user(buf, buffer, count))
 		return -EFAULT;
 
@@ -1491,6 +1897,7 @@ static ssize_t voltage_based_dvfm_read(struct file *filp,
 	char buf[20];
 	int len = 0;
 	size_t size = sizeof(buf) - 1;
+	dlg_trace("\n");
 	len = snprintf(buf, size, "%d\n", enable_voltage_based_dvfm);
 	return simple_read_from_buffer(buffer, count, ppos, buf, len);
 }
@@ -1511,6 +1918,8 @@ static ssize_t voltage_read(struct file *filp,
 	unsigned int i;
 	struct dvfs *d;
 	unsigned long rate;
+
+	dlg_trace("\n");
 
 	size_t size = sizeof(buf) - 1;
 	value = __raw_readl(PMUM_DVC_AP);
@@ -1546,17 +1955,20 @@ static ssize_t voltage_read(struct file *filp,
 	value = __raw_readl(PMUM_DVC_STATUS);
 	volt1 = (value >> 1) & 0x7;
 
-	len += snprintf(buf + len, size, "|DVC Voltage: Level %d ",
+	len += snprintf(buf + len, size, "|DVC Voltage:    Level %d ",
 			volt1);
-#ifdef	DVC_WR
-	if (volt1 == 1)
-		volt1 = 2;
-	else if (volt1 == 2)
-		volt1 = 1;
-#endif
-	volt1 = pm800_extern_read(PM80X_POWER_PAGE, PM800_BUCK1 + volt1);
+
+	if (dvc_pin_switch) {
+		if (volt1 == 1)
+			volt1 = 2;
+		else if (volt1 == 2)
+			volt1 = 1;
+	}
+//	volt1 = 1250;
+	dlg_trace("volt1[%d]\n", volt1);
+	volt1 = get_buck1_volt(volt1);
 	volt1 = reg_to_volt(volt1);
-	len += snprintf(buf + len, size, "(%d mV)\t\t |\n", volt1);
+	len += snprintf(buf + len, size, "(%d mV)\t\t  |\n", volt1);
 
 	for (i = 0; i < VM_RAIL_MAX; i++) {
 		if (vm_rail_ap_active_tbl[i].auto_dvfs) {
@@ -1564,12 +1976,12 @@ static ssize_t voltage_read(struct file *filp,
 			rate = clk_get_rate(vm_rail_ap_active_tbl[i].clk_node);
 			if (d->millivolts > 0) {
 				len += snprintf(buf + len, size,
-				"| %s:\t\t| freq %luMhz,\t voltage: Level %d |\n",
+				"|%-15s| freq %luMhz,\t voltage: Level %d |\n",
 				vm_rail_ap_active_tbl[i].clk_name,
 				rate / 1000000, level_mapping[d->millivolts]);
 			} else {
 				len += snprintf(buf + len, size,
-				"| %s:\t| freq %luMhz,\t voltage: %d |\n",
+				"|%-15s| freq %luMhz,\t voltage: %d |\n",
 				vm_rail_ap_active_tbl[i].clk_name,
 				rate / 1000000, d->millivolts);
 			}
@@ -1593,6 +2005,7 @@ static int __init pxa988_dvfs_create_debug_node(void)
 	struct dentry *volt_dvfs;
 	struct dentry *volt_status;
 
+	dlg_trace("\n");
 	dvfs_node = debugfs_create_dir("dvfs", pxa);
 	if (!dvfs_node)
 		return -ENOENT;
@@ -1605,10 +2018,12 @@ static int __init pxa988_dvfs_create_debug_node(void)
 		dvfs_node, NULL, &voltage_based_dvfm_fops);
 	if (!volt_dvfs)
 		goto err_volt_dvfs;
-	volt_status = debugfs_create_file("voltage", 0444,
-		dvfs_node, NULL, &voltage_fops);
-	if (!volt_status)
-		goto err_voltage;
+	if (dvc_flag) {
+		volt_status = debugfs_create_file("voltage", 0444,
+			dvfs_node, NULL, &voltage_fops);
+		if (!volt_status)
+			goto err_voltage;
+	}
 
 	return 0;
 

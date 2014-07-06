@@ -86,9 +86,11 @@ unsigned int sysctl_sched_child_runs_first __read_mostly;
  */
 unsigned int sysctl_sched_wakeup_granularity = 1000000UL;
 unsigned int normalized_sysctl_sched_wakeup_granularity = 1000000UL;
-
+#if (CONFIG_NR_CPUS >= 3)
+const_debug unsigned int sysctl_sched_migration_cost = 0;
+#else
 const_debug unsigned int sysctl_sched_migration_cost = 500000UL;
-
+#endif
 /*
  * The exponential sliding  window over which load is averaged for shares
  * distribution.

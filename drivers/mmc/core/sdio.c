@@ -916,10 +916,10 @@ out:
 
 void mmc_sdio_irq_wakeup(struct mmc_host *host)
 {
-	int sec = 3;
+	int sec = 1;
 
 	/* FixMe: modify it if have better solution */
-	pr_warning("%s: hold 3 S to prevent suspend\n",
+	pr_warning("%s: hold 1 S to prevent suspend\n",
 		       mmc_hostname(host));
 	pm_wakeup_event(mmc_dev(host), 1000 * sec);
 }

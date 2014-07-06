@@ -115,6 +115,42 @@ TRACE_EVENT(pxa_gc_clk_chg,
 	TP_printk("freq: %u -> %u", __entry->val1, __entry->val2)
 );
 
+TRACE_EVENT(pxa_gc2d_clk,
+	TP_PROTO(u32 state, u32 val),
+
+	TP_ARGS(state, val),
+
+	TP_STRUCT__entry(
+		__field(u32, state)
+		__field(u32, val)
+	),
+
+	TP_fast_assign(
+		__entry->state = state;
+		__entry->val = val;
+	),
+
+	TP_printk("state: %u clk: 0x%x", __entry->state, __entry->val)
+);
+
+TRACE_EVENT(pxa_gc2d_clk_chg,
+	TP_PROTO(u32 val1, u32 val2),
+
+	TP_ARGS(val1, val2),
+
+	TP_STRUCT__entry(
+		__field(u32, val1)
+		__field(u32, val2)
+	),
+
+	TP_fast_assign(
+		__entry->val1 = val1;
+		__entry->val2 = val2;
+	),
+
+	TP_printk("freq: %u -> %u", __entry->val1, __entry->val2)
+);
+
 TRACE_EVENT(pxa_vpu_clk,
 	TP_PROTO(u32 state, u32 val),
 
@@ -259,6 +295,53 @@ TRACE_EVENT(pxa_core_hotplug,
 	TP_printk("state: %u cpu_id: %u", __entry->state, __entry->id)
 );
 
+/* Show id, task number and mips for each online cpus */
+TRACE_EVENT(pxa_hp_single,
+	TP_PROTO(u32 id, u32 task, u32 load, u32 mips),
+
+	TP_ARGS(id, task, load, mips),
+
+	TP_STRUCT__entry(
+		__field(u32, id)
+		__field(u32, task)
+		__field(u32, load)
+		__field(u32, mips)
+	),
+
+	TP_fast_assign(
+		__entry->id = id;
+		__entry->task = task;
+		__entry->load = load;
+		__entry->mips = mips;
+	),
+
+	TP_printk("id:%1u task:%3u load:%3u mips:%6u",
+		  __entry->id, __entry->task, __entry->load, __entry->mips)
+);
+
+/* This trace is for print mips in every hotplug window size */
+TRACE_EVENT(pxa_hotplug_stand_mips,
+	TP_PROTO(u32 cur_freq, u32 mips, u32 cpu_num),
+
+	TP_ARGS(cur_freq, mips, cpu_num),
+
+	TP_STRUCT__entry(
+		__field(u32, cur_freq)
+		__field(u32, mips)
+		__field(u32, cpu_num)
+	),
+
+	TP_fast_assign(
+		__entry->cur_freq = cur_freq;
+		__entry->mips = mips;
+		__entry->cpu_num = cpu_num;
+	),
+
+	TP_printk("cur_freq:%4uMHz mips:%6u cpu_num:%1u",
+		  __entry->cur_freq, __entry->mips, __entry->cpu_num)
+);
+
+
 TRACE_EVENT(pxa_ddr_workload,
 	TP_PROTO(u32 workload, u32 freq, s32 throughput),
 
@@ -267,14 +350,17 @@ TRACE_EVENT(pxa_ddr_workload,
 	TP_STRUCT__entry(
 		__field(u32, workload)
 		__field(u32, freq)
+		__field(s32, throughput)
 	),
 
 	TP_fast_assign(
 		__entry->workload = workload;
 		__entry->freq = freq;
+		__entry->throughput = throughput;
 	),
 
-	TP_printk("workload: %u freq: %u", __entry->workload, __entry->freq)
+	TP_printk("workload: %u freq: %u throughput: %u", __entry->workload,
+					__entry->freq,  __entry->throughput)
 );
 
 TRACE_EVENT(pxa_ddr_upthreshold,

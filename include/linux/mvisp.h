@@ -42,8 +42,8 @@ struct v4l2_dxoipc_set_fb {
 };
 
 struct v4l2_ispdma_timeinfo {
-	unsigned long	timestamp;
-	unsigned long	delta;
+	unsigned long sec;
+	unsigned long usec;
 };
 
 struct v4l2_dxoipc_ipcwait {
@@ -109,7 +109,6 @@ struct v4l2_ispdma_reset {
 };
 
 struct v4l2_ccic_config_mipi {
-	int start_mipi;
 	int lanes;
 };
 
@@ -219,6 +218,44 @@ struct v4l2_ispdma_dma_timeinfo {
 	struct v4l2_ispdma_timeinfo codec_ps_timeinfo;
 };
 
+struct v4l2_csi_dphy_desc {
+/*not set it when set clk_freq*/
+	unsigned int clk_mul;
+/*not set it wneh set clk_freq
+ * clk_freq = mclk * clk_mul / clk_div*/
+	unsigned int clk_div;
+/*must set, which is mipi_bit_clk / 2, unit is hz*/
+	unsigned int clk_freq;
+	unsigned int cl_prepare;	/*for dphy*/
+	unsigned int cl_zero;		/*for dphy*/
+/*for dphy, when sesnor_set_dphy is 1, must set it*/
+	unsigned int hs_prepare;
+/*for dphy, when sesnor_set_dphy is 1, must set it*/
+	unsigned int hs_zero;
+	unsigned int nr_lane;		/*must set*/
+};
+
+struct v4l2_sensor_csi_dphy {
+	int sensor_set_dphy;	/*set it 1, when set hs_prepare
+				*hs_zero, then driver use them to dphy*/
+	struct v4l2_csi_dphy_desc dphy_desc;
+};
+
+#define CLK_RATE_NUM 6
+enum isp_fclk_ops {
+	GET_CURR_CLK,
+	GET_AVAILABLE_CLK,
+	SET_CLK,
+};
+
+struct v4l2_ispdma_isp_func_clk {
+	enum isp_fclk_ops ops;
+	unsigned int fclk_mhz;
+	unsigned int avail_clk_rate[CLK_RATE_NUM];	/*Mhz*/
+	unsigned int avail_clk_rate_num;
+
+};
+
 #ifdef CONFIG_VIDEO_MRVL_CAM_DEBUG
 struct mvisp_mcd {
 	struct mcd		mcd;
@@ -258,8 +295,8 @@ struct mvisp_mcd {
 	_IOWR('V', BASE_VIDIOC_PRIVATE + 15, int)
 #define VIDIOC_PRIVATE_ISPDMA_SET_STREAM \
 	_IOWR('V', BASE_VIDIOC_PRIVATE + 16, int)
-#define VIDIOC_PRIVATE_ISPDMA_GET_ISP_FUNC_CLK\
-	_IOWR('V', BASE_VIDIOC_PRIVATE + 17, int)
+#define VIDIOC_PRIVATE_ISPDMA_ISP_FUNC_CLK_OPS\
+	_IOWR('V', BASE_VIDIOC_PRIVATE + 17, struct v4l2_ispdma_isp_func_clk)
 #define VIDIOC_PRIVATE_CCIC_GET_SENSOR_MCLK\
 	_IOWR('V', BASE_VIDIOC_PRIVATE + 18, int)
 #define VIDIOC_PRIVATE_SENSER_REGS_LIST_SET \
@@ -269,4 +306,6 @@ struct mvisp_mcd {
 	_IOWR('V', BASE_VIDIOC_PRIVATE + 20, int)
 #define VIDIOC_PRIVATE_DXOIPC_SET_FB_DC \
 	_IOWR('V', BASE_VIDIOC_PRIVATE + 21, struct v4l2_dxoipc_set_fb)
+#define VIDIOC_PRIVATE_SENSER_SET_CSI_DPHY \
+	_IOWR('V', BASE_VIDIOC_PRIVATE + 22, struct v4l2_sensor_csi_dphy)
 #endif	/* ISP_USER_H */

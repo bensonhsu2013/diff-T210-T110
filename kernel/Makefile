@@ -52,6 +52,7 @@ obj-$(CONFIG_PROVE_LOCKING) += spinlock.o
 obj-$(CONFIG_UID16) += uid16.o
 obj-$(CONFIG_MODULES) += module.o
 obj-$(CONFIG_KALLSYMS) += kallsyms.o
+obj-$(CONFIG_CGITINFO) += gitinfo.o
 obj-$(CONFIG_BSD_PROCESS_ACCT) += acct.o
 obj-$(CONFIG_KEXEC) += kexec.o
 obj-$(CONFIG_BACKTRACE_SELF_TEST) += backtracetest.o
@@ -127,3 +128,9 @@ quiet_cmd_timeconst  = TIMEC   $@
 targets += timeconst.h
 $(obj)/timeconst.h: $(src)/timeconst.pl FORCE
 	$(call if_changed,timeconst)
+
+targets += gitinfo.S
+quiet_cmd_cgitinfo = CGIT    $@
+      cmd_cgitinfo = $(CGITINFO) > $@
+$(obj)/gitinfo.S: FORCE
+	$(call cmd,cgitinfo)

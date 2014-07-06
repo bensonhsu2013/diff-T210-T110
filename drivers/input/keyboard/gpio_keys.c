@@ -32,8 +32,16 @@
 
 #if defined(CONFIG_MACH_LT02)
 #include <mach/mfp-pxa986-lt02.h>
-#elif defined(CONFIG_MACH_COCOA7)
-#include <mach/mfp-pxa986-cocoa7.h>
+#elif defined(CONFIG_MACH_BAFFIN)
+#include <mach/mfp-pxa988-baffin.h>
+#elif defined(CONFIG_MACH_BAFFINQ)
+#include <mach/mfp-pxa1088-baffinq.h>
+#elif defined(CONFIG_MACH_GOLDEN)
+#include <mach/mfp-pxa986-golden.h>
+#elif defined(CONFIG_MACH_GOYA)
+#include <mach/mfp-pxa986-goya.h>
+#elif defined(CONFIG_MACH_DEGAS)
+#include <mach/mfp-pxa1088-degas.h>
 #endif
 
 #if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
@@ -41,23 +49,17 @@
 #include <mach/gpio-edge.h>
 #endif
 
-#if defined(CONFIG_KERNEL_DEBUG_SEC) && (defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7))
-#define MY_NAME "gpio_keys"
-
-#if defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
-#define key_dbg(fmt, arg...)
-#else
-#define key_dbg(fmt, arg...) printk(KERN_NOTICE "%s: " fmt, MY_NAME, ## arg)
-#endif
-
 extern struct class *sec_class;
+#if defined(CONFIG_KERNEL_DEBUG_SEC) && defined(CONFIG_MACH_LT02)
+extern struct class *sec_class;
+extern struct class *touchkey_class;
 extern int jack_is_detected;
 extern unsigned int sec_debug_mode;
 static bool g_bVolUp;
 static bool g_bPower;
 static bool g_bHome;
 static struct timer_list debug_timer;
-extern void dump_all_task_info();
+struct device *led;
 #endif
 
 struct gpio_button_data {
@@ -70,7 +72,7 @@ struct gpio_button_data {
 	spinlock_t lock;
 	bool disabled;
 	bool key_pressed;
-#if defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
+#if !defined(CONFIG_MACH_CS05) // "CS05 model" use gpio-key(projector key) and pxa27x-keypad both.
 	bool key_state;
 #endif
 #if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
@@ -81,7 +83,7 @@ struct gpio_button_data {
 
 struct gpio_keys_drvdata {
 	struct input_dev *input;
-#if defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
+#if !defined(CONFIG_MACH_CS05) // "CS05 model" use gpio-key(projector key) and pxa27x-keypad both.
 	struct device *sec_key;
 #endif
 	struct mutex disable_lock;
@@ -364,12 +366,12 @@ static struct attribute_group gpio_keys_attr_group = {
 	.attrs = gpio_keys_attrs,
 };
 
-#if defined(CONFIG_KERNEL_DEBUG_SEC) && (defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7))
+#if defined(CONFIG_KERNEL_DEBUG_SEC) && defined(CONFIG_MACH_LT02)
 void enter_upload_mode(unsigned long val)
 {
 	if (g_bVolUp && jack_is_detected && g_bPower)
 		if (sec_debug_mode == DEBUG_LEVEL_MID || sec_debug_mode == DEBUG_LEVEL_HIGH) {
-			dump_all_task_info();
+			//dump_all_task_info();
 			//dump_cpu_stat();
 			panic("__forced_upload");
 		}
@@ -417,7 +419,7 @@ void gpio_keys_start_upload_modtimer(void)
 EXPORT_SYMBOL(gpio_keys_start_upload_modtimer);
 #endif
 
-#if defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
+#if !defined(CONFIG_MACH_CS05) // "CS05 model" use gpio-key(projector key) and pxa27x-keypad both.
 static ssize_t key_pressed_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
@@ -447,26 +449,12 @@ static struct attribute *sec_key_attrs[] = {
 static struct attribute_group sec_key_attr_group = {
 	.attrs = sec_key_attrs,
 };
+#endif
 
-int lpm_poweroff = 0;
-EXPORT_SYMBOL(lpm_poweroff);
-
-static ssize_t lpm_poweroff_store(struct device *dev, struct device_attribute *attr,
-		const char *buf, size_t count)
-{
-
-	if (!count)
-		return -EINVAL;
-
-	printk(KERN_ERR "%s buf = %c\n", __func__, *buf);
-
-	if (*buf == '1')
-		lpm_poweroff = 1;
-
-	return count;
-}
-
-static DEVICE_ATTR(sec_lpm_poweroff, S_IWUSR | S_IWGRP, NULL, lpm_poweroff_store);
+#if defined(CONFIG_SEC_DEBUG)
+#if !defined(CONFIG_MACH_CS05) // "CS05 model" use gpio-key(projector key) and pxa27x-keypad both.
+extern void sec_debug_check_crash_key(unsigned int code, int value);
+#endif
 #endif
 
 static void gpio_keys_gpio_report_event(struct gpio_button_data *bdata)
@@ -476,11 +464,22 @@ static void gpio_keys_gpio_report_event(struct gpio_button_data *bdata)
 	unsigned int type = button->type ?: EV_KEY;
 	int state = (gpio_get_value_cansleep(button->gpio) ? 1 : 0) ^ button->active_low;
 
-#if defined(CONFIG_KERNEL_DEBUG_SEC) && (defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7))
-	key_dbg("%s gpio_keys_report_event state = %d \n", button->desc, state);
+#if defined(CONFIG_SEC_DEBUG)
+#if !defined(CONFIG_MACH_CS05) // "CS05 model" use gpio-key(projector key) and pxa27x-keypad both.
+#if !defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
+	printk(KERN_DEBUG "[KEY] key: %d gpio_keys_report_event state = %d \n", button->code, state);
+#endif
+	sec_debug_check_crash_key(button->code,state);
+#endif
+#endif
+
+//printk("[KEY] key: %s gpio_keys_report_event state = %d,  code :%d, real_state:%d\n", button->desc, state, button->code, gpio_get_value_cansleep(button->gpio));
+#if defined(CONFIG_KERNEL_DEBUG_SEC) && defined(CONFIG_MACH_LT02)
+	printk(KERN_DEBUG "[KEY] key: %s gpio_keys_report_event state = %d \n", button->desc, state);
 
 	bool bState = state ? true : false;
-	switch (button->code) {
+	switch (button->code)
+	{
 	case KEY_VOLUMEUP:
 		g_bVolUp = bState;
 		break;
@@ -496,7 +495,7 @@ static void gpio_keys_gpio_report_event(struct gpio_button_data *bdata)
 		if (state)
 			input_event(input, type, button->code, button->value);
 	} else {
-#if defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
+#if !defined(CONFIG_MACH_CS05) // "CS05 model" use gpio-key(projector key) and pxa27x-keypad both.
 		bdata->key_state = !!state;
 #endif
 		input_event(input, type, button->code, !!state);
@@ -524,7 +523,9 @@ static irqreturn_t gpio_keys_gpio_isr(int irq, void *dev_id)
 	struct gpio_button_data *bdata = dev_id;
 
 	BUG_ON(irq != bdata->irq);
-
+#if !defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
+	printk("%s\n",__func__);
+#endif
 	if (bdata->timer_debounce)
 		mod_timer(&bdata->timer,
 			jiffies + msecs_to_jiffies(bdata->timer_debounce));
@@ -557,7 +558,9 @@ static irqreturn_t gpio_keys_irq_isr(int irq, void *dev_id)
 	unsigned long flags;
 
 	BUG_ON(irq != bdata->irq);
-
+#if !defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
+	printk("gpio_keys_irq_isr\n");
+#endif
 	spin_lock_irqsave(&bdata->lock, flags);
 
 	if (!bdata->key_pressed) {
@@ -597,10 +600,7 @@ void trigger_wakeup(int mfp, void *data)
 {
 	struct gpio_button_data *bdata = ((struct gpio_button_data *)data);
 
-	/* Fixed for duplicated home_key event when wake up. */
-	/*
-	schedule_delayed_work(&bdata->input_work, msecs_to_jiffies(10));
-	*/
+	//schedule_delayed_work(&bdata->input_work, msecs_to_jiffies(10));
 	return;
 }
 #endif
@@ -852,10 +852,7 @@ static int __devinit gpio_keys_probe(struct platform_device *pdev)
 	struct input_dev *input;
 	int i, error;
 	int wakeup = 0;
-#if defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
-	struct device *sec_lpm;
-#endif
-
+	printk("gpio_keys_probe\n");
 	if (!pdata) {
 		error = gpio_keys_get_devtree_pdata(dev, &alt_pdata);
 		if (error)
@@ -921,7 +918,7 @@ static int __devinit gpio_keys_probe(struct platform_device *pdev)
 		goto fail2;
 	}
 
-#if defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
+#if !defined(CONFIG_MACH_CS05) // "CS05 model" use gpio-key(projector key) and pxa27x-keypad both.
 	ddata->sec_key = device_create(sec_class, NULL, 0, ddata, "sec_key");
 	if (IS_ERR(ddata->sec_key))
 		dev_err(dev, "Failed to create sec_key device\n");
@@ -931,11 +928,6 @@ static int __devinit gpio_keys_probe(struct platform_device *pdev)
 		dev_err(dev, "Unable to export sec_key device, error: %d\n", error);
 		goto fail2;
 	}
-
-	sec_lpm = device_create(sec_class, NULL, 0, "%s", "lpm");
-
-	if (device_create_file(sec_lpm, &dev_attr_sec_lpm_poweroff) < 0)
-			printk("Failed to create device file(%s)!\n", dev_attr_sec_lpm_poweroff.attr.name);
 #endif
 
 	error = input_register_device(input);
@@ -955,7 +947,7 @@ static int __devinit gpio_keys_probe(struct platform_device *pdev)
 
 	device_init_wakeup(&pdev->dev, wakeup);
 
-#if defined(CONFIG_KERNEL_DEBUG_SEC) && (defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7))
+#if defined(CONFIG_KERNEL_DEBUG_SEC) && defined(CONFIG_MACH_LT02)
 	/* Initialize for Forced Upload mode */
 	init_timer(&debug_timer);
 	debug_timer.function = enter_upload_mode;
@@ -965,7 +957,7 @@ static int __devinit gpio_keys_probe(struct platform_device *pdev)
 
  fail3:
 	sysfs_remove_group(&pdev->dev.kobj, &gpio_keys_attr_group);
-#if defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
+#if !defined(CONFIG_MACH_CS05) // "CS05 model" use gpio-key(projector key) and pxa27x-keypad both.
 	sysfs_remove_group(&ddata->sec_key->kobj, &sec_key_attr_group);
 #endif
  fail2:
@@ -1062,15 +1054,17 @@ static struct platform_driver gpio_keys_device_driver = {
 
 static int __init gpio_keys_init(void)
 {
+	printk("%s\n",__func__);
 	return platform_driver_register(&gpio_keys_device_driver);
 }
 
 static void __exit gpio_keys_exit(void)
 {
+	printk("%s\n",__func__);
 	platform_driver_unregister(&gpio_keys_device_driver);
 }
 
-late_initcall(gpio_keys_init);
+module_init(gpio_keys_init);
 module_exit(gpio_keys_exit);
 
 MODULE_LICENSE("GPL");

@@ -15,7 +15,7 @@
 #define DBG_ERR_IRQ	((debug_flag & DBG_ERR_MASK) >> DBG_ERR_SHIFT)
 #define DBG_IRQ_PATH	(debug_flag & DBG_VSYNC_MASK)
 
-#if defined(CONFIG_CPU_PXA988)
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 #define NEED_VSYNC(fbi)	(fbi->wait_vsync)
 #else
 #define NEED_VSYNC(fbi)	(fbi->wait_vsync && dispd_dma_enabled(fbi))

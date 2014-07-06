@@ -47,6 +47,11 @@ static int mmc_prep_request(struct request_queue *q, struct request *req)
 	return BLKPREP_OK;
 }
 
+static int is_disable_mmc_async(struct mmc_queue *mq)
+{
+	return (mq->card->host->caps2 & MMC_CAP2_DISABLE_BLK_ASYNC);
+}
+
 static int mmc_queue_thread(void *d)
 {
 	struct mmc_queue *mq = d;
@@ -62,7 +67,8 @@ static int mmc_queue_thread(void *d)
 		spin_lock_irq(q->queue_lock);
 		set_current_state(TASK_INTERRUPTIBLE);
 
-		if ((mq->card->quirks & MMC_QUIRK_MOVINAND_TLC ) && (mq->mqrq_prev->req ))
+		if ((mq->card->quirks & (MMC_QUIRK_MOVINAND_TLC |MMC_QUIRK_SANDISK_MLC))
+			&& (mq->mqrq_prev->req))
 			req = NULL;
 		else
 			req = blk_fetch_request(q);

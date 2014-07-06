@@ -173,7 +173,6 @@ struct v4l2_subdev_core_ops {
 	int (*unsubscribe_event)(struct v4l2_subdev *sd, struct v4l2_fh *fh,
 				 struct v4l2_event_subscription *sub);
 	int (*mmap)(struct v4l2_subdev *sd, struct vm_area_struct *vma);
-	int (*s_cameramode)(struct v4l2_subdev *sd, struct v4l2_mode_transfer *mode);//Vincent Wan add it.
 };
 
 /* s_radio: v4l device was opened in radio mode.

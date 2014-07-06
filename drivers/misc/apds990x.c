@@ -27,7 +27,6 @@
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
 #include <linux/mutex.h>
-#include <linux/regulator/consumer.h>
 #include <linux/pm_runtime.h>
 #include <linux/delay.h>
 #include <linux/wait.h>
@@ -127,7 +126,6 @@ struct apds990x_chip {
 	struct apds990x_platform_data	*pdata;
 	struct i2c_client		*client;
 	struct mutex			mutex; /* avoid parallel access */
-	struct regulator_bulk_data	regs[2];
 	wait_queue_head_t		wait;
 
 	int	prox_en;
@@ -193,10 +191,6 @@ static const u8 ir_currents[]	= {100, 50, 25, 12}; /* IRled currents in mA */
 /* Following two tables must match i.e 10Hz rate means 1 as persistence value */
 static const u16 arates_hz[] = {10, 5, 2, 1};
 static const u8 apersis[] = {1, 2, 4, 5};
-
-/* Regulators */
-static const char reg_vcc[] = "Vdd";
-static const char reg_vled[] = "Vled";
 
 static int apds990x_read_byte(struct apds990x_chip *chip, u8 reg, u8 *data)
 {
@@ -612,14 +606,17 @@ static int apds990x_detect(struct apds990x_chip *chip)
 #if defined(CONFIG_PM) || defined(CONFIG_PM_RUNTIME)
 static int apds990x_chip_on(struct apds990x_chip *chip)
 {
-	int err	 = regulator_bulk_enable(ARRAY_SIZE(chip->regs),
-					chip->regs);
-	if (err < 0)
-		return err;
+	int err;
+
+	if (chip->pdata->power_on) {
+		err = chip->pdata->power_on(1);
+		if (err < 0)
+			return err;
+	}
 
 	usleep_range(APDS_STARTUP_DELAY, 2 * APDS_STARTUP_DELAY);
 
-	/* Refresh all configs in case of regulators were off */
+	/* Refresh all configs in case of power was off */
 	chip->prox_data = 0;
 	apds990x_configure(chip);
 	apds990x_mode_on(chip);
@@ -630,7 +627,9 @@ static int apds990x_chip_on(struct apds990x_chip *chip)
 static int apds990x_chip_off(struct apds990x_chip *chip)
 {
 	apds990x_write_byte(chip, APDS990X_ENABLE, APDS990X_EN_DISABLE_ALL);
-	regulator_bulk_disable(ARRAY_SIZE(chip->regs), chip->regs);
+
+	if (chip->pdata->power_on)
+		chip->pdata->power_on(0);
 	return 0;
 }
 
@@ -1108,20 +1107,12 @@ static int __devinit apds990x_probe(struct i2c_client *client,
 	chip->prox_persistence = APDS_DEFAULT_PROX_PERS;
 	chip->prox_continuous_mode = false;
 
-	chip->regs[0].supply = reg_vcc;
-	chip->regs[1].supply = reg_vled;
-
-	err = regulator_bulk_get(&client->dev,
-				 ARRAY_SIZE(chip->regs), chip->regs);
-	if (err < 0) {
-		dev_err(&client->dev, "Cannot get regulators\n");
-		goto fail1;
-	}
-
-	err = regulator_bulk_enable(ARRAY_SIZE(chip->regs), chip->regs);
-	if (err < 0) {
-		dev_err(&client->dev, "Cannot enable regulators\n");
-		goto fail2;
+	if (chip->pdata->power_on) {
+		err = chip->pdata->power_on(1);
+		if (err < 0) {
+			dev_err(&client->dev, "power on failed\n");
+			goto fail1;
+		}
 	}
 
 	usleep_range(APDS_STARTUP_DELAY, 2 * APDS_STARTUP_DELAY);
@@ -1129,7 +1120,7 @@ static int __devinit apds990x_probe(struct i2c_client *client,
 	err = apds990x_detect(chip);
 	if (err < 0) {
 		dev_err(&client->dev, "APDS990X not found\n");
-		goto fail3;
+		goto fail2;
 	}
 
 	pm_runtime_set_active(&client->dev);
@@ -1144,7 +1135,7 @@ static int __devinit apds990x_probe(struct i2c_client *client,
 		err = chip->pdata->setup_resources();
 		if (err) {
 			err = -EINVAL;
-			goto fail3;
+			goto fail2;
 		}
 	}
 
@@ -1152,7 +1143,7 @@ static int __devinit apds990x_probe(struct i2c_client *client,
 				apds990x_attribute_group);
 	if (err < 0) {
 		dev_err(&chip->client->dev, "Sysfs registration failed\n");
-		goto fail4;
+		goto fail3;
 	}
 
 	err = request_threaded_irq(client->irq, NULL,
@@ -1163,19 +1154,18 @@ static int __devinit apds990x_probe(struct i2c_client *client,
 	if (err) {
 		dev_err(&client->dev, "could not get IRQ %d\n",
 			client->irq);
-		goto fail5;
+		goto fail4;
 	}
 	return err;
-fail5:
+fail4:
 	sysfs_remove_group(&chip->client->dev.kobj,
 			&apds990x_attribute_group[0]);
-fail4:
+fail3:
 	if (chip->pdata && chip->pdata->release_resources)
 		chip->pdata->release_resources();
-fail3:
-	regulator_bulk_disable(ARRAY_SIZE(chip->regs), chip->regs);
 fail2:
-	regulator_bulk_free(ARRAY_SIZE(chip->regs), chip->regs);
+	if (chip->pdata->power_on)
+		chip->pdata->power_on(0);
 fail1:
 	kfree(chip);
 	return err;
@@ -1197,8 +1187,6 @@ static int __devexit apds990x_remove(struct i2c_client *client)
 
 	pm_runtime_disable(&client->dev);
 	pm_runtime_set_suspended(&client->dev);
-
-	regulator_bulk_free(ARRAY_SIZE(chip->regs), chip->regs);
 
 	kfree(chip);
 	return 0;

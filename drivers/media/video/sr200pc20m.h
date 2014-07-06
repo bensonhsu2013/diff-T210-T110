@@ -21,7 +21,7 @@
 #define CAM_SR200PC20M_DBG_MSG            1
 //#define USE_SD_CARD_TUNE
 #define SR200PC20M_DRIVER_NAME            "sr200pc20m"
-#define SR200PC20M_MOD_NAME               "SR200PC20M: "
+#define SR200PC20M_MOD_NAME               "sr200pc20m: "
 
 /*Sysfs*/
 #define CAM_MAJOR       119
@@ -30,7 +30,7 @@ extern struct class *camera_class;
 #define SR200PC20M_THUMBNAIL_OFFSET	0x271000		// 0x271000		0x1EA000
 #define SR200PC20M_YUV_OFFSET		0x280A00		// 0x280A00		0x224980
 
-#define SR200PC20M_I2C_ADDR		0x5A >> 1
+#define SR200PC20M_I2C_ADDR		0x40 >> 1
 #define SR200PC20M_I2C_RETRY		1
 #define SR200PC20M_XCLK			24000000
 
@@ -134,11 +134,15 @@ struct sr200pc20m_sensor {
 	u32 jpeg_postview_offset;
 	u32 jpeg_capture_w;
 	u32 jpeg_capture_h;
+	u32 record_width;
+	u32 record_height;
 	struct v4l2_pix_format thumbnail;
 	v4l2_exif_info_t exif_info;
 	bool wide_capture;
 	enum preview_aspect_ratio preview_ratio;
 	u8 initial;
+	bool check_init;
+	u8 cam_mode;
 };
 
 #define SR200PC20M_STATE_INITIAL		0x0000
@@ -147,8 +151,9 @@ struct sr200pc20m_sensor {
 /* State */
 #define SR200PC20M_STATE_PREVIEW	  0x0000	/*  preview state */
 #define SR200PC20M_STATE_CAPTURE	  0x0001	/*  capture state */
-#define SR200PC20M_STATE_CAMCORDER	  0x0002	/*  capture state */
-#define SR200PC20M_STATE_INVALID	  0x0003	/*  invalid state */
+#define SR200PC20M_STATE_CAMCORDER		0x0002	/*  camcorder state */
+#define SR200PC20M_STATE_HD_CAMCORDER	0x0003	/*  HD camcorder state */
+#define SR200PC20M_STATE_INVALID			0x0004	/*  invalid state */
 
 /* Mode */
 #define SR200PC20M_MODE_CAMERA     1
@@ -218,12 +223,14 @@ struct sr200pc20m_sensor {
 /* Preview Size */
 enum {
 	PREVIEW_SIZE_176_144,
-	PREVIEW_SIZE_320_240,		
-	PREVIEW_SIZE_424_318,	
-	PREVIEW_SIZE_480_320,	
+	PREVIEW_SIZE_320_240,	
+	PREVIEW_SIZE_352_288,		
 	PREVIEW_SIZE_640_480,	
+	PREVIEW_SIZE_704_576,
 	PREVIEW_SIZE_720_480,
-	PREVIEW_SIZE_160_120
+	PREVIEW_SIZE_800_480,	
+	PREVIEW_SIZE_800_600,
+	PREVIEW_SIZE_1280_720,
 };	
 
 struct sr200pc20m_preview_size {
@@ -238,6 +245,7 @@ const static struct sr200pc20m_preview_size sr200pc20m_preview_sizes[] = {
 	{480,320},	// XVGA
 	{640,480},	// VGA
 	{720,480},	// D1
+	{800,600},	// for Goya
 	{160,120},
 };
 
@@ -392,6 +400,7 @@ enum {
 	FPS_12		=12,
 	FPS_15		=15,
 	FPS_20		=20,
+	FPS_24		=24,
 	FPS_25		=25,
 	FPS_30		=30,
 };
@@ -419,6 +428,13 @@ enum{
 enum{
 	ESD_ERROR,
 	ESD_NONE,
+};
+
+/* Preview Mode */
+enum{
+	CAMERA_MODE,
+	CAMCORDER_MODE,
+	VT_MODE
 };
 
 typedef enum

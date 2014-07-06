@@ -1,871 +1,1817 @@
 /*
- * Driver for SiliconFile SR030PC30 VGA (1/10-Inch) Image Sensor with ISP
+ * A V4L2 driver for siliconfile SR030PC30 cameras.
+ * 
+ * Copyright 2006 One Laptop Per Child Association, Inc.  Written
+ * by Jonathan Corbet with substantial inspiration from Mark
+ * McClelland's ovcamchip code.
  *
- * Copyright (C) 2010 Samsung Electronics Co., Ltd
- * Author: Sylwester Nawrocki, s.nawrocki@samsung.com
- *
- * Based on original driver authored by Dongsoo Nathaniel Kim
- * and HeungJun Kim <riverful.kim@samsung.com>.
- *
- * Based on mt9v011 Micron Digital Image Sensor driver
- * Copyright (c) 2009 Mauro Carvalho Chehab (mchehab@redhat.com)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * Copyright 2006-7 Jonathan Corbet <corbet@lwn.net>
+ *jpeg
+ * This file may be distributed under the terms of the GNU General
+ * Public License, version 2.
+ * 
+ * Create SR030PC30 driver from SR030PC50 driver by
+ * Vincent Wan <zswan@marvell.com> for Marvell helan delos project.
  */
-
-#include <linux/i2c.h>
-#include <linux/delay.h>
-#include <linux/slab.h>
+#include <linux/init.h>
 #include <linux/module.h>
-#include <media/v4l2-device.h>
+
+
+
+#include <media/v4l2-chip-ident.h>
+#include <media/soc_camera.h>
+#include <mach/camera.h>
+
+#include <linux/delay.h>
+#include <linux/debugfs.h>
+#include <linux/types.h>
+#include <linux/i2c.h>
+#include <linux/uaccess.h>
+#include <linux/miscdevice.h>
+#include <linux/slab.h>
+
 #include <media/v4l2-subdev.h>
-#include <media/v4l2-mediabus.h>
-#include <media/sr030pc30.h>
+#include <mach/gpio.h>
+#include <mach/camera.h>
 
-static int debug;
-module_param(debug, int, 0644);
+#include "sr030pc30.h"
 
-#define MODULE_NAME	"SR030PC30"
+#ifdef CONFIG_MACH_HELANDELOS
+#include "sr030pc30_regs_delos.h"
+#elif defined(CONFIG_MACH_WILCOX)
+#include "sr030pc30_regs_wilcox.h"
+#elif defined(CONFIG_MACH_CS05)
+#include "sr030pc30_regs_cs05.h"
+#elif defined(CONFIG_MACH_GOLDEN)
+#include "sr030pc30_regs_goldenve.h"
+#elif defined(CONFIG_MACH_BAFFINQ)
+#include "sr030pc30_regs_baffinq.h"
+#else
+#include "sr030pc30_regs2.h"
+#endif
+
+MODULE_AUTHOR("Jonathan Corbet <corbet@lwn.net>");
+MODULE_DESCRIPTION("A low-level driver for siliconfile SR030PC30 sensors");
+MODULE_LICENSE("GPL");
+
+#define to_sr030pc30(sd)		container_of(sd, struct sr030pc30_info, subdev)
+
+#define sr030pc30_WRT_LIST(B, A)	\
+	sr030pc30_i2c_wrt_list(B, A, (sizeof(A) / sizeof(A[0])), #A);
+
+
+static const struct sr030pc30_datafmt sr030pc30_colour_fmts[] = {
+	{V4L2_MBUS_FMT_UYVY8_2X8, V4L2_COLORSPACE_JPEG},
+};
+
+
+#define CAM_DEBUG 
+
+#ifdef CAM_DEBUG 
+#define Cam_Printk(msg...) printk(msg)	
+#else
+#define Cam_Printk
+#endif
 
 /*
- * Register offsets within a page
- * b15..b8 - page id, b7..b0 - register address
+ * Basic window sizes.  These probably belong somewhere more globally
+ * useful.
  */
-#define POWER_CTRL_REG		0x0001
-#define PAGEMODE_REG		0x03
-#define DEVICE_ID_REG		0x0004
-#define NOON010PC30_ID		0x86
-#define SR030PC30_ID		0x8C
-#define VDO_CTL1_REG		0x0010
-#define SUBSAMPL_NONE_VGA	0
-#define SUBSAMPL_QVGA		0x10
-#define SUBSAMPL_QQVGA		0x20
-#define VDO_CTL2_REG		0x0011
-#define SYNC_CTL_REG		0x0012
-#define WIN_ROWH_REG		0x0020
-#define WIN_ROWL_REG		0x0021
-#define WIN_COLH_REG		0x0022
-#define WIN_COLL_REG		0x0023
-#define WIN_HEIGHTH_REG		0x0024
-#define WIN_HEIGHTL_REG		0x0025
-#define WIN_WIDTHH_REG		0x0026
-#define WIN_WIDTHL_REG		0x0027
-#define HBLANKH_REG		0x0040
-#define HBLANKL_REG		0x0041
-#define VSYNCH_REG		0x0042
-#define VSYNCL_REG		0x0043
-/* page 10 */
-#define ISP_CTL_REG(n)		(0x1010 + (n))
-#define YOFS_REG		0x1040
-#define DARK_YOFS_REG		0x1041
-#define AG_ABRTH_REG		0x1050
-#define SAT_CTL_REG		0x1060
-#define BSAT_REG		0x1061
-#define RSAT_REG		0x1062
-#define AG_SAT_TH_REG		0x1063
-/* page 11 */
-#define ZLPF_CTRL_REG		0x1110
-#define ZLPF_CTRL2_REG		0x1112
-#define ZLPF_AGH_THR_REG	0x1121
-#define ZLPF_THR_REG		0x1160
-#define ZLPF_DYN_THR_REG	0x1160
-/* page 12 */
-#define YCLPF_CTL1_REG		0x1240
-#define YCLPF_CTL2_REG		0x1241
-#define YCLPF_THR_REG		0x1250
-#define BLPF_CTL_REG		0x1270
-#define BLPF_THR1_REG		0x1274
-#define BLPF_THR2_REG		0x1275
-/* page 14 - Lens Shading Compensation */
-#define LENS_CTRL_REG		0x1410
-#define LENS_XCEN_REG		0x1420
-#define LENS_YCEN_REG		0x1421
-#define LENS_R_COMP_REG		0x1422
-#define LENS_G_COMP_REG		0x1423
-#define LENS_B_COMP_REG		0x1424
-/* page 15 - Color correction */
-#define CMC_CTL_REG		0x1510
-#define CMC_OFSGH_REG		0x1514
-#define CMC_OFSGL_REG		0x1516
-#define CMC_SIGN_REG		0x1517
-/* Color correction coefficients */
-#define CMC_COEF_REG(n)		(0x1530 + (n))
-/* Color correction offset coefficients */
-#define CMC_OFS_REG(n)		(0x1540 + (n))
-/* page 16 - Gamma correction */
-#define GMA_CTL_REG		0x1610
-/* Gamma correction coefficients 0.14 */
-#define GMA_COEF_REG(n)		(0x1630 + (n))
-/* page 20 - Auto Exposure */
-#define AE_CTL1_REG		0x2010
-#define AE_CTL2_REG		0x2011
-#define AE_FRM_CTL_REG		0x2020
-#define AE_FINE_CTL_REG(n)	(0x2028 + (n))
-#define EXP_TIMEH_REG		0x2083
-#define EXP_TIMEM_REG		0x2084
-#define EXP_TIMEL_REG		0x2085
-#define EXP_MMINH_REG		0x2086
-#define EXP_MMINL_REG		0x2087
-#define EXP_MMAXH_REG		0x2088
-#define EXP_MMAXM_REG		0x2089
-#define EXP_MMAXL_REG		0x208A
-/* page 22 - Auto White Balance */
-#define AWB_CTL1_REG		0x2210
-#define AWB_ENABLE		0x80
-#define AWB_CTL2_REG		0x2211
-#define MWB_ENABLE		0x01
-/* RGB gain control (manual WB) when AWB_CTL1[7]=0 */
-#define AWB_RGAIN_REG		0x2280
-#define AWB_GGAIN_REG		0x2281
-#define AWB_BGAIN_REG		0x2282
-#define AWB_RMAX_REG		0x2283
-#define AWB_RMIN_REG		0x2284
-#define AWB_BMAX_REG		0x2285
-#define AWB_BMIN_REG		0x2286
-/* R, B gain range in bright light conditions */
-#define AWB_RMAXB_REG		0x2287
-#define AWB_RMINB_REG		0x2288
-#define AWB_BMAXB_REG		0x2289
-#define AWB_BMINB_REG		0x228A
-/* manual white balance, when AWB_CTL2[0]=1 */
-#define MWB_RGAIN_REG		0x22B2
-#define MWB_BGAIN_REG		0x22B3
-/* the token to mark an array end */
-#define REG_TERM		0xFFFF
 
-/* Minimum and maximum exposure time in ms */
-#define EXPOS_MIN_MS		1
-#define EXPOS_MAX_MS		125
+static int sr030pc30_cam_state;
 
+#define VGA_WIDTH		640
+#define VGA_HEIGHT		480
+#define HEIGHT_360		360
+
+#define CIF_WIDTH		352
+#define CIF_HEIGHT		288
+
+#define QVGA_WIDTH		320
+#define QVGA_HEIGHT	240
+
+#define QCIF_WIDTH		176
+#define QCIF_HEIGHT		144
+
+#define QQVGA_WIDTH	160
+#define QQVGA_HEIGHT	120
+
+/*
+ * Our nominal (default) frame rate.
+ */
+
+int sr030pc30_s_exif_info(struct i2c_client *client);
+static int sr030pc30_regs_table_write(struct i2c_client *c, char *name);
+static int sr030pc30_t_fps(struct i2c_client *client, int value);
+
+#define SR030PC30_FRAME_RATE 30
+
+//#define SR030PC30_I2C_ADDR (0x5A >> 1) 
+
+#define REG_MIDH	0x1c	/* Manuf. ID high */
+
+#define   CMATRIX_LEN 6
+
+/*Heron Tuning*/
+//#define CONFIG_LOAD_FILE
+
+#define FALSE 0
+#define TRUE 1
+
+static int gDTP_flag = FALSE;
+static int gFPS_flag=FALSE;
+static int gFPS_value=FALSE;
+static int gVGA_flag = FALSE;
+
+/*
+ * Information we maintain about a known sensor.
+ */
+
+struct sr030pc30_sensor sr030pc30 = {
+	.timeperframe = {
+		.numerator    = 1,
+		.denominator  = 30,
+	},
+	.fps			= 30,
+	//.bv			= 0,
+	.state			= SR030PC30_STATE_PREVIEW,
+	.mode			= SR030PC30_MODE_CAMERA,
+	.preview_size		= PREVIEW_SIZE_640_480,
+	.capture_size		= CAPTURE_SIZE_640_480,
+	.detect			= SENSOR_NOT_DETECTED,
+	.focus_mode		= SR030PC30_AF_SET_NORMAL,
+	.effect			= EFFECT_OFF,
+	.iso			= ISO_AUTO,
+	.photometry		= METERING_CENTER,
+	.ev			= EV_DEFAULT,
+	//.wdr			= SR030PC30_WDR_OFF,
+	.contrast		= CONTRAST_DEFAULT,
+	.saturation		= SATURATION_DEFAULT,
+	.sharpness		= SHARPNESS_DEFAULT,
+	.wb			= WB_AUTO,
+	//.isc 			= SR030PC30_ISC_STILL_OFF,
+	.scene			= SCENE_OFF,
+	.aewb			= AWB_AE_UNLOCK,
+	//.antishake		= SR030PC30_ANTI_SHAKE_OFF,
+	//.flash_capture	= SR030PC30_FLASH_CAPTURE_OFF,
+	//.flash_movie		= SR030PC30_FLASH_MOVIE_OFF,
+	.quality		= QUALITY_SUPERFINE, 
+	//.zoom			= SR030PC30_ZOOM_1P00X,
+	.thumb_offset		= 0,
+	.yuv_offset		= 0,
+	.jpeg_main_size		= 0,
+	.jpeg_main_offset	= 0,
+	.jpeg_thumb_size	= 0,
+	.jpeg_thumb_offset	= 0,
+	.jpeg_postview_offset	= 0, 
+	.jpeg_capture_w		= JPEG_CAPTURE_WIDTH,
+	.jpeg_capture_h		= JPEG_CAPTURE_HEIGHT,
+	.check_dataline		= 0,
+	.exif_info={
+		.exposure_time.denominal =0,
+		.exposure_time.inumerator =0,
+		.iso_speed_rationg =0,
+			},
+	.cam_mode           =  CAMERA_MODE,
+};
+
+extern struct sr030pc30_platform_data sr030pc30_platform_data0;
+
+struct sr030pc30_format_struct;  /* coming later */
 struct sr030pc30_info {
-	struct v4l2_subdev sd;
-	const struct sr030pc30_platform_data *pdata;
-	const struct sr030pc30_format *curr_fmt;
-	const struct sr030pc30_frmsize *curr_win;
-	unsigned int auto_wb:1;
-	unsigned int auto_exp:1;
-	unsigned int hflip:1;
-	unsigned int vflip:1;
-	unsigned int sleep:1;
-	unsigned int exposure;
-	u8 blue_balance;
-	u8 red_balance;
-	u8 i2c_reg_page;
+	struct sr030pc30_format_struct *fmt;  /* Current format */
+	unsigned char sat;		/* Saturation value */
+	int hue;			/* Hue value */
+	struct v4l2_subdev subdev;
+	int model;	/* V4L2_IDENT_xxx* codes from v4l2-chip-ident.h */
+	u32 pixfmt;
+	struct i2c_client *client;
+	struct soc_camera_device icd;
+
 };
 
-struct sr030pc30_format {
-	enum v4l2_mbus_pixelcode code;
-	enum v4l2_colorspace colorspace;
-	u16 ispctl1_reg;
-};
-
-struct sr030pc30_frmsize {
-	u16 width;
-	u16 height;
-	int vid_ctl1;
-};
-
-struct i2c_regval {
-	u16 addr;
-	u16 val;
-};
-
-static const struct v4l2_queryctrl sr030pc30_ctrl[] = {
+static int sr030pc30_write_byte(struct i2c_client *c, unsigned char reg,
+		unsigned char value)
+{
+	int retry = 3, ret;
+	
+	if (reg == 0xfe)
 	{
-		.id		= V4L2_CID_AUTO_WHITE_BALANCE,
-		.type		= V4L2_CTRL_TYPE_BOOLEAN,
-		.name		= "Auto White Balance",
-		.minimum	= 0,
-		.maximum	= 1,
-		.step		= 1,
-		.default_value	= 1,
-	}, {
-		.id		= V4L2_CID_RED_BALANCE,
-		.type		= V4L2_CTRL_TYPE_INTEGER,
-		.name		= "Red Balance",
-		.minimum	= 0,
-		.maximum	= 127,
-		.step		= 1,
-		.default_value	= 64,
-		.flags		= 0,
-	}, {
-		.id		= V4L2_CID_BLUE_BALANCE,
-		.type		= V4L2_CTRL_TYPE_INTEGER,
-		.name		= "Blue Balance",
-		.minimum	= 0,
-		.maximum	= 127,
-		.step		= 1,
-		.default_value	= 64,
-	}, {
-		.id		= V4L2_CID_EXPOSURE_AUTO,
-		.type		= V4L2_CTRL_TYPE_INTEGER,
-		.name		= "Auto Exposure",
-		.minimum	= 0,
-		.maximum	= 1,
-		.step		= 1,
-		.default_value	= 1,
-	}, {
-		.id		= V4L2_CID_EXPOSURE,
-		.type		= V4L2_CTRL_TYPE_INTEGER,
-		.name		= "Exposure",
-		.minimum	= EXPOS_MIN_MS,
-		.maximum	= EXPOS_MAX_MS,
-		.step		= 1,
-		.default_value	= 1,
-	}, {
-	}
-};
-
-/* supported resolutions */
-static const struct sr030pc30_frmsize sr030pc30_sizes[] = {
-	{
-		.width		= 640,
-		.height		= 480,
-		.vid_ctl1	= SUBSAMPL_NONE_VGA,
-	}, {
-		.width		= 320,
-		.height		= 240,
-		.vid_ctl1	= SUBSAMPL_QVGA,
-	}, {
-		.width		= 160,
-		.height		= 120,
-		.vid_ctl1	= SUBSAMPL_QQVGA,
-	},
-};
-
-/* supported pixel formats */
-static const struct sr030pc30_format sr030pc30_formats[] = {
-	{
-		.code		= V4L2_MBUS_FMT_YUYV8_2X8,
-		.colorspace	= V4L2_COLORSPACE_JPEG,
-		.ispctl1_reg	= 0x03,
-	}, {
-		.code		= V4L2_MBUS_FMT_YVYU8_2X8,
-		.colorspace	= V4L2_COLORSPACE_JPEG,
-		.ispctl1_reg	= 0x02,
-	}, {
-		.code		= V4L2_MBUS_FMT_VYUY8_2X8,
-		.colorspace	= V4L2_COLORSPACE_JPEG,
-		.ispctl1_reg	= 0,
-	}, {
-		.code		= V4L2_MBUS_FMT_UYVY8_2X8,
-		.colorspace	= V4L2_COLORSPACE_JPEG,
-		.ispctl1_reg	= 0x01,
-	}, {
-		.code		= V4L2_MBUS_FMT_RGB565_2X8_BE,
-		.colorspace	= V4L2_COLORSPACE_JPEG,
-		.ispctl1_reg	= 0x40,
-	},
-};
-
-static const struct i2c_regval sr030pc30_base_regs[] = {
-	/* Window size and position within pixel matrix */
-	{ WIN_ROWH_REG,		0x00 }, { WIN_ROWL_REG,		0x06 },
-	{ WIN_COLH_REG,		0x00 },	{ WIN_COLL_REG,		0x06 },
-	{ WIN_HEIGHTH_REG,	0x01 }, { WIN_HEIGHTL_REG,	0xE0 },
-	{ WIN_WIDTHH_REG,	0x02 }, { WIN_WIDTHL_REG,	0x80 },
-	{ HBLANKH_REG,		0x01 }, { HBLANKL_REG,		0x50 },
-	{ VSYNCH_REG,		0x00 }, { VSYNCL_REG,		0x14 },
-	{ SYNC_CTL_REG,		0 },
-	/* Color corection and saturation */
-	{ ISP_CTL_REG(0),	0x30 }, { YOFS_REG,		0x80 },
-	{ DARK_YOFS_REG,	0x04 }, { AG_ABRTH_REG,		0x78 },
-	{ SAT_CTL_REG,		0x1F }, { BSAT_REG,		0x90 },
-	{ AG_SAT_TH_REG,	0xF0 }, { 0x1064,		0x80 },
-	{ CMC_CTL_REG,		0x03 }, { CMC_OFSGH_REG,	0x3C },
-	{ CMC_OFSGL_REG,	0x2C }, { CMC_SIGN_REG,		0x2F },
-	{ CMC_COEF_REG(0),	0xCB }, { CMC_OFS_REG(0),	0x87 },
-	{ CMC_COEF_REG(1),	0x61 }, { CMC_OFS_REG(1),	0x18 },
-	{ CMC_COEF_REG(2),	0x16 }, { CMC_OFS_REG(2),	0x91 },
-	{ CMC_COEF_REG(3),	0x23 }, { CMC_OFS_REG(3),	0x94 },
-	{ CMC_COEF_REG(4),	0xCE }, { CMC_OFS_REG(4),	0x9f },
-	{ CMC_COEF_REG(5),	0x2B }, { CMC_OFS_REG(5),	0x33 },
-	{ CMC_COEF_REG(6),	0x01 }, { CMC_OFS_REG(6),	0x00 },
-	{ CMC_COEF_REG(7),	0x34 }, { CMC_OFS_REG(7),	0x94 },
-	{ CMC_COEF_REG(8),	0x75 }, { CMC_OFS_REG(8),	0x14 },
-	/* Color corection coefficients */
-	{ GMA_CTL_REG,		0x03 },	{ GMA_COEF_REG(0),	0x00 },
-	{ GMA_COEF_REG(1),	0x19 },	{ GMA_COEF_REG(2),	0x26 },
-	{ GMA_COEF_REG(3),	0x3B },	{ GMA_COEF_REG(4),	0x5D },
-	{ GMA_COEF_REG(5),	0x79 }, { GMA_COEF_REG(6),	0x8E },
-	{ GMA_COEF_REG(7),	0x9F },	{ GMA_COEF_REG(8),	0xAF },
-	{ GMA_COEF_REG(9),	0xBD },	{ GMA_COEF_REG(10),	0xCA },
-	{ GMA_COEF_REG(11),	0xDD }, { GMA_COEF_REG(12),	0xEC },
-	{ GMA_COEF_REG(13),	0xF7 },	{ GMA_COEF_REG(14),	0xFF },
-	/* Noise reduction, Z-LPF, YC-LPF and BLPF filters setup */
-	{ ZLPF_CTRL_REG,	0x99 }, { ZLPF_CTRL2_REG,	0x0E },
-	{ ZLPF_AGH_THR_REG,	0x29 }, { ZLPF_THR_REG,		0x0F },
-	{ ZLPF_DYN_THR_REG,	0x63 }, { YCLPF_CTL1_REG,	0x23 },
-	{ YCLPF_CTL2_REG,	0x3B }, { YCLPF_THR_REG,	0x05 },
-	{ BLPF_CTL_REG,		0x1D }, { BLPF_THR1_REG,	0x05 },
-	{ BLPF_THR2_REG,	0x04 },
-	/* Automatic white balance */
-	{ AWB_CTL1_REG,		0xFB }, { AWB_CTL2_REG,		0x26 },
-	{ AWB_RMAX_REG,		0x54 }, { AWB_RMIN_REG,		0x2B },
-	{ AWB_BMAX_REG,		0x57 }, { AWB_BMIN_REG,		0x29 },
-	{ AWB_RMAXB_REG,	0x50 }, { AWB_RMINB_REG,	0x43 },
-	{ AWB_BMAXB_REG,	0x30 }, { AWB_BMINB_REG,	0x22 },
-	/* Auto exposure */
-	{ AE_CTL1_REG,		0x8C }, { AE_CTL2_REG,		0x04 },
-	{ AE_FRM_CTL_REG,	0x01 }, { AE_FINE_CTL_REG(0),	0x3F },
-	{ AE_FINE_CTL_REG(1),	0xA3 }, { AE_FINE_CTL_REG(3),	0x34 },
-	/* Lens shading compensation */
-	{ LENS_CTRL_REG,	0x01 }, { LENS_XCEN_REG,	0x80 },
-	{ LENS_YCEN_REG,	0x70 }, { LENS_R_COMP_REG,	0x53 },
-	{ LENS_G_COMP_REG,	0x40 }, { LENS_B_COMP_REG,	0x3e },
-	{ REG_TERM,		0 },
-};
-
-static inline struct sr030pc30_info *to_sr030pc30(struct v4l2_subdev *sd)
-{
-	return container_of(sd, struct sr030pc30_info, sd);
-}
-
-static inline int set_i2c_page(struct sr030pc30_info *info,
-			       struct i2c_client *client, unsigned int reg)
-{
-	int ret = 0;
-	u32 page = reg >> 8 & 0xFF;
-
-	if (info->i2c_reg_page != page && (reg & 0xFF) != 0x03) {
-		ret = i2c_smbus_write_byte_data(client, PAGEMODE_REG, page);
-		if (!ret)
-			info->i2c_reg_page = page;
-	}
-	return ret;
-}
-
-static int cam_i2c_read(struct v4l2_subdev *sd, u32 reg_addr)
-{
-	struct i2c_client *client = v4l2_get_subdevdata(sd);
-	struct sr030pc30_info *info = to_sr030pc30(sd);
-
-	int ret = set_i2c_page(info, client, reg_addr);
-	if (!ret)
-		ret = i2c_smbus_read_byte_data(client, reg_addr & 0xFF);
-	return ret;
-}
-
-static int cam_i2c_write(struct v4l2_subdev *sd, u32 reg_addr, u32 val)
-{
-	struct i2c_client *client = v4l2_get_subdevdata(sd);
-	struct sr030pc30_info *info = to_sr030pc30(sd);
-
-	int ret = set_i2c_page(info, client, reg_addr);
-	if (!ret)
-		ret = i2c_smbus_write_byte_data(
-			client, reg_addr & 0xFF, val);
-	return ret;
-}
-
-static inline int sr030pc30_bulk_write_reg(struct v4l2_subdev *sd,
-				const struct i2c_regval *msg)
-{
-	while (msg->addr != REG_TERM) {
-		int ret = cam_i2c_write(sd, msg->addr, msg->val);
-		if (ret)
-			return ret;
-		msg++;
-	}
-	return 0;
-}
-
-/* Device reset and sleep mode control */
-static int sr030pc30_pwr_ctrl(struct v4l2_subdev *sd,
-				     bool reset, bool sleep)
-{
-	struct sr030pc30_info *info = to_sr030pc30(sd);
-	u8 reg = sleep ? 0xF1 : 0xF0;
-	int ret = 0;
-
-	if (reset)
-		ret = cam_i2c_write(sd, POWER_CTRL_REG, reg | 0x02);
-	if (!ret) {
-		ret = cam_i2c_write(sd, POWER_CTRL_REG, reg);
-		if (!ret) {
-			info->sleep = sleep;
-			if (reset)
-				info->i2c_reg_page = -1;
-		}
-	}
-	return ret;
-}
-
-static inline int sr030pc30_enable_autoexposure(struct v4l2_subdev *sd, int on)
-{
-	struct sr030pc30_info *info = to_sr030pc30(sd);
-	/* auto anti-flicker is also enabled here */
-	int ret = cam_i2c_write(sd, AE_CTL1_REG, on ? 0xDC : 0x0C);
-	if (!ret)
-		info->auto_exp = on;
-	return ret;
-}
-
-static int sr030pc30_set_exposure(struct v4l2_subdev *sd, int value)
-{
-	struct sr030pc30_info *info = to_sr030pc30(sd);
-
-	unsigned long expos = value * info->pdata->clk_rate / (8 * 1000);
-
-	int ret = cam_i2c_write(sd, EXP_TIMEH_REG, expos >> 16 & 0xFF);
-	if (!ret)
-		ret = cam_i2c_write(sd, EXP_TIMEM_REG, expos >> 8 & 0xFF);
-	if (!ret)
-		ret = cam_i2c_write(sd, EXP_TIMEL_REG, expos & 0xFF);
-	if (!ret) { /* Turn off AE */
-		info->exposure = value;
-		ret = sr030pc30_enable_autoexposure(sd, 0);
-	}
-	return ret;
-}
-
-/* Automatic white balance control */
-static int sr030pc30_enable_autowhitebalance(struct v4l2_subdev *sd, int on)
-{
-	struct sr030pc30_info *info = to_sr030pc30(sd);
-
-	int ret = cam_i2c_write(sd, AWB_CTL2_REG, on ? 0x2E : 0x2F);
-	if (!ret)
-		ret = cam_i2c_write(sd, AWB_CTL1_REG, on ? 0xFB : 0x7B);
-	if (!ret)
-		info->auto_wb = on;
-
-	return ret;
-}
-
-static int sr030pc30_set_flip(struct v4l2_subdev *sd)
-{
-	struct sr030pc30_info *info = to_sr030pc30(sd);
-
-	s32 reg = cam_i2c_read(sd, VDO_CTL2_REG);
-	if (reg < 0)
-		return reg;
-
-	reg &= 0x7C;
-	if (info->hflip)
-		reg |= 0x01;
-	if (info->vflip)
-		reg |= 0x02;
-	return cam_i2c_write(sd, VDO_CTL2_REG, reg | 0x80);
-}
-
-/* Configure resolution, color format and image flip */
-static int sr030pc30_set_params(struct v4l2_subdev *sd)
-{
-	struct sr030pc30_info *info = to_sr030pc30(sd);
-	int ret;
-
-	if (!info->curr_win)
-		return -EINVAL;
-
-	/* Configure the resolution through subsampling */
-	ret = cam_i2c_write(sd, VDO_CTL1_REG,
-			    info->curr_win->vid_ctl1);
-
-	if (!ret && info->curr_fmt)
-		ret = cam_i2c_write(sd, ISP_CTL_REG(0),
-				info->curr_fmt->ispctl1_reg);
-	if (!ret)
-		ret = sr030pc30_set_flip(sd);
-
-	return ret;
-}
-
-/* Find nearest matching image pixel size. */
-static int sr030pc30_try_frame_size(struct v4l2_mbus_framefmt *mf)
-{
-	unsigned int min_err = ~0;
-	int i = ARRAY_SIZE(sr030pc30_sizes);
-	const struct sr030pc30_frmsize *fsize = &sr030pc30_sizes[0],
-					*match = NULL;
-	while (i--) {
-		int err = abs(fsize->width - mf->width)
-				+ abs(fsize->height - mf->height);
-		if (err < min_err) {
-			min_err = err;
-			match = fsize;
-		}
-		fsize++;
-	}
-	if (match) {
-		mf->width  = match->width;
-		mf->height = match->height;
+		msleep(value);  /* Wait for reset to run */
 		return 0;
 	}
-	return -EINVAL;
+	
+to_retry:
+	ret = i2c_smbus_write_byte_data(c, reg, value);
+	if (ret < 0) {
+			printk("<##############################>ret : %d , retry: %d \n", ret, retry);
+			if (retry > 0) {
+					retry --;
+					goto to_retry;
+				}
+			}
+	return ret;
 }
 
-static int sr030pc30_queryctrl(struct v4l2_subdev *sd,
-			       struct v4l2_queryctrl *qc)
+/**
+ * sr030pc30_i2c_read_multi: Read (I2C) multiple bytes to the camera sensor
+ * @client: pointer to i2c_client
+ * @cmd: command register
+ * @w_data: data to be written
+ * @w_len: length of data to be written
+ * @r_data: buffer where data is read
+ * @r_len: number of bytes to read
+ *
+ * Returns 0 on success, <0 on error
+ */
+
+/**
+ * sr030pc30_i2c_read: Read (I2C) multiple bytes to the camera sensor
+ * @client: pointer to i2c_client
+ * @cmd: command register
+ * @data: data to be read
+ *
+ * Returns 0 on success, <0 on error
+ */
+static int sr030pc30_i2c_read( struct i2c_client *client, unsigned char subaddr, unsigned char *data)
+{
+	unsigned char buf[1];
+	struct i2c_msg msg = {client->addr, 0, 1, buf};
+
+	int err = 0;
+	buf[0] = subaddr;
+
+	if (!client->adapter)
+		return -EIO;
+
+	err = i2c_transfer(client->adapter, &msg, 1);
+	if (unlikely(err < 0))
+		return -EIO;
+
+	msg.flags = I2C_M_RD;
+
+	err = i2c_transfer(client->adapter, &msg, 1);
+	if (unlikely(err < 0))
+		return -EIO;
+	/*
+	 * Data comes in Little Endian in parallel mode; So there
+	 * is no need for byte swapping here
+	 */
+
+	*data = buf[0];
+
+	return err;
+}
+
+static int32_t sr030pc30_i2c_write_16bit( struct i2c_client *client, u16 packet)
+{
+	int32_t rc = -EFAULT;
+	int retry_count = 0;
+
+	unsigned char buf[2];
+
+	struct i2c_msg msg;
+
+	buf[0] = (u8) (packet >> 8);
+	buf[1] = (u8) (packet & 0xff);
+
+	msg.addr = client->addr;
+	msg.flags = 0;
+	msg.len = 2;
+	msg.buf = buf;
+
+#if defined(CAM_I2C_DEBUG)
+	printk("I2C CHIP ID=0x%x, DATA 0x%x 0x%x\n",
+			client->addr, buf[0], buf[1]);
+#endif
+
+	do {
+		rc = i2c_transfer(client->adapter, &msg, 1);
+		if (rc == 1)
+			return 0;
+		retry_count++;
+		printk("i2c transfer failed, retrying %x err:%d\n",
+		       packet, rc);
+		msleep(3);
+
+	} while (retry_count <= 5);
+
+	return 0;
+}
+
+static int sr030pc30_i2c_wrt_list( struct i2c_client *client, const u16 *regs,
+	int size, char *name)
 {
 	int i;
+	u8 m_delay = 0;
 
-	for (i = 0; i < ARRAY_SIZE(sr030pc30_ctrl); i++)
-		if (qc->id == sr030pc30_ctrl[i].id) {
-			*qc = sr030pc30_ctrl[i];
-			v4l2_dbg(1, debug, sd, "%s id: %d\n",
-				 __func__, qc->id);
-			return 0;
+	u16 temp_packet;
+
+
+	CAM_DEBUG("%s, size=%d", name, size);
+	for (i = 0; i < size; i++) {
+		temp_packet = regs[i];
+
+		if ((temp_packet & SR030PC30_DELAY) == SR030PC30_DELAY) {
+			m_delay = temp_packet & 0xFF;
+			printk("delay = %d", m_delay*10);
+			msleep(m_delay*10);/*step is 10msec*/
+			continue;
 		}
 
-	return -EINVAL;
-}
-
-static inline int sr030pc30_set_bluebalance(struct v4l2_subdev *sd, int value)
-{
-	int ret = cam_i2c_write(sd, MWB_BGAIN_REG, value);
-	if (!ret)
-		to_sr030pc30(sd)->blue_balance = value;
-	return ret;
-}
-
-static inline int sr030pc30_set_redbalance(struct v4l2_subdev *sd, int value)
-{
-	int ret = cam_i2c_write(sd, MWB_RGAIN_REG, value);
-	if (!ret)
-		to_sr030pc30(sd)->red_balance = value;
-	return ret;
-}
-
-static int sr030pc30_s_ctrl(struct v4l2_subdev *sd,
-			    struct v4l2_control *ctrl)
-{
-	int i, ret = 0;
-
-	for (i = 0; i < ARRAY_SIZE(sr030pc30_ctrl); i++)
-		if (ctrl->id == sr030pc30_ctrl[i].id)
-			break;
-
-	if (i == ARRAY_SIZE(sr030pc30_ctrl))
-		return -EINVAL;
-
-	if (ctrl->value < sr030pc30_ctrl[i].minimum ||
-		ctrl->value > sr030pc30_ctrl[i].maximum)
-			return -ERANGE;
-
-	v4l2_dbg(1, debug, sd, "%s: ctrl_id: %d, value: %d\n",
-			 __func__, ctrl->id, ctrl->value);
-
-	switch (ctrl->id) {
-	case V4L2_CID_AUTO_WHITE_BALANCE:
-		sr030pc30_enable_autowhitebalance(sd, ctrl->value);
-		break;
-	case V4L2_CID_BLUE_BALANCE:
-		ret = sr030pc30_set_bluebalance(sd, ctrl->value);
-		break;
-	case V4L2_CID_RED_BALANCE:
-		ret = sr030pc30_set_redbalance(sd, ctrl->value);
-		break;
-	case V4L2_CID_EXPOSURE_AUTO:
-		sr030pc30_enable_autoexposure(sd,
-			ctrl->value == V4L2_EXPOSURE_AUTO);
-		break;
-	case V4L2_CID_EXPOSURE:
-		ret = sr030pc30_set_exposure(sd, ctrl->value);
-		break;
-	default:
-		return -EINVAL;
+		if (sr030pc30_i2c_write_16bit(client,temp_packet) < 0) {
+			printk("fail(0x%x, 0x%x:%d)",
+					client->addr, temp_packet, i);
+			return -EIO;
+		}
+		/*udelay(10);*/
 	}
 
-	return ret;
-}
-
-static int sr030pc30_g_ctrl(struct v4l2_subdev *sd,
-			    struct v4l2_control *ctrl)
-{
-	struct sr030pc30_info *info = to_sr030pc30(sd);
-
-	v4l2_dbg(1, debug, sd, "%s: id: %d\n", __func__, ctrl->id);
-
-	switch (ctrl->id) {
-	case V4L2_CID_AUTO_WHITE_BALANCE:
-		ctrl->value = info->auto_wb;
-		break;
-	case V4L2_CID_BLUE_BALANCE:
-		ctrl->value = info->blue_balance;
-		break;
-	case V4L2_CID_RED_BALANCE:
-		ctrl->value = info->red_balance;
-		break;
-	case V4L2_CID_EXPOSURE_AUTO:
-		ctrl->value = info->auto_exp;
-		break;
-	case V4L2_CID_EXPOSURE:
-		ctrl->value = info->exposure;
-		break;
-	default:
-		return -EINVAL;
-	}
 	return 0;
 }
 
-static int sr030pc30_enum_fmt(struct v4l2_subdev *sd, unsigned int index,
-			      enum v4l2_mbus_pixelcode *code)
+static int sr030pc30_reg_read_and_check(struct i2c_client *client, 
+								unsigned char pagemode, unsigned char addr)
 {
-	if (!code || index >= ARRAY_SIZE(sr030pc30_formats))
-		return -EINVAL;
+	unsigned char val = 0xFF;
 
-	*code = sr030pc30_formats[index].code;
-	return 0;
+	sr030pc30_write_byte(client,0x03,pagemode);//Vincent add here, for p0
+	sr030pc30_i2c_read(client, addr, &val);	
+	
+	printk("-----------sr030pc30_reg_read_check------pagemode:0x%x, reg addr:0x%x, value:0x%x------\n", pagemode, addr, val);
+
+	return val;
 }
 
-static int sr030pc30_g_fmt(struct v4l2_subdev *sd,
-			   struct v4l2_mbus_framefmt *mf)
+
+static int sr030pc30_read(struct i2c_client *c, u16 reg, u16 *value)
 {
-	struct sr030pc30_info *info = to_sr030pc30(sd);
 	int ret;
 
-	if (!mf)
-		return -EINVAL;
+	ret = i2c_smbus_read_byte_data(c, reg);
+	if (ret >= 0)
+		*value = (unsigned char) ret;
+	return ret;
+}
 
-	if (!info->curr_win || !info->curr_fmt) {
-		ret = sr030pc30_set_params(sd);
-		if (ret)
+static int sr030pc30_write(struct i2c_client *c, u16 reg,  u16 value)
+{
+	int ret=0; 
+
+	if(reg == 0xff)
+	{
+		msleep(value);  /* Delay 100ms */
+		return 0;
+	}
+
+	ret = i2c_smbus_write_byte_data(c, reg, value);
+
+	return ret;
+}
+
+static int sr030pc30_write_regs(struct i2c_client *c, tagCamReg16_t *vals, u32 reg_length, char *name)
+{
+	int i = 0, ret=0;
+
+#ifdef CONFIG_LOAD_FILE
+	printk(KERN_NOTICE "======[Length %d : Line %d]====== \n", reg_length, __LINE__);
+	ret = sr030pc30_regs_table_write(c, name);
+#else
+
+	for (i = 0; i < reg_length; i++) {
+		ret = sr030pc30_write(c, vals[i].value>>8, vals[i].value & 0x00FF);
+		if (ret < 0){
+			printk(KERN_NOTICE "======[sr030pc30_write_array %d]====== \n", ret );	
 			return ret;
+		}
 	}
-
-	mf->width	= info->curr_win->width;
-	mf->height	= info->curr_win->height;
-	mf->code	= info->curr_fmt->code;
-	mf->colorspace	= info->curr_fmt->colorspace;
-	mf->field	= V4L2_FIELD_NONE;
-
-	return 0;
-}
-
-/* Return nearest media bus frame format. */
-static const struct sr030pc30_format *try_fmt(struct v4l2_subdev *sd,
-					      struct v4l2_mbus_framefmt *mf)
-{
-	int i = ARRAY_SIZE(sr030pc30_formats);
-
-	sr030pc30_try_frame_size(mf);
-
-	while (i--)
-		if (mf->code == sr030pc30_formats[i].code)
-			break;
-
-	mf->code = sr030pc30_formats[i].code;
-
-	return &sr030pc30_formats[i];
-}
-
-/* Return nearest media bus frame format. */
-static int sr030pc30_try_fmt(struct v4l2_subdev *sd,
-			     struct v4l2_mbus_framefmt *mf)
-{
-	if (!sd || !mf)
-		return -EINVAL;
-
-	try_fmt(sd, mf);
-	return 0;
-}
-
-static int sr030pc30_s_fmt(struct v4l2_subdev *sd,
-			   struct v4l2_mbus_framefmt *mf)
-{
-	struct sr030pc30_info *info = to_sr030pc30(sd);
-
-	if (!sd || !mf)
-		return -EINVAL;
-
-	info->curr_fmt = try_fmt(sd, mf);
-
-	return sr030pc30_set_params(sd);
-}
-
-static int sr030pc30_base_config(struct v4l2_subdev *sd)
-{
-	struct sr030pc30_info *info = to_sr030pc30(sd);
-	int ret;
-	unsigned long expmin, expmax;
-
-	ret = sr030pc30_bulk_write_reg(sd, sr030pc30_base_regs);
-	if (!ret) {
-		info->curr_fmt = &sr030pc30_formats[0];
-		info->curr_win = &sr030pc30_sizes[0];
-		ret = sr030pc30_set_params(sd);
-	}
-	if (!ret)
-		ret = sr030pc30_pwr_ctrl(sd, false, false);
-
-	if (!ret && !info->pdata)
-		return ret;
-
-	expmin = EXPOS_MIN_MS * info->pdata->clk_rate / (8 * 1000);
-	expmax = EXPOS_MAX_MS * info->pdata->clk_rate / (8 * 1000);
-
-	v4l2_dbg(1, debug, sd, "%s: expmin= %lx, expmax= %lx", __func__,
-		 expmin, expmax);
-
-	/* Setting up manual exposure time range */
-	ret = cam_i2c_write(sd, EXP_MMINH_REG, expmin >> 8 & 0xFF);
-	if (!ret)
-		ret = cam_i2c_write(sd, EXP_MMINL_REG, expmin & 0xFF);
-	if (!ret)
-		ret = cam_i2c_write(sd, EXP_MMAXH_REG, expmax >> 16 & 0xFF);
-	if (!ret)
-		ret = cam_i2c_write(sd, EXP_MMAXM_REG, expmax >> 8 & 0xFF);
-	if (!ret)
-		ret = cam_i2c_write(sd, EXP_MMAXL_REG, expmax & 0xFF);
-
+#endif
 	return ret;
 }
 
-static int sr030pc30_s_power(struct v4l2_subdev *sd, int on)
+#ifdef CONFIG_LOAD_FILE
+
+#include <linux/vmalloc.h>
+#include <linux/fs.h>
+#include <linux/mm.h>
+#include <linux/slab.h>
+#include <asm/uaccess.h>
+
+static char *sr030pc30_regs_table = NULL;
+
+static int sr030pc30_regs_table_size;
+
+static int sr030pc30_regs_table_init(void)
+{
+	struct file *filp;
+
+	char *dp;
+	long l;
+	loff_t pos;
+	int ret;
+	mm_segment_t fs = get_fs();
+
+	printk("***** %s %d\n", __func__, __LINE__);
+
+	set_fs(get_ds());
+
+	filp = filp_open("/storage/extSdCard/sr030pc30_regs2.h", O_RDONLY, 0);
+	if (IS_ERR(filp)) {
+		printk("***** file open error\n");
+		return 1;
+	}
+	else
+		printk(KERN_ERR "***** File is opened \n");
+	
+
+	l = filp->f_path.dentry->d_inode->i_size;	
+
+	printk("l = %ld\n", l);
+
+	dp = kmalloc(l, GFP_KERNEL);
+	if (dp == NULL) {
+		printk("*****Out of Memory\n");
+		filp_close(filp, current->files);
+		return 1;
+	}
+ 
+	pos = 0;
+
+	memset(dp, 0, l);
+
+	ret = vfs_read(filp, (char __user *)dp, l, &pos);
+	if (ret != l) {
+		printk("*****Failed to read file ret = %d\n", ret);
+		kfree(dp);
+		filp_close(filp, current->files);
+		return 1;
+	}
+
+	filp_close(filp, current->files);
+	set_fs(fs);
+
+	sr030pc30_regs_table = dp;
+	sr030pc30_regs_table_size = l;
+	*((sr030pc30_regs_table + sr030pc30_regs_table_size) - 1) = '\0';
+
+	printk("*****Compeleted %s %d\n", __func__, __LINE__);
+	return 0;
+}
+
+void sr030pc30_regs_table_exit(void)
+{
+	/* release allocated memory when exit preview */
+	if (sr030pc30_regs_table) {
+		kfree(sr030pc30_regs_table);
+		sr030pc30_regs_table = NULL;
+		sr030pc30_regs_table_size = 0;
+	}
+	else
+		printk("*****sr030pc30_regs_table is already null\n");
+	
+	printk("*****%s done\n", __func__);
+
+}
+
+static int sr030pc30_regs_table_write(struct i2c_client *c, char *name)
+{
+	char *start, *end, *reg;//, *data;	
+	unsigned short value;
+	char data_buf[7];
+
+	value = 0;
+
+	printk("*****%s entered.\n", __func__);
+
+	*(data_buf + 6) = '\0';
+
+	start = strstr(sr030pc30_regs_table, name);
+
+	end = strstr(start, "};");
+
+	while (1) {	
+		/* Find Address */	
+		reg = strstr(start,"0x");		
+		if (reg)
+			start = (reg + 7);
+		if ((reg == NULL) || (reg > end))
+			break;
+
+		/* Write Value to Address */	
+			memcpy(data_buf, (reg), 6);	
+			value = (unsigned short)simple_strtoul(data_buf, NULL, 16); 
+			printk("value 0x%04x\n", value);
+
+			{
+				if(sr030pc30_write(c, value>>8, value & 0x00FF) < 0 )
+				{
+					printk("<=PCAM=> %s fail on sensor_write\n", __func__);
+				}
+			}
+	}
+	printk(KERN_ERR "***** Writing [%s] Ended\n",name);
+
+	return 0;
+}
+
+#endif  /* CONFIG_LOAD_FILE */
+
+
+static int sr030pc30_detect(struct i2c_client *client)
+{
+	unsigned char ID = 0xFFFF;
+
+	printk("-----------sr030pc30_detect------client->addr:0x%x------\n", client->addr);
+	
+	ID = sr030pc30_reg_read_and_check(client, 0x00, 0x04);
+	
+	if(ID == 0x8c) 
+	{
+		printk(SR030PC30_MOD_NAME"========================================\n");
+		printk(SR030PC30_MOD_NAME"   [VGA CAM] vendor_id ID : 0x%04X\n", ID);
+		printk(SR030PC30_MOD_NAME"========================================\n");
+	} 
+	else 
+	{
+		printk(SR030PC30_MOD_NAME"-------------------------------------------------\n");
+		printk(SR030PC30_MOD_NAME"   [VGA CAM] sensor detect failure !!\n");
+		printk(SR030PC30_MOD_NAME"   ID : 0x%04X[ID should be 0x8C]\n", ID);
+		printk(SR030PC30_MOD_NAME"-------------------------------------------------\n");
+		return -EINVAL;
+	}	
+
+	return 0;
+}
+
+static void sr030pc30_reset(struct i2c_client *client)
+{
+	msleep(1);
+}
+
+static int sr030pc30_init(struct v4l2_subdev *sd, u32 val)
+{
+	struct i2c_client *c = v4l2_get_subdevdata(sd);
+	struct sr030pc30_sensor *sensor = &sr030pc30;
+	int result =0;
+	
+#ifdef CONFIG_LOAD_FILE
+	result = sr030pc30_regs_table_init();
+	if (result > 0)
+	{		
+		Cam_Printk(KERN_ERR "***** sr030pc30_regs_table_init  FAILED. Check the Filie in MMC\n");
+		return result;
+	}
+	result =0;
+#endif
+	
+	result=sr030pc30_write_regs(c,sr030pc30_Init_Reg,ARRAY_SIZE(sr030pc30_Init_Reg),"sr030pc30_Init_Reg");
+
+	sensor->state 		= SR030PC30_STATE_PREVIEW;
+	sensor->mode 		= SR030PC30_MODE_CAMERA;
+	sensor->effect		= EFFECT_OFF;
+	sensor->iso 		= ISO_AUTO;	
+	sensor->photometry	= METERING_CENTER;	
+	sensor->ev		= EV_DEFAULT;
+	sensor->contrast	= CONTRAST_DEFAULT;
+	sensor->saturation	= SATURATION_DEFAULT;	
+	sensor->sharpness	= SHARPNESS_DEFAULT;
+	sensor->wb		= WB_AUTO;
+	sensor->scene		= SCENE_OFF;
+	sensor->quality		= QUALITY_SUPERFINE;
+	sensor->fps			= FPS_auto;
+	sensor->pix.width		=VGA_WIDTH;
+	sensor->pix.height		=VGA_HEIGHT;
+	sensor->pix.pixelformat = V4L2_PIX_FMT_YUV420;
+	sensor->initial			= SR030PC30_STATE_INITIAL;
+	
+	Cam_Printk(KERN_NOTICE "===sr030pc30_init===[%s  %d]====== \n", __FUNCTION__, __LINE__);
+
+	return result;
+}
+
+
+/*
+ * Store information about the video data format.  The color matrix
+ * is deeply tied into the format, so keep the relevant values here.
+ * The magic matrix nubmers come from OmniVision.
+ */
+static struct sr030pc30_format_struct {
+	__u8 *desc;
+	__u32 pixelformat;
+	int bpp;   /* bits per pixel */
+} sr030pc30_formats[] = {
+	{
+		.desc		= "YUYV 4:2:2",
+		.pixelformat	= V4L2_PIX_FMT_YUYV,
+		.bpp		= 16,
+	},
+	{
+		.desc		= "YUYV422 planar",
+		.pixelformat	= V4L2_PIX_FMT_YUV422P,
+		.bpp		= 16,
+	},
+	{
+		.desc           = "YUYV 4:2:0",
+		.pixelformat    = V4L2_PIX_FMT_YUV420,
+		.bpp            = 12,
+	},
+	{
+		.desc           = "JFIF JPEG",
+		.pixelformat    = V4L2_PIX_FMT_JPEG,
+		.bpp            = 16,
+	},
+};
+#define N_SR030PC30_FMTS ARRAY_SIZE(sr030pc30_formats)
+/*
+ * Then there is the issue of window sizes.  Try to capture the info here.
+ */
+
+static struct sr030pc30_win_size {
+	int	width;
+	int	height;
+} sr030pc30_win_sizes[] = {
+	/* VGA */
+	{
+		.width		= VGA_WIDTH,
+		.height		= VGA_HEIGHT,
+	},
+	/* 640x360 */
+	{
+		.width		= VGA_WIDTH,
+		.height		= HEIGHT_360,
+	},
+
+	/* CIF */
+	{
+		.width		= CIF_WIDTH,
+		.height		= CIF_HEIGHT,
+	},
+	/* QVGA */
+	{
+		.width		= QVGA_WIDTH,
+		.height		= QVGA_HEIGHT,
+	},
+	/* QCIF */
+	{
+		.width		= QCIF_WIDTH,
+		.height		= QCIF_HEIGHT,
+	},
+	/* QQVGA */
+	{
+		.width		= QQVGA_WIDTH,
+		.height		= QQVGA_HEIGHT,
+	},
+
+
+};
+
+static struct sr030pc30_win_size  sr030pc30_win_sizes_jpeg[] = {
+
+	/* VGA */
+	{
+		.width		= VGA_WIDTH,
+		.height		= VGA_HEIGHT,
+	},
+	/* CIF */
+	{
+		.width		= CIF_WIDTH,
+		.height		= CIF_HEIGHT,
+	},
+	/* QVGA */
+	{
+		.width		= QVGA_WIDTH,
+		.height		= QVGA_HEIGHT,
+	},
+	/* QCIF */
+	{
+		.width		= QCIF_WIDTH,
+		.height		= QCIF_HEIGHT,
+	},
+	/* QQVGA */
+	{
+		.width		= QQVGA_WIDTH,
+		.height		= QQVGA_HEIGHT,
+	},
+
+};
+
+/* Find a data format by a pixel code in an array */
+static const struct sr030pc30_datafmt *sr030pc30_find_datafmt(
+	enum v4l2_mbus_pixelcode code, const struct sr030pc30_datafmt *fmt,
+	int n)
+{
+	int i;
+	for (i = 0; i < n; i++)
+		if (fmt[i].code == code)
+			return fmt + i;
+
+	return NULL;
+}
+
+#define N_WIN_SIZES (ARRAY_SIZE(sr030pc30_win_sizes))
+
+
+static int sr030pc30_querycap(struct i2c_client *c, struct v4l2_capability *argp)
+{
+	if(!argp){
+		printk(KERN_ERR" argp is NULL %s %d \n", __FUNCTION__, __LINE__);
+		return -EINVAL;
+	}
+	strcpy(argp->driver, "sr030pc30");
+	strcpy(argp->card, "TD/TTC");
+	return 0;
+}
+
+static int sr030pc30_enum_fmt(struct v4l2_subdev *sd,
+		unsigned int index,
+		enum v4l2_mbus_pixelcode *code)
+{
+	if (index >= ARRAY_SIZE(sr030pc30_colour_fmts))
+		return -EINVAL;
+	*code = sr030pc30_colour_fmts[index].code;
+	return 0;
+}
+
+static int sr030pc30_enum_fsizes(struct v4l2_subdev *sd,
+				struct v4l2_frmsizeenum *fsize)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
-	struct sr030pc30_info *info = to_sr030pc30(sd);
-	const struct sr030pc30_platform_data *pdata = info->pdata;
-	int ret;
 
-	if (pdata == NULL) {
-		WARN(1, "No platform data!\n");
+	if (!fsize)
+		return -EINVAL;
+
+	fsize->type = V4L2_FRMSIZE_TYPE_DISCRETE;
+
+	/* abuse pixel_format, in fact, it is xlate->code*/
+	switch (fsize->pixel_format) {
+	case V4L2_MBUS_FMT_UYVY8_2X8:
+	case V4L2_MBUS_FMT_VYUY8_2X8:
+		if (fsize->index >= ARRAY_SIZE(sr030pc30_win_sizes)) {
+			dev_warn(&client->dev,
+				"sr030pc30 unsupported size %d!\n", fsize->index);
+			return -EINVAL;
+		}
+		fsize->discrete.height = sr030pc30_win_sizes[fsize->index].height;
+		fsize->discrete.width = sr030pc30_win_sizes[fsize->index].width;
+		break;
+
+	default:
+		dev_err(&client->dev, "sr030pc30 unsupported format!\n");
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static int sr030pc30_try_fmt(struct v4l2_subdev *sd,
+			   struct v4l2_mbus_framefmt *mf)
+{
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	const struct sr030pc30_datafmt *fmt;
+	int i;
+
+	fmt = sr030pc30_find_datafmt(mf->code, sr030pc30_colour_fmts,
+				   ARRAY_SIZE(sr030pc30_colour_fmts));
+	if (!fmt) {
+		dev_err(&client->dev, "sr030pc30 unsupported color format!\n");
 		return -EINVAL;
 	}
 
-	/*
-	 * Put sensor into power sleep mode before switching off
-	 * power and disabling MCLK.
-	 */
-	if (!on)
-		sr030pc30_pwr_ctrl(sd, false, true);
+	mf->field = V4L2_FIELD_NONE;
 
-	/* set_power controls sensor's power and clock */
-	if (pdata->set_power) {
-		ret = pdata->set_power(&client->dev, on);
-		if (ret)
-			return ret;
+	switch (mf->code) {
+	case V4L2_MBUS_FMT_UYVY8_2X8:
+	case V4L2_MBUS_FMT_VYUY8_2X8:
+		/* enum the supported sizes*/
+		for (i = 0; i < ARRAY_SIZE(sr030pc30_win_sizes); i++)
+			if (mf->width == sr030pc30_win_sizes[i].width
+				&& mf->height == sr030pc30_win_sizes[i].height)
+				break;
+
+		if (i >= ARRAY_SIZE(sr030pc30_win_sizes)) {
+			dev_err(&client->dev, "sr030pc30 unsupported window"
+				"size, w%d, h%d!\n", mf->width, mf->height);
+			return -EINVAL;
+		}
+		mf->colorspace = V4L2_COLORSPACE_JPEG;
+		break;
+
+	default:
+		dev_err(&client->dev, "sr030pc30 doesn't support code"
+				"%d\n", mf->code);
+		break;
+	}
+	return 0;
+}
+
+
+/*
+ * Set a format.
+ */
+
+static int sr030pc30_s_fmt(struct v4l2_subdev *sd, struct v4l2_mbus_framefmt *mf)
+{
+	struct i2c_client *c = v4l2_get_subdevdata(sd);
+	const struct sr030pc30_datafmt *fmt;
+	struct sr030pc30_sensor *sensor = &sr030pc30;
+
+	printk("[DHL]sr030pc30_s_fmt..!!! \n");
+	printk("[DHL]mf->code : [%d] \n",mf->code);
+	printk("[DHL]mf->width : [%d] \n",mf->width);
+
+	fmt =sr030pc30_find_datafmt(mf->code,sr030pc30_colour_fmts,
+				   ARRAY_SIZE(sr030pc30_colour_fmts));
+	if (!fmt) {
+		dev_err(&c->dev, "sr030pc30 unsupported color format!\n");
+		return -EINVAL;
 	}
 
-	if (on) {
-		ret = sr030pc30_base_config(sd);
+	if((mf->width==640)&&(sensor->preview_size==PREVIEW_SIZE_640_480)) gVGA_flag=TRUE;
+
+	switch (mf->code) {
+	case V4L2_MBUS_FMT_UYVY8_2X8:
+	case V4L2_MBUS_FMT_VYUY8_2X8:
+		sensor->pix.pixelformat = V4L2_PIX_FMT_YUV422P;
+		switch (mf->width)
+		{							
+			case QCIF_WIDTH:
+					sensor->preview_size=PREVIEW_SIZE_176_144;
+				sr030pc30_write_regs(c,sr030pc30_preview_176x144,ARRAY_SIZE(sr030pc30_preview_176x144),"sr030pc30_preview_176x144");
+					Cam_Printk(KERN_ERR"choose qcif(176x144) setting \n");
+				break;
+
+			case QVGA_WIDTH:
+					sensor->preview_size=PREVIEW_SIZE_320_240;
+				sr030pc30_write_regs(c,sr030pc30_preview_320x240,ARRAY_SIZE(sr030pc30_preview_320x240),"sr030pc30_preview_320x240");			
+					Cam_Printk(KERN_ERR"choose qvga(352x288) setting \n");
+				break;
+
+			case CIF_WIDTH:
+					sensor->preview_size=PREVIEW_SIZE_352_288;
+				sr030pc30_write_regs(c,sr030pc30_preview_352x288,ARRAY_SIZE(sr030pc30_preview_352x288),"sr030pc30_preview_352x288");			
+					Cam_Printk(KERN_ERR"choose qvga(352x288) setting \n");
+				break;
+
+			case VGA_WIDTH:
+					if(gVGA_flag==FALSE){
+						if(mf->height == VGA_HEIGHT) 
+						{
+							sensor->preview_size=PREVIEW_SIZE_640_480;
+							sr030pc30_write_regs(c,sr030pc30_preview_640x480,ARRAY_SIZE(sr030pc30_preview_640x480),"sr030pc30_preview_640x480");
+							Cam_Printk(KERN_ERR"choose VGA(640x480) setting \n");
+						} else if(mf->height == HEIGHT_360) {
+#if defined(CONFIG_MACH_WILCOX)
+							sensor->preview_size=PREVIEW_SIZE_640_360;
+							sr030pc30_write_regs(c,sr030pc30_preview_640x360,ARRAY_SIZE(sr030pc30_preview_640x360),"sr030pc30_preview_640x360");
+							Cam_Printk(KERN_ERR"choose VGA(640x360) setting \n");
+#else
+							Cam_Printk(KERN_ERR"640x360 resolution is not support \n");
+#endif
+						}
+					}
+					else{
+						if( sr030pc30_cam_state == SR030PC30_STATE_SMART_STAY ){
+							sr030pc30_write_regs(c,sr030pc30_preview_640x480,ARRAY_SIZE(sr030pc30_preview_640x480),"sr030pc30_preview_640x480");
+							Cam_Printk(KERN_ERR"choose Smart stay setting \n");
+						}
+						else{
+						gVGA_flag=FALSE;
+						Cam_Printk(KERN_ERR" VGA(640x480) Setting \n");
+					}
+					}
+				break;
+
+			default:
+				printk("\n unsupported size for preview! %s %d w=%d h=%d\n", __FUNCTION__, __LINE__, mf->width, mf->height);
+				goto out;
+				break;
+		    }
+		break;
+			
+		default:
+			printk("\n unsupported format! %s %d\n", __FUNCTION__, __LINE__);
+			break;
+	}
+	
+	if(gFPS_flag==TRUE){
+#ifdef CONFIG_MACH_HELANDELOS
+		if(gFPS_value==0){
+			Cam_Printk(KERN_NOTICE "[DHL] FPS setting is called, But NOT Setting: [%d]..\n",gFPS_value);
+		}
+		else{
+			Cam_Printk(KERN_NOTICE "[DHL] FPS setting is called : [%d]..\n",gFPS_value);
+		sr030pc30_t_fps(c,gFPS_value);
+		}
+#else
+		Cam_Printk(KERN_NOTICE "[DHL] FPS setting is called : [%d]..\n",gFPS_value);
+		sr030pc30_t_fps(c,gFPS_value);
+#endif
+		
+
+		gFPS_flag=FALSE;
+	}
+out:
+	return 0;
+}
+
+/*
+ * Implement G/S_PARM.  There is a "high quality" mode we could try
+ * to do someday; for now, we just do the frame rate tweak.
+ */
+static int sr030pc30_g_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *parms)
+{
+	struct v4l2_captureparm *cp = &parms->parm.capture;
+
+	if (parms->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
+		return -EINVAL;
+	
+	memset(cp, 0, sizeof(struct v4l2_captureparm));
+	cp->capability = V4L2_CAP_TIMEPERFRAME;
+	cp->timeperframe.numerator = 1;
+	cp->timeperframe.denominator = SR030PC30_FRAME_RATE;
+	
+	return 0;
+}
+
+static int sr030pc30_s_parm(struct i2c_client *c, struct v4l2_streamparm *parms)
+{
+	return 0;
+}
+
+static int sr030pc30_t_saturation(struct i2c_client *client, int value)
+{
+	struct sr030pc30_sensor *sensor = &sr030pc30;
+	s32 old_value = (s32)sensor->saturation;
+
+	Cam_Printk(KERN_NOTICE "%s is called... [old:%d][new:%d]\n",__func__, old_value, value);
+
+	switch(value)
+	{
+		case SATURATION_MINUS_2:
+			sr030pc30_write_regs(client,sr030pc30_saturation_m2,ARRAY_SIZE(sr030pc30_saturation_m2),"sr030pc30_saturation_m2");	
+			break;
+
+		case SATURATION_MINUS_1:
+			sr030pc30_write_regs(client,sr030pc30_saturation_m1,ARRAY_SIZE(sr030pc30_saturation_m2),"sr030pc30_saturation_m2");	
+			break;		
+
+		case SATURATION_DEFAULT:
+			sr030pc30_write_regs(client,sr030pc30_saturation_default,ARRAY_SIZE(sr030pc30_saturation_default),"sr030pc30_saturation_default");	
+			break;	
+
+		case SATURATION_PLUS_1:
+			sr030pc30_write_regs(client,sr030pc30_saturation_p1,ARRAY_SIZE(sr030pc30_saturation_p1),"sr030pc30_saturation_p1");	
+			break;		
+
+		case SATURATION_PLUS_2:
+			sr030pc30_write_regs(client,sr030pc30_saturation_p2,ARRAY_SIZE(sr030pc30_saturation_p2),"sr030pc30_saturation_p2");	
+			break;	
+
+		default:
+			printk(SR030PC30_MOD_NAME "Saturation value is not supported!!!\n");
+		return -EINVAL;
+	}
+
+	sensor->saturation = value;
+	Cam_Printk(KERN_NOTICE "%s success [Saturation e:%d]\n",__func__, sensor->saturation);
+	return 0;
+}
+
+static int sr030pc30_q_saturation(struct i2c_client *client, __s32 *value)
+{
+	struct sr030pc30_sensor *sensor = &sr030pc30;
+
+	Cam_Printk(KERN_NOTICE "sr030pc30_q_saturation is called...\n"); 
+	value = sensor->saturation;
+	return 0;
+}
+
+
+static int sr030pc30_t_brightness(struct i2c_client *client, int value)
+{
+	struct sr030pc30_sensor *sensor = &sr030pc30;
+	s32 old_value = (s32)sensor->ev;
+
+	Cam_Printk(KERN_NOTICE "%s is called... [old:%d][new:%d]\n",__func__, old_value, value);
+
+	switch(value)
+	{
+		case EV_MINUS_4:
+			sr030pc30_write_regs(client,sr030pc30_brightness_M4,ARRAY_SIZE(sr030pc30_brightness_M4),"sr030pc30_brightness_M4");	
+			break;
+
+		case EV_MINUS_3:
+			sr030pc30_write_regs(client,sr030pc30_brightness_M3,ARRAY_SIZE(sr030pc30_brightness_M3),"sr030pc30_brightness_M3");	
+			break;		
+
+		case EV_MINUS_2:
+			sr030pc30_write_regs(client,sr030pc30_brightness_M2,ARRAY_SIZE(sr030pc30_brightness_M2),"sr030pc30_brightness_M2");	
+			break;	
+
+		case EV_MINUS_1:
+			sr030pc30_write_regs(client,sr030pc30_brightness_M1,ARRAY_SIZE(sr030pc30_brightness_M1),"sr030pc30_brightness_M4");	
+			break;	
+		
+		case EV_DEFAULT:
+			sr030pc30_write_regs(client,sr030pc30_brightness_default,ARRAY_SIZE(sr030pc30_brightness_default),"sr030pc30_brightness_default");	
+			break;
+
+		case EV_PLUS_1:
+			sr030pc30_write_regs(client,sr030pc30_brightness_P1,ARRAY_SIZE(sr030pc30_brightness_P1),"sr030pc30_brightness_P1");	
+			break;
+
+		case EV_PLUS_2:
+			sr030pc30_write_regs(client,sr030pc30_brightness_P2,ARRAY_SIZE(sr030pc30_brightness_P2),"sr030pc30_brightness_P2");	
+			break;
+
+		case EV_PLUS_3:
+			sr030pc30_write_regs(client,sr030pc30_brightness_P3,ARRAY_SIZE(sr030pc30_brightness_P3),"sr030pc30_brightness_P3");	
+			break;
+
+		case EV_PLUS_4:
+			sr030pc30_write_regs(client,sr030pc30_brightness_P4,ARRAY_SIZE(sr030pc30_brightness_P4),"sr030pc30_brightness_P4");	
+			break;
+
+		default:
+			printk(SR030PC30_MOD_NAME "Brightness value is not supported!!!\n");
+		return -EINVAL;
+	}
+
+	sensor->ev = value;
+	Cam_Printk(KERN_NOTICE "%s success [Brightness:%d]\n",__func__, sensor->ev);
+	return 0;
+}
+
+static int sr030pc30_q_brightness(struct i2c_client *client, __s32 *value)
+{
+	struct sr030pc30_sensor *sensor = &sr030pc30;
+
+	Cam_Printk(KERN_NOTICE "sr030pc30_q_brightness is called...\n"); 
+	value = sensor->ev;
+	return 0;
+}
+
+static int sr030pc30_t_contrast(struct i2c_client *client, int value)
+{
+	struct sr030pc30_sensor *sensor = &sr030pc30;
+	s32 old_value = (s32)sensor->contrast;
+
+	Cam_Printk(KERN_NOTICE "%s is called... [old:%d][new:%d]\n",__func__, old_value, value);
+
+	switch(value)
+	{
+		case CONTRAST_MINUS_2:
+			sr030pc30_write_regs(client,sr030pc30_contrast_m2,ARRAY_SIZE(sr030pc30_contrast_m2),"sr030pc30_contrast_m2");	
+			break;
+
+		case CONTRAST_MINUS_1:
+			sr030pc30_write_regs(client,sr030pc30_contrast_m2,ARRAY_SIZE(sr030pc30_contrast_m2),"sr030pc30_contrast_m2");	
+			break;		
+
+		case CONTRAST_DEFAULT:
+			sr030pc30_write_regs(client,sr030pc30_contrast_default,ARRAY_SIZE(sr030pc30_contrast_default),"sr030pc30_contrast_default");	
+			break;	
+
+		case CONTRAST_PLUS_1:
+			sr030pc30_write_regs(client,sr030pc30_contrast_p1,ARRAY_SIZE(sr030pc30_contrast_p1),"sr030pc30_contrast_p1");	
+			break;		
+
+		case CONTRAST_PLUS_2:
+			sr030pc30_write_regs(client,sr030pc30_contrast_p2,ARRAY_SIZE(sr030pc30_contrast_p2),"sr030pc30_contrast_p2");	
+			break;	
+
+		default:
+			printk(SR030PC30_MOD_NAME "contrast value is not supported!!!\n");
+		return -EINVAL;
+	}
+
+	sensor->contrast = value;
+	Cam_Printk(KERN_NOTICE "%s success [Contrast e:%d]\n",__func__, sensor->contrast);
+	return 0;
+}
+
+static int sr030pc30_q_contrast(struct i2c_client *client, __s32 *value)
+{
+	struct sr030pc30_sensor *sensor = &sr030pc30;
+
+	Cam_Printk(KERN_NOTICE "sr030pc30_q_contrast is called...\n"); 
+	value = sensor->contrast;
+	return 0;
+}
+
+static int sr030pc30_t_whitebalance(struct i2c_client *client, int value)
+{
+	struct sr030pc30_sensor *sensor = &sr030pc30;
+	s32 old_value = (s32)sensor->wb;
+
+	Cam_Printk(KERN_NOTICE "%s is called... [old:%d][new:%d]\n",__func__, old_value, value);
+
+	switch(value)
+	{
+		case WB_AUTO:
+			sr030pc30_write_regs(client,sr030pc30_WB_Auto,ARRAY_SIZE(sr030pc30_WB_Auto),"sr030pc30_WB_Auto");	
+			break;
+
+		case WB_DAYLIGHT:
+			sr030pc30_write_regs(client,sr030pc30_WB_Daylight,ARRAY_SIZE(sr030pc30_WB_Daylight),"sr030pc30_WB_Daylight");	
+			break;		
+
+		case WB_CLOUDY:
+			sr030pc30_write_regs(client,sr030pc30_WB_Cloudy,ARRAY_SIZE(sr030pc30_WB_Cloudy),"sr030pc30_WB_Cloudy");	
+			break;	
+
+		case WB_FLUORESCENT:
+			sr030pc30_write_regs(client,sr030pc30_WB_Fluorescent,ARRAY_SIZE(sr030pc30_WB_Fluorescent),"sr030pc30_WB_Fluorescent");	
+			break;	
+		
+		case WB_INCANDESCENT:
+			sr030pc30_write_regs(client,sr030pc30_WB_Incandescent,ARRAY_SIZE(sr030pc30_WB_Incandescent),"sr030pc30_WB_Incandescent");	
+			break;
+
+		default:
+			printk(SR030PC30_MOD_NAME "White Balance value is not supported!!!\n");
+		return -EINVAL;
+	}
+
+	sensor->wb = value;
+	Cam_Printk(KERN_NOTICE "%s success [White Balance e:%d]\n",__func__, sensor->wb);
+	return 0;
+}
+
+static int sr030pc30_q_whitebalance(struct i2c_client *client, __s32 *value)
+{
+	struct sr030pc30_sensor *sensor = &sr030pc30;
+
+	Cam_Printk(KERN_NOTICE "sr030pc30_get_whitebalance is called...\n"); 
+	value = sensor->wb;
+	return 0;
+}
+
+static int sr030pc30_t_effect(struct i2c_client *client, int value)
+{
+	struct sr030pc30_sensor *sensor = &sr030pc30;
+	s32 old_value = (s32)sensor->effect;
+
+	Cam_Printk(KERN_NOTICE "%s is called... [old:%d][new:%d]\n",__func__, old_value, value);
+
+	switch(value)
+	{
+		case EFFECT_OFF:
+			sr030pc30_write_regs(client,sr030pc30_Effect_Normal,ARRAY_SIZE(sr030pc30_Effect_Normal),"sr030pc30_Effect_Normal");	
+			break;
+
+		case EFFECT_MONO:
+			sr030pc30_write_regs(client,sr030pc30_Effect_Gray,ARRAY_SIZE(sr030pc30_Effect_Gray),"sr030pc30_Effect_Gray");	
+			break;		
+
+		case EFFECT_SEPIA:
+			sr030pc30_write_regs(client,sr030pc30_Effect_Sepia,ARRAY_SIZE(sr030pc30_Effect_Sepia),"sr030pc30_Effect_Sepia");	
+			break;	
+
+		case EFFECT_NEGATIVE:
+			sr030pc30_write_regs(client,sr030pc30_Effect_Negative,ARRAY_SIZE(sr030pc30_Effect_Negative),"sr030pc30_Effect_Negative");	
+			break;	
+		
+		case EFFECT_AQUA:
+			sr030pc30_write_regs(client,sr030pc30_Effect_Aqua,ARRAY_SIZE(sr030pc30_Effect_Aqua),"sr030pc30_Effect_Aqua");	
+			break;
+
+		default:
+			printk(SR030PC30_MOD_NAME "Sketch value is not supported!!!\n");
+		return -EINVAL;
+	}
+
+	sensor->effect = value;
+	Cam_Printk(KERN_NOTICE "%s success [Effect e:%d]\n",__func__, sensor->effect);
+	return 0;
+}
+
+static int sr030pc30_q_effect(struct i2c_client *client, __s32 *value)
+{
+	struct sr030pc30_sensor *sensor = &sr030pc30;
+
+	Cam_Printk(KERN_NOTICE "sr030pc30_q_effect is called...\n"); 
+	value = sensor->effect;
+	return 0;
+}
+
+static int sr030pc30_t_fps(struct i2c_client *client, int value)
+{
+	struct sr030pc30_sensor *sensor = &sr030pc30;
+#if defined(CONFIG_MACH_WILCOX) || defined(CONFIG_MACH_CT01) || defined(CONFIG_MACH_CS05) || defined(CONFIG_MACH_BAFFINQ) || defined(CONFIG_MACH_GOLDEN)
+	u32 Exptime,Expmax;
+	u16 expdata0,expdata1,expdata2;
+#endif
+	s32 old_value = (s32)sensor->fps;
+
+	Cam_Printk(KERN_NOTICE "%s is called... [old:%d][new:%d]\n",__func__, old_value, value);
+	if(old_value == value){
+		Cam_Printk(KERN_NOTICE "%s new value is same as existing value\n", __func__);
+		return 0;
+	}
+
+	switch(value)
+	{
+
+	case FPS_auto:
+#if defined(CONFIG_MACH_WILCOX) || defined(CONFIG_MACH_CT01) || defined(CONFIG_MACH_CS05) || defined(CONFIG_MACH_BAFFINQ) || defined(CONFIG_MACH_GOLDEN)
+		sr030pc30_write(client,0x03,0x20);
+		sr030pc30_read(client, 0x88, &expdata0);
+		sr030pc30_read(client, 0x89, &expdata1);
+		sr030pc30_read(client, 0x8A, &expdata2);
+		Expmax = ((expdata0 << 16) | (expdata1 << 8) | (expdata2));
+		sr030pc30_read(client, 0x80, &expdata0);
+		sr030pc30_read(client, 0x81, &expdata1);
+		sr030pc30_read(client, 0x82, &expdata2);
+		Exptime = ((expdata0 << 16) | (expdata1 << 8) | (expdata2));
+		printk("%s : EXPTIME = %x, EXPMAX = %x\n",__func__, Exptime,Expmax);
+		if(Exptime < Expmax)
+			sr030pc30_write_regs(client,sr030pc30_Auto_fps_normal,ARRAY_SIZE(sr030pc30_Auto_fps_normal),"sr030pc30_Auto_fps_normal");
+		else
+			sr030pc30_write_regs(client,sr030pc30_Auto_fps_dark,ARRAY_SIZE(sr030pc30_Auto_fps_dark),"sr030pc30_Auto_fps_dark");
+#else
+		sr030pc30_write_regs(client,sr030pc30_Auto_fps,ARRAY_SIZE(sr030pc30_Auto_fps),"sr030pc30_Auto_fps");
+#endif
+
+		break;
+
+	case FPS_7:
+		sr030pc30_write_regs(client,sr030pc30_7fps,ARRAY_SIZE(sr030pc30_7fps),"sr030pc30_7fps");	
+		break;
+
+		case FPS_10:
+			sr030pc30_write_regs(client,sr030pc30_10fps,ARRAY_SIZE(sr030pc30_10fps),"sr030pc30_10fps");	
+			break;
+
+		case FPS_15:
+			sr030pc30_write_regs(client,sr030pc30_15fps,ARRAY_SIZE(sr030pc30_15fps),"sr030pc30_15fps");	
+			break;		
+
+		case FPS_20:
+			sr030pc30_write_regs(client,sr030pc30_20fps,ARRAY_SIZE(sr030pc30_20fps),"sr030pc30_20fps");	
+			break;			
+
+		default:
+			printk(KERN_NOTICE "quality value is not supported!!!\n");
+		return -EINVAL;
+	}
+
+	sensor->fps = value;
+	Cam_Printk(KERN_NOTICE "%s success [FPS e:%d]\n",__func__, sensor->fps);
+	return 0;
+}
+
+static int sr030pc30_q_fps(struct i2c_client *client, __s32 *value)
+{
+	struct sr030pc30_sensor *sensor = &sr030pc30;
+
+	Cam_Printk(KERN_NOTICE "sr030pc30_q_fps is called...\n"); 
+	value = sensor->fps;
+	return 0;
+}
+
+static int sr030pc30_ESD_check(struct i2c_client *client, __s32 *value)
+{	
+	Cam_Printk(KERN_NOTICE "sr030pc30_ESD_check() \r\n");
+
+	*value = ESD_NONE;
+
+	return 0;
+
+}
+
+static int sr030pc30_t_dtp_on(struct i2c_client *client)
+{
+	Cam_Printk(KERN_NOTICE "sr030pc30_t_dtp_on is called...\n"); 
+
+	gDTP_flag = TRUE;
+	
+	//sr030pc30_write_regs(client,sr030pc30_DTP_On,ARRAY_SIZE(sr030pc30_DTP_On),"sr030pc30_DTP_On");	
+	return 0;
+}
+
+static int sr030pc30_t_dtp_stop(struct i2c_client *client)
+{
+	Cam_Printk(KERN_NOTICE "sr030pc30_t_dtp_stop is called...\n"); 
+	sr030pc30_write_regs(client,sr030pc30_DTP_Off,ARRAY_SIZE(sr030pc30_DTP_Off),"sr030pc30_DTP_Off");	
+
+	return 0;
+}
+
+static int sr030pc30_g_exif_info(struct i2c_client *client,struct v4l2_exif_info *exif_info)
+{
+	struct sr030pc30_sensor *sensor = &sr030pc30;
+
+	Cam_Printk(KERN_NOTICE "sr030pc30_g_exif_info is called...\n"); 
+	*exif_info = sensor->exif_info;
+	return 0;
+}
+
+static int sr030pc30_set_mode(struct i2c_client *client, int value)
+{
+	struct sr030pc30_sensor *sensor = &sr030pc30;
+	
+	sensor->mode = value;
+	Cam_Printk(KERN_NOTICE, "sr030pc30_set_mode is called... mode = %d\n", sensor->mode);
+	return 0;
+}
+
+
+static int sr030pc30_preview_size(struct i2c_client *client, int value)
+{
+	struct sr030pc30_sensor *sensor = &sr030pc30;
+
+	if(sensor->mode != SR030PC30_MODE_CAMCORDER)
+	{
+		switch (value) 
+		{
+			Cam_Printk(KERN_NOTICE "CAMERA MODE..\n"); 
+
+			case SR030PC30_PREVIEW_SIZE_176_144:
+				sr030pc30_write_regs(client,sr030pc30_preview_176x144,ARRAY_SIZE(sr030pc30_preview_176x144),"sr030pc30_preview_176x144");	
+				break;
+			case SR030PC30_PREVIEW_SIZE_352_288:
+				sr030pc30_write_regs(client,sr030pc30_preview_352x288,ARRAY_SIZE(sr030pc30_preview_352x288),"sr030pc30_preview_352x288");	
+				break;
+			default:
+				printk(SR030PC30_MOD_NAME "Preview Resolution is not supported! : %d\n",value);
+				return 0;
+		}
+	} 
+	else 
+	{
+		Cam_Printk(KERN_NOTICE "CAMCORDER MODE..\n"); 
+
+		switch (value) 
+		{
+			Cam_Printk(KERN_NOTICE "CAMERA MODE..\n"); 
+
+			case SR030PC30_PREVIEW_SIZE_176_144:
+				sr030pc30_write_regs(client,sr030pc30_preview_176x144,ARRAY_SIZE(sr030pc30_preview_176x144),"sr030pc30_preview_176x144");	
+				break;
+			case SR030PC30_PREVIEW_SIZE_352_288:
+				sr030pc30_write_regs(client,sr030pc30_preview_352x288,ARRAY_SIZE(sr030pc30_preview_352x288),"sr030pc30_preview_352x288");	
+				break;
+			default:
+				printk(SR030PC30_MOD_NAME "Preview Resolution is not supported! : %d\n",value);
+				return 0;
+		}
+	}
+	return 0;
+}
+
+
+static int sr030pc30_s_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
+{
+	return 0;
+}
+
+/* Get chip identification */
+static int sr030pc30_g_chip_ident(struct v4l2_subdev *sd,
+			       struct v4l2_dbg_chip_ident *id)
+{
+	struct sr030pc30_info *priv = to_sr030pc30(sd);
+
+	id->ident = priv->model;
+	id->revision = 0x0;//priv->revision;
+
+	return 0;
+}
+
+
+static int sr030pc30_set_still_status(void)
+{
+	Cam_Printk(KERN_NOTICE "[DHL]sr030pc30_set_still_status.. \n");
+
+	sr030pc30_cam_state = SR030PC30_STATE_CAPTURE;	
+
+	return 0;
+}
+
+static int sr030pc30_set_preview_status(struct i2c_client *client, int value)
+{
+	struct sr030pc30_sensor *sensor = &sr030pc30;
+	s32 old_value = (s32)sensor->cam_mode;
+	
+#ifdef CONFIG_MACH_HELANDELOS	
+	Cam_Printk(KERN_NOTICE "[DHL]sr030pc30_set_preview_status.. \n");
+	Cam_Printk(KERN_NOTICE "[DHL]old_value : %d \n",old_value);
+	Cam_Printk(KERN_NOTICE "[DHL]value : %d \n",value);
+	
+	if(old_value != value){
+		printk( "[DHL]Init setting...!!!\n");	
+		sr030pc30_write_regs(client, sr030pc30_Init_Reg, ARRAY_SIZE(sr030pc30_Init_Reg),"sr030pc30_Init_Reg"); 			
+	}
+       sensor->cam_mode = value;
+#endif
+
+	if(value == SMART_STAY_MODE){
+		sr030pc30_cam_state = SR030PC30_STATE_SMART_STAY;
+		Cam_Printk(KERN_NOTICE "sr030pc30_set_preview_status: Smart stay mode\n");
+	}
+	else{
+	sr030pc30_cam_state = SR030PC30_STATE_PREVIEW;	
+		Cam_Printk(KERN_NOTICE "sr030pc30_set_preview_status: Preview mode\n");
+	}
+
+	return 0;
+}
+
+int sr030pc30_streamon(struct i2c_client *client)
+{
+	struct sr030pc30_sensor *sensor = &sr030pc30;
+
+	Cam_Printk(KERN_NOTICE "sr030pc30_streamon is called...\n");  
+
+	if(sr030pc30_cam_state == SR030PC30_STATE_CAPTURE){
+		sr030pc30_s_exif_info(client);
+	}
+	
+	if(gDTP_flag == TRUE){
+		sr030pc30_write_regs(client,sr030pc30_DTP_On,ARRAY_SIZE(sr030pc30_DTP_On),"sr030pc30_DTP_On");	
+		gDTP_flag=FALSE;
+	}
+
+	return 0;
+}
+
+static int sr030pc30_streamoff(struct i2c_client *client)
+{
+	/* What's wrong with this sensor, it has no stream off function, oh!,Vincent.Wan */
+	Cam_Printk(KERN_NOTICE " sr030pc30_sensor_stop_stream");
+	return 0;
+}
+static int set_stream(struct i2c_client *client, int enable)
+{
+	int ret = 0;
+
+	if (enable) {
+		ret = sr030pc30_streamon(client);
+		if (ret < 0)
+			goto out;
 	} else {
-		ret = 0;
-		info->curr_win = NULL;
-		info->curr_fmt = NULL;
+		ret = sr030pc30_streamoff(client);
 	}
-
+out:
 	return ret;
 }
 
-static const struct v4l2_subdev_core_ops sr030pc30_core_ops = {
-	.s_power	= sr030pc30_s_power,
-	.queryctrl	= sr030pc30_queryctrl,
-	.s_ctrl		= sr030pc30_s_ctrl,
-	.g_ctrl		= sr030pc30_g_ctrl,
+static int sr030pc30_s_stream(struct v4l2_subdev *sd, int enable)
+{
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	int ret = 0;
+	ret = set_stream(client, enable);
+	if (ret < 0)
+		dev_err(&client->dev, "sr030pc30 set stream error\n");
+	return ret;
+}
+
+static int sr030pc30_video_probe(struct soc_camera_device *icd,
+			      struct i2c_client *client)
+{
+	struct v4l2_subdev *sd = i2c_get_clientdata(client);
+	struct sr030pc30_info *priv = to_sr030pc30(sd);
+	u8 modelhi, modello;
+	int ret, i;
+
+	/*
+	 * Make sure it's an sr030pc30
+	 */
+	//for(i =0;i<3;i++)
+	{
+		ret = sr030pc30_detect(client);
+		if (!ret) {
+			Cam_Printk(KERN_NOTICE "=========siliconfile sr030pc30 sensor detected==========\n");
+			goto out;
+		}
+		
+	}
+
+	priv->model = V4L2_IDENT_SR030PC30;
+out:
+	return ret;
+}
+
+int sr030pc30_s_exif_info(struct i2c_client *client)
+{
+	struct sr030pc30_sensor *sensor = &sr030pc30;
+	u32 exposure_time=0;
+	u16 exposure_data1=0;
+	u16 exposure_data2=0;
+	u16 exposure_data3=0;
+	u32 iso_gain= 0;
+	u16 iso_a_gain= 0;
+	u32 iso_value= 0;
+
+	Cam_Printk(KERN_NOTICE "[DHL] EXIF Info.. \r\n");
+	Cam_Printk(KERN_NOTICE "s5k4ecgx_s_Exposure() \r\n");
+	sr030pc30_write(client,0x03, 0x20);
+	sr030pc30_read(client, 0x80, &exposure_data1);	
+	sr030pc30_read(client, 0x81, &exposure_data2);	
+	sr030pc30_read(client, 0x82, &exposure_data3);	
+
+	exposure_time = 12000000 / ((exposure_data3<<3)|(exposure_data2<<11)|(exposure_data1<<19));
+
+	Cam_Printk(KERN_NOTICE "[DHL]shutter_speed : %d \r\n",exposure_time);
+
+	sensor->exif_info.exposure_time.inumerator=1;
+	sensor->exif_info.exposure_time.denominal=exposure_time;
+
+	Cam_Printk(KERN_NOTICE "s5k4ecgx_s_ISO() \r\n");
+	sr030pc30_write(client,0x03, 0x20);
+	sr030pc30_read(client, 0xb0, &iso_a_gain);	
+#if 0
+	iso_gain = (iso_a_gain /32) + 
+(1/2);
+
+	if(iso_gain < 1126/1000)
+		iso_value = 50;
+	else if(iso_gain < 1.526) 
+		iso_value = 100;
+	else if(iso_gain < 2.760) 
+		iso_value = 200;
+	else 
+		iso_value = 400;
+#else // 32*1000
+	iso_gain = 1000*(iso_a_gain + 16);
+
+	if(iso_gain < 36032)
+		iso_value = 50;
+	else if(iso_gain < 48832) 
+		iso_value = 100;
+	else if(iso_gain < 88320) 
+		iso_value = 200;
+	else 
+		iso_value = 400;
+#endif
+	sensor->exif_info.iso_speed_rationg=iso_value;
+	return 0;
+}
+
+static int sr030pc30_s_thumbnail_size(struct i2c_client *client, struct v4l2_pix_format *thumbnail)
+{
+	struct sr030pc30_sensor *sensor = &sr030pc30;
+	struct v4l2_pix_format* pix = &sensor->thumbnail;
+	pix->width= thumbnail->width;
+	pix->height= thumbnail->height;
+	int retval = 0;
+	
+	Cam_Printk(KERN_NOTICE "sr030pc30_s_thumbnail_size is called...(Width %d Height %d)\n",pix->width,pix->height);
+
+	return retval;
+}
+
+static int sr030pc30_g_register(struct v4l2_subdev *sd,  struct v4l2_dbg_register * reg)
+{
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	
+	Cam_Printk(KERN_NOTICE "sr030pc30_g_register() \r\n");
+
+	switch (reg->reg) {
+		case V4L2_CID_GET_EXIF_EXPOSURETIME_DENOMINAL:
+		{
+			struct sr030pc30_sensor *sensor = &sr030pc30;
+			printk( "[DHL]V4L2_CID_GET_EXIF_EXPOSURETIME_DENOMINAL.. \n");
+			reg->val = (__s64)sensor->exif_info.exposure_time.denominal;
+			break;
+		}
+		case V4L2_CID_GET_EXIF_ISO_SPEED:
+		{
+			struct sr030pc30_sensor *sensor = &sr030pc30;
+			printk( "[DHL]V4L2_CID_GET_EXIF_ISO_SPEED.. \n");
+			reg->val = (__s64)sensor->exif_info.iso_speed_rationg;
+			break;
+		}
+		case V4L2_CID_GET_EXIF_FLASH:
+		{
+			struct sr030pc30_sensor *sensor = &sr030pc30;
+			printk( "[DHL]V4L2_CID_GET_EXIF_FLASH.. \n");
+			reg->val = 0;
+			break;
+		}
+		case V4L2_CID_GET_FLASH_STATUS:
+			printk( "[DHL]V4L2_CID_GET_FLASH_STATUS.. \n");
+			reg->val = 0;
+			break;
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int sr030pc30_s_register(struct v4l2_subdev *sd,  struct v4l2_dbg_register * reg)
+{	
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	struct sr030pc30_sensor *sensor = &sr030pc30;
+	int retval = 0;
+
+	Cam_Printk(KERN_NOTICE "ioctl_s_ctrl is called...(%d)\n", reg->reg);
+
+	switch (reg->reg) 
+	{ 
+		case V4L2_CID_BRIGHTNESS:
+			retval = sr030pc30_t_brightness(client,reg->val);
+			break;
+		case V4L2_CID_DO_WHITE_BALANCE:
+			retval = sr030pc30_t_whitebalance(client,reg->val);
+			break;
+		case V4L2_CID_EFFECT:
+			retval = sr030pc30_t_effect(client,reg->val);
+			break;
+		case V4L2_CID_CONTRAST:
+			retval = sr030pc30_t_contrast(client,reg->val);
+			break;
+		case V4L2_CID_SATURATION:
+			retval = sr030pc30_t_saturation(client,reg->val);
+			break;	
+		case V4L2_CID_FPS:
+			gFPS_flag=TRUE;
+			gFPS_value=reg->val;
+			Cam_Printk(KERN_NOTICE "[DHL]FPS Flag ON..!! \n");
+			Cam_Printk(KERN_NOTICE "[DHL]FPS Value : %d \n", gFPS_value);
+			//retval = sr030pc30_t_fps(client,reg->val);
+			break;
+		case V4L2_CID_CAMERA_CHECK_DATALINE:
+			retval = sr030pc30_t_dtp_on(client);
+			break;	
+		case V4L2_CID_CAMERA_CHECK_DATALINE_STOP:
+			retval = sr030pc30_t_dtp_stop(client); 
+			break;			
+		case V4L2_CID_CAMERA_PREVIEW_SIZE:
+			retval = sr030pc30_preview_size(client,reg->val); 
+			break;
+		case V4L2_CID_SET_STILL_STATUS:
+			retval = sr030pc30_set_still_status();
+			break;
+		case V4L2_CID_SET_PREVIEW_STATUS:
+			retval = sr030pc30_set_preview_status(client, reg->val);
+			break;		
+				
+		default:
+			Cam_Printk(SR030PC30_MOD_NAME "[id]Invalid value is ordered!!!\n");
+			break;
+	}
+	return retval;
+}
+
+static struct i2c_device_id sr030pc30_idtable[] = {
+	{ "sr030pc30", 1 },
+	{ }
 };
 
-static const struct v4l2_subdev_video_ops sr030pc30_video_ops = {
-	.g_mbus_fmt	= sr030pc30_g_fmt,
-	.s_mbus_fmt	= sr030pc30_s_fmt,
-	.try_mbus_fmt	= sr030pc30_try_fmt,
-	.enum_mbus_fmt	= sr030pc30_enum_fmt,
+MODULE_DEVICE_TABLE(i2c, sr030pc30_idtable);
+
+
+static struct v4l2_subdev_core_ops sr030pc30_core_ops = {
+	//.g_ctrl			= sr030pc30_g_ctrl,
+	.s_ctrl			= sr030pc30_s_ctrl,
+	.init				= sr030pc30_init,
+	.g_chip_ident		= sr030pc30_g_chip_ident,
+	.g_register		= sr030pc30_g_register,
+	.s_register		= sr030pc30_s_register,
+
 };
 
-static const struct v4l2_subdev_ops sr030pc30_ops = {
-	.core	= &sr030pc30_core_ops,
-	.video	= &sr030pc30_video_ops,
+static struct v4l2_subdev_video_ops sr030pc30_video_ops = {
+	.s_stream		= sr030pc30_s_stream,
+	.s_mbus_fmt		= sr030pc30_s_fmt,
+	.try_mbus_fmt		= sr030pc30_try_fmt,
+	.enum_mbus_fmt		= sr030pc30_enum_fmt,
+	.enum_mbus_fsizes	= sr030pc30_enum_fsizes,
+	.g_parm				= sr030pc30_g_parm,
+	.s_parm				= sr030pc30_s_parm,
+	//.g_mbus_config	= sr030pc30_g_mbus_config,
+};
+
+static struct v4l2_subdev_ops sr030pc30_subdev_ops = {
+	.core			= &sr030pc30_core_ops,
+	.video			= &sr030pc30_video_ops,
 };
 
 /*
- * Detect sensor type. Return 0 if SR030PC30 was detected
- * or -ENODEV otherwise.
+ * i2c_driver function
  */
-static int sr030pc30_detect(struct i2c_client *client)
+
+
+static int sr030pc30_command(struct i2c_client *client, unsigned int cmd, void *arg)
 {
-	const struct sr030pc30_platform_data *pdata
-		= client->dev.platform_data;
-	int ret;
 
-	/* Enable sensor's power and clock */
-	if (pdata->set_power) {
-		ret = pdata->set_power(&client->dev, 1);
-		if (ret)
-			return ret;
+
+	switch (cmd) { 
+		case VIDIOC_DBG_G_CHIP_IDENT:
+			Cam_Printk(KERN_NOTICE " sr030pc30_command : VIDIOC_DBG_G_CHIP_IDENT\n");
+			return v4l2_chip_ident_i2c_client(client, arg, V4L2_IDENT_SR030PC30, 0);		
+		case VIDIOC_INT_RESET:
+			sr030pc30_reset(client);
+			Cam_Printk(KERN_NOTICE " sr030pc30_command : VIDIOC_INT_RESET\n");
+			return 0;
+		case VIDIOC_QUERYCAP:
+			Cam_Printk(KERN_NOTICE " sr030pc30_command : VIDIOC_QUERYCAP\n");
+			return sr030pc30_querycap(client, (struct v4l2_capability *) arg);
+		case VIDIOC_ENUM_FRAMESIZES:
+			Cam_Printk(KERN_NOTICE " sr030pc30_command : VIDIOC_ENUM_FRAMESIZES\n");
+			return sr030pc30_enum_fsizes(client, (struct v4l2_frmsizeenum *) arg);
+		case VIDIOC_TRY_FMT:
+			Cam_Printk(KERN_NOTICE " sr030pc30_command : VIDIOC_TRY_FMT\n");
+			return sr030pc30_try_fmt(client, (struct v4l2_format *) arg);
+		case VIDIOC_S_FMT:
+			Cam_Printk(KERN_NOTICE " sr030pc30_command : VIDIOC_S_FMT\n");
+			return sr030pc30_s_fmt(client, (struct v4l2_format *) arg);
+		case VIDIOC_S_CTRL:
+			Cam_Printk(KERN_NOTICE " sr030pc30_command : VIDIOC_S_CTRL\n");
+			return sr030pc30_s_ctrl(client, (struct v4l2_control *) arg);
+		case VIDIOC_S_PARM:
+			Cam_Printk(KERN_NOTICE " sr030pc30_command : VIDIOC_S_PARM\n");
+			return sr030pc30_s_parm(client, (struct v4l2_streamparm *) arg);
+		case VIDIOC_G_PARM:
+			Cam_Printk(KERN_NOTICE " sr030pc30_command : VIDIOC_G_PARM\n");
+			return sr030pc30_g_parm(client, (struct v4l2_streamparm *) arg);
+		case VIDIOC_STREAMON:
+			Cam_Printk(KERN_NOTICE " sr030pc30_command : VIDIOC_STREAMON\n");
+			return sr030pc30_streamon(client);
+		case VIDIOC_STREAMOFF:
+			Cam_Printk(KERN_NOTICE " sr030pc30_command : VIDIOC_STREAMOFF\n");
+			return sr030pc30_streamoff(client);
+		case VIDIOC_DBG_G_REGISTER:
+			Cam_Printk(KERN_NOTICE " sr030pc30_command : VIDIOC_DBG_G_REGISTER\n");
+			return sr030pc30_g_register(client, (struct v4l2_dbg_register *) arg);
+		case VIDIOC_DBG_S_REGISTER:
+			Cam_Printk(KERN_NOTICE " sr030pc30_command : VIDIOC_DBG_S_REGISTER\n");
+			return sr030pc30_s_register(client, (struct v4l2_dbg_register *) arg);
+		case VIDIOC_G_EXIF:
+			Cam_Printk(KERN_NOTICE " sr030pc30_command : VIDIOC_G_EXIF\n");
+			return sr030pc30_g_exif_info(client, (struct v4l2_exif_info *) arg);
+		case VIDIOC_S_THUMBNAIL:
+			Cam_Printk(KERN_NOTICE " sr030pc30_command : VIDIOC_S_THUMBNAIL\n");
+			return sr030pc30_s_thumbnail_size(client, (struct v4l2_pix_format *) arg);
 	}
-
-	ret = i2c_smbus_read_byte_data(client, DEVICE_ID_REG);
-
-	if (pdata->set_power)
-		pdata->set_power(&client->dev, 0);
-
-	if (ret < 0) {
-		dev_err(&client->dev, "%s: I2C read failed\n", __func__);
-		return ret;
-	}
-
-	return ret == SR030PC30_ID ? 0 : -ENODEV;
+	return -EINVAL;
 }
 
-
 static int sr030pc30_probe(struct i2c_client *client,
-			   const struct i2c_device_id *id)
+			const struct i2c_device_id *did)
 {
-	struct sr030pc30_info *info;
-	struct v4l2_subdev *sd;
-	const struct sr030pc30_platform_data *pdata
-		= client->dev.platform_data;
+	struct sr030pc30_info *priv;
+	struct soc_camera_device *icd	= client->dev.platform_data;
+	struct soc_camera_link *icl;
 	int ret;
 
-	if (!pdata) {
-		dev_err(&client->dev, "No platform data!");
-		return -EIO;
+	printk("------------sr030pc30_probe--------------\n");
+
+	if (!icd) {
+		dev_err(&client->dev, "Missing soc-camera data!\n");
+		return -EINVAL;
 	}
 
-	ret = sr030pc30_detect(client);
-	if (ret)
-		return ret;
-
-	info = kzalloc(sizeof(*info), GFP_KERNEL);
-	if (!info)
+	priv = kzalloc(sizeof(struct sr030pc30_info), GFP_KERNEL);
+	if (!priv) {
+		dev_err(&client->dev, "Failed to allocate private data!\n");
 		return -ENOMEM;
+	}
 
-	sd = &info->sd;
-	strcpy(sd->name, MODULE_NAME);
-	info->pdata = client->dev.platform_data;
+	v4l2_i2c_subdev_init(&priv->subdev, client, &sr030pc30_subdev_ops);
 
-	v4l2_i2c_subdev_init(sd, client, &sr030pc30_ops);
-
-	info->i2c_reg_page	= -1;
-	info->hflip		= 1;
-	info->auto_exp		= 1;
-	info->exposure		= 30;
-
-	return 0;
+	ret = sr030pc30_video_probe(icd, client);
+	if (ret < 0) {
+		kfree(priv);
+	}
+	
+	printk("------------sr030pc30_probe---return --ret = %d---------\n", ret);
+	return ret;
 }
 
 static int sr030pc30_remove(struct i2c_client *client)
 {
-	struct v4l2_subdev *sd = i2c_get_clientdata(client);
-	struct sr030pc30_info *info = to_sr030pc30(sd);
-
-	v4l2_device_unregister_subdev(sd);
-	kfree(info);
 	return 0;
 }
 
-static const struct i2c_device_id sr030pc30_id[] = {
-	{ MODULE_NAME, 0 },
-	{ },
-};
-MODULE_DEVICE_TABLE(i2c, sr030pc30_id);
-
-
-static struct i2c_driver sr030pc30_i2c_driver = {
+static struct i2c_driver sr030pc30_driver = {
 	.driver = {
-		.name = MODULE_NAME
+		.name	= "sr030pc30",
 	},
+	.id_table       = sr030pc30_idtable,	
+	.command	= sr030pc30_command,
 	.probe		= sr030pc30_probe,
 	.remove		= sr030pc30_remove,
-	.id_table	= sr030pc30_id,
 };
 
-module_i2c_driver(sr030pc30_i2c_driver);
+/*
+ * Module initialization
+ */
+static int __init sr030pc30_mod_init(void)
+{
+	int ret =0;
+	Cam_Printk(KERN_NOTICE "siliconfile sr030pc30 sensor driver, at your service\n");
+	ret = i2c_add_driver(&sr030pc30_driver);
+	Cam_Printk(KERN_NOTICE "siliconfile sr030pc30 :%d \n ",ret);
+	return ret;
+}
 
-MODULE_DESCRIPTION("Siliconfile SR030PC30 camera driver");
-MODULE_AUTHOR("Sylwester Nawrocki <s.nawrocki@samsung.com>");
-MODULE_LICENSE("GPL");
+static void __exit sr030pc30_mod_exit(void)
+{
+	i2c_del_driver(&sr030pc30_driver);
+}
+
+module_init(sr030pc30_mod_init);
+module_exit(sr030pc30_mod_exit);
+

@@ -49,36 +49,47 @@
 
 #include <mach/regs-apmu.h>
 #include <mach/camera.h>
-
-#if defined(CONFIG_SOC_CAMERA_SR030PC50)
-#include <mach/camera-sr030pc50.h>
-#include <mach/regs-mcu.h>
-#ifdef CONFIG_PM_DEVFREQ
-#include <plat/devfreq.h>
-#endif
-#elif defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
-#include "mmp_camera.h"
+#if defined(CONFIG_MACH_HELANDELOS) || defined(CONFIG_MACH_WILCOX) || defined(CONFIG_MACH_CT01)
 #include "s5k4ecgx.h"
-#include <mach/regs-mcu.h>
-#ifdef CONFIG_PM_DEVFREQ
-#include <plat/devfreq.h>
-#endif
+#include <mach/samsung_camera.h>
+#elif defined(CONFIG_MACH_BAFFIN)
+#include "s5k4ecgx.h"
+#include <mach/samsung_camera_baffin.h>
+#elif defined(CONFIG_MACH_BAFFINQ)
+#include "s5k4ecgx.h"
+#include <mach/samsung_camera.h>
+#elif defined(CONFIG_MACH_GOLDEN)
+#include "s5k4ecgx.h"
+#include <mach/samsung_camera_golden.h>
+#elif defined(CONFIG_MACH_CS02) && defined(CONFIG_SOC_CAMERA_S5K4ECGX)
+#include "s5k4ecgx.h"
+#include <mach/samsung_camera.h>
+#elif defined(CONFIG_MACH_CS02) && defined(CONFIG_SOC_CAMERA_SR352)
+#include "sr352.h"
+#include <mach/samsung_camera_cs02.h>
+#elif defined(CONFIG_MACH_LT02)
+#include "sr200pc20m.h"
+#include <mach/samsung_camera_lt02.h>
+#elif defined(CONFIG_MACH_GOYA)
+#include "sr200pc20m.h"
+#include <mach/samsung_camera_goya.h>
+#elif defined(CONFIG_MACH_DEGAS)
+#include "sr352.h"
+#include <mach/samsung_camera_degas.h>
 #else
+#include "s5k4ecgx.h"
 #include <mach/samsung_camera.h>
 #endif
-
-#if defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
-#include <mach/samsung_camera_lt02.h>
-#endif
-
 #include "mmp_camera.h"
+#include <mach/regs-mcu.h>
+
+#ifdef CONFIG_PM_DEVFREQ
+#include <plat/devfreq.h>
+#endif
 
 #define MMP_CAM_DRV_NAME "mmp-camera"
 int ssg_width;
 int ssg_height;
-#if defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
-extern int sr200pc20m_cam_state;
-#endif
 
 static const struct soc_mbus_pixelfmt ccic_formats[] = {
 	{
@@ -142,10 +153,6 @@ static void __attribute__((unused)) dump_register(struct mmp_camera_dev *pcdev)
 	printk(KERN_INFO "CCIC: REG_CTRL0 is 0x%08x\n", ret);
 	ret = ccic_reg_read(pcdev, REG_CTRL1);
 	printk(KERN_INFO "CCIC: REG_CTRL1 is 0x%08x\n", ret);
-#if defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
-	ret = ccic_reg_read(pcdev, REG_CTRL3);
-	printk(KERN_INFO "CCIC: REG_CTRL3 is 0x%08x\n", ret);
-#endif
 	ret = ccic_reg_read(pcdev, REG_CLKCTRL);
 	printk(KERN_INFO "CCIC: REG_CLKCTRL is 0x%08x\n\n", ret);
 
@@ -203,9 +210,11 @@ static void ccic_start(struct mmp_camera_dev *pcdev);
 static void csi_dphy_write(void *hw_ctx, const struct csi_dphy_reg *regs)
 {
 	struct mmp_camera_dev *pcdev = hw_ctx;
-	struct mmp_cam_pdata *pdata = pcdev->pdev->dev.platform_data;
+	struct soc_camera_device *icd = pcdev->icd;
+	struct soc_camera_link *icl = to_soc_camera_link(icd);
+	struct sensor_board_data *sdata = icl->priv;
 
-	if (pdata->bus_type == V4L2_MBUS_CSI2_LANES) {
+	if (sdata->bus_type == V4L2_MBUS_CSI2) {
 		u32 regval = 0;
 
 		/* Disable CCIC */
@@ -237,7 +246,7 @@ static void csi_dphy_write(void *hw_ctx, const struct csi_dphy_reg *regs)
 		ccic_reg_write(pcdev, REG_CSI2_DPHY6, 0x0);
 		ccic_reg_write(pcdev, REG_CSI2_DPHY5, 0x0);
 		ccic_reg_write(pcdev, REG_CSI2_CTRL0, 0x0);
-		pdata->mipi_enabled = 0;
+		sdata->mipi_enabled = 0;
 	}
 };
 
@@ -246,9 +255,9 @@ static void csi_dphy_read(void *hw_ctx, struct csi_dphy_reg *regs)
 	struct mmp_camera_dev *pcdev = hw_ctx;
 	u32 phy3, phy5, phy6;
 
-	phy3	= ccic_reg_read(pcdev, REG_CSI2_DPHY3);
-	phy5	= ccic_reg_read(pcdev, REG_CSI2_DPHY5);
-	phy6	= ccic_reg_read(pcdev, REG_CSI2_DPHY6);
+	phy3 = ccic_reg_read(pcdev, REG_CSI2_DPHY3);
+	phy5 = ccic_reg_read(pcdev, REG_CSI2_DPHY5);
+	phy6 = ccic_reg_read(pcdev, REG_CSI2_DPHY6);
 
 	regs->cl_termen	= phy6 & 0xFF;
 	regs->cl_settle	= (phy6>>8) & 0xFF;
@@ -257,7 +266,7 @@ static void csi_dphy_read(void *hw_ctx, struct csi_dphy_reg *regs)
 	regs->hs_settle	= (phy3>>8) & 0xFF;
 	regs->hs_rx_to	= 0xFFFF;
 	regs->lane	= 0;
-	phy5 &= 0xF;
+	phy5		&= 0xF;
 	while (phy5) {
 		phy5 = phy5 & (phy5-1);
 		regs->lane++;
@@ -268,41 +277,44 @@ static void csi_dphy_read(void *hw_ctx, struct csi_dphy_reg *regs)
 
 static int ccic_config_phy(struct mmp_camera_dev *pcdev, int enable)
 {
-	struct mmp_cam_pdata *pdata = pcdev->pdev->dev.platform_data;
+	struct soc_camera_device *icd = pcdev->icd;
+	struct soc_camera_link *icl = to_soc_camera_link(icd);
+	struct sensor_board_data *sdata = icl->priv;
 	struct device *dev = &pcdev->pdev->dev;
 	int ret = 0;
 
-	if (pdata->bus_type == V4L2_MBUS_CSI2_LANES && enable) {
+	if (sdata->bus_type == V4L2_MBUS_CSI2 && enable) {
 		dev_dbg(dev, "camera: DPHY3=0x%x, DPHY5=0x%x, DPHY6=0x%x\n",
-			pdata->dphy[0], pdata->dphy[1], pdata->dphy[2]);
-		ccic_reg_write(pcdev, REG_CSI2_DPHY3, pdata->dphy[0]);
-		ccic_reg_write(pcdev, REG_CSI2_DPHY6, pdata->dphy[2]);
-		ccic_reg_write(pcdev, REG_CSI2_DPHY5, pdata->dphy[1]);
-		if (pdata->mipi_enabled == 0) {
+			sdata->dphy[0], sdata->dphy[1], sdata->dphy[2]);
+		ccic_reg_write(pcdev, REG_CSI2_DPHY3, sdata->dphy[0]);
+		ccic_reg_write(pcdev, REG_CSI2_DPHY6, sdata->dphy[2]);
+		ccic_reg_write(pcdev, REG_CSI2_DPHY5, sdata->dphy[1]);
+		if (sdata->mipi_enabled == 0) {
 			/*
 			 * 0x41 actives 1 lane
 			 * 0x43 actives 2 lanes
 			 * 0x47 actives 4 lanes
 			 * There is no 3 lanes case
 			 */
-			if (pdata->lane == 1)
+			if (sdata->bus_flag == V4L2_MBUS_CSI2_1_LANE)
 				ccic_reg_write(pcdev, REG_CSI2_CTRL0, 0x41);
-			else if (pdata->lane == 2)
+			else if (sdata->bus_flag == V4L2_MBUS_CSI2_2_LANE)
 				ccic_reg_write(pcdev, REG_CSI2_CTRL0, 0x43);
-			else if (pdata->lane == 4)
+			else if (sdata->bus_flag == V4L2_MBUS_CSI2_4_LANE)
 				ccic_reg_write(pcdev, REG_CSI2_CTRL0, 0x47);
 			else {
-				dev_err(dev, "camera: board config wrong lane number!");
+				dev_err(dev,
+				"camera: board config wrong lane number!");
 				return -EINVAL;
 			}
-			pdata->mipi_enabled = 1;
+			sdata->mipi_enabled = 1;
 		}
 	} else {
 		ccic_reg_write(pcdev, REG_CSI2_DPHY3, 0x0);
 		ccic_reg_write(pcdev, REG_CSI2_DPHY6, 0x0);
 		ccic_reg_write(pcdev, REG_CSI2_DPHY5, 0x0);
 		ccic_reg_write(pcdev, REG_CSI2_CTRL0, 0x0);
-		pdata->mipi_enabled = 0;
+		sdata->mipi_enabled = 0;
 	}
 
 	return ret;
@@ -310,11 +322,20 @@ static int ccic_config_phy(struct mmp_camera_dev *pcdev, int enable)
 
 static void ccic_enable_clk(struct mmp_camera_dev *pcdev)
 {
+	struct soc_camera_device *icd = pcdev->icd;
+	struct soc_camera_link *icl = to_soc_camera_link(icd);
+	struct sensor_board_data *sdata = icl->priv;
 	struct mmp_cam_pdata *pdata = pcdev->pdev->dev.platform_data;
 	struct device *dev = &pcdev->pdev->dev;
 	int ctrl1 = 0;
+	int mipi;
 
-	pdata->enable_clk(dev, 1);
+	if (sdata->bus_type == V4L2_MBUS_CSI2)
+		mipi = MIPI_ENABLE;
+	else
+		mipi = MIPI_DISABLE;
+
+	pdata->enable_clk(dev, mipi | POWER_ON);
 	ccic_reg_write(pcdev, REG_CLKCTRL,
 			(pdata->mclk_src << 29) | pdata->mclk_div);
 	dev_dbg(dev, "camera: set sensor mclk = %d MHz\n", pdata->mclk_min);
@@ -328,27 +349,40 @@ static void ccic_enable_clk(struct mmp_camera_dev *pcdev)
 		break;
 	}
 	ccic_reg_write(pcdev, REG_CTRL1, ctrl1 | C1_RESERVED | C1_DMAPOSTED);
-	if (pdata->bus_type != V4L2_MBUS_CSI2_LANES)
+	if (sdata->bus_type != V4L2_MBUS_CSI2)
 		ccic_reg_write(pcdev, REG_CTRL3, 0x4);
 }
 
 static void ccic_disable_clk(struct mmp_camera_dev *pcdev)
 {
+	struct soc_camera_device *icd = pcdev->icd;
+	struct soc_camera_link *icl = to_soc_camera_link(icd);
+	struct sensor_board_data *sdata = icl->priv;
 	struct mmp_cam_pdata *pdata = pcdev->pdev->dev.platform_data;
+	struct device *dev = &pcdev->pdev->dev;
+	int mipi;
 
 	ccic_reg_write(pcdev, REG_CLKCTRL, 0x0);
 	/*
 	 * Bit[5:1] reserved and should not be changed
 	 */
 	ccic_reg_write(pcdev, REG_CTRL1, C1_RESERVED);
-	pdata->enable_clk(&pcdev->pdev->dev, 0);
+
+	if (sdata->bus_type == V4L2_MBUS_CSI2)
+		mipi = MIPI_ENABLE;
+	else
+		mipi = MIPI_DISABLE;
+
+	pdata->enable_clk(dev, mipi | POWER_OFF);
 }
 
 static int ccic_config_image(struct mmp_camera_dev *pcdev)
 {
 	struct v4l2_pix_format *fmt = &pcdev->pix_format;
 	struct device *dev = &pcdev->pdev->dev;
-	struct mmp_cam_pdata *pdata = pcdev->pdev->dev.platform_data;
+	struct soc_camera_device *icd = pcdev->icd;
+	struct soc_camera_link *icl = to_soc_camera_link(icd);
+	struct sensor_board_data *sdata = icl->priv;
 	u32 widthy = 0, widthuv = 0, imgsz_h, imgsz_w;
 	int ret = 0;
 
@@ -417,7 +451,8 @@ static int ccic_config_image(struct mmp_camera_dev *pcdev)
 		break;
 	case V4L2_PIX_FMT_JPEG:
 		ccic_reg_write_mask(pcdev, REG_CTRL0,
-			C0_DF_YUV | C0_YUV_PACKED | C0_YUVE_YUYV, C0_DF_MASK);
+			C0_DF_YUV | C0_YUV_PACKED | C0_YUVE_YUYV | \
+				C0_VEDGE_CTRL | C0_EOF_VSYNC, C0_DF_MASK);
 		break;
 	case V4L2_PIX_FMT_RGB444:
 		ccic_reg_write_mask(pcdev, REG_CTRL0,
@@ -439,17 +474,11 @@ static int ccic_config_image(struct mmp_camera_dev *pcdev)
 	/*
 	 * This field controls the generation of EOF(DVP only)
 	 */
-#if defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
-	if (pdata->bus_type != V4L2_MBUS_CSI2_LANES) {
-		
-		ccic_reg_set_bit(pcdev, REG_CTRL0, C0_VPOL_LOW | C0_VEDGE_CTRL);
-		dev_info(dev, "camera: ccic_config_image set the REG_CTRL0 for parallel sensor!!!\n");
-	}
-#else
-	if (pdata->bus_type != V4L2_MBUS_CSI2_LANES)
-		ccic_reg_set_bit(pcdev, REG_CTRL0,
-				C0_EOF_VSYNC | C0_VEDGE_CTRL);
-#endif
+	if (sdata->bus_type != V4L2_MBUS_CSI2)
+		ccic_reg_set_bit(pcdev, REG_CTRL0, C0_EOF_VSYNC | C0_VPOL_LOW | C0_VEDGE_CTRL);//C0_EOF_VSYNC | C0_VEDGE_CTRL);
+
+	if (sdata->bus_type == V4L2_MBUS_CSI2)
+		ccic_reg_set_bit(pcdev, REG_CTRL2, ISIM_FIX);
 
 	return ret;
 }
@@ -622,13 +651,15 @@ static void ccic_ctlr_reset(struct mmp_camera_dev *pcdev)
 	 */
 	if (pcdev->pdev->id) {
 		val = readl(APMU_CCIC2_RST);
-		writel(val & ~0x2, APMU_CCIC2_RST);
-		writel(val | 0x2, APMU_CCIC2_RST);
+		writel(val & ~0x103, APMU_CCIC2_RST);
+		mdelay(1);
+		writel(val | 0x103, APMU_CCIC2_RST);
 	}
 
 	val = readl(APMU_CCIC_RST);
-	writel(val & ~0x2, APMU_CCIC_RST);
-	writel(val | 0x2, APMU_CCIC_RST);
+	writel(val & ~0x103, APMU_CCIC_RST);
+	mdelay(1);
+	writel(val | 0x103, APMU_CCIC_RST);
 }
 
 /*
@@ -637,9 +668,6 @@ static void ccic_ctlr_reset(struct mmp_camera_dev *pcdev)
 static int mmp_read_setup(struct mmp_camera_dev *pcdev)
 {
 	int ret = 0;
-#if defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
-	ccic_ctlr_reset(pcdev);
-#endif
 
 	ret = ccic_config_phy(pcdev, 1);
 	if (ret < 0)
@@ -723,10 +751,38 @@ static void mmp_videobuf_queue(struct vb2_buffer *vb)
 	unsigned long flags = 0;
 	int start;
 	dma_addr_t dma_handle;
+#if defined(CONFIG_MACH_WILCOX) || defined(CONFIG_MACH_CT01) || defined(CONFIG_MACH_CS05) || defined(CONFIG_MACH_DEGAS) \
+	|| defined(CONFIG_MACH_GOYA)
+	dma_addr_t dma_handle1;
+	dma_addr_t dma_handle2;
+	//u32 base_size = icd->user_width * icd->user_height;
+	
+	unsigned int camer_width = icd->user_width,camera_height = icd->user_height;
+	u32 base_size;
+	if(camer_width%16)
+	{
+		camer_width=camer_width/16;
+		camer_width=(camer_width+1)*16;
+	}
+
+	if(camera_height%16)
+	{
+		camera_height=camera_height/16;
+		camera_height=(camera_height+1)*16;
+	}
+	
+	base_size = camer_width * camera_height;
+#else
 	u32 base_size = icd->user_width * icd->user_height;
+#endif
 
 	mutex_lock(&pcdev->s_mutex);
 	dma_handle = vb2_dma_contig_plane_dma_addr(vb, 0);
+#if defined(CONFIG_MACH_WILCOX) || defined(CONFIG_MACH_CT01) || defined(CONFIG_MACH_DEGAS) \
+	|| defined(CONFIG_MACH_GOYA)
+	dma_handle1 = vb2_dma_contig_plane_dma_addr(vb, 1);
+	dma_handle2 = vb2_dma_contig_plane_dma_addr(vb, 2);
+#endif
 	BUG_ON(!dma_handle);
 	spin_lock_irqsave(&pcdev->list_lock, flags);
 	/*
@@ -788,9 +844,18 @@ static void mmp_videobuf_cleanup(struct vb2_buffer *vb)
  */
 static int mmp_videobuf_init(struct vb2_buffer *vb)
 {
+    unsigned long flags = 0;
 	struct mmp_buffer *buf = container_of(vb, struct mmp_buffer, vb_buf);
+    struct soc_camera_device *icd = container_of(vb->vb2_queue,
+    struct soc_camera_device, vb2_vidq);
+    struct soc_camera_host *ici = to_soc_camera_host(icd->parent);
+    struct mmp_camera_dev *pcdev = ici->priv;
+
+    spin_lock_irqsave(&pcdev->list_lock, flags);
 	INIT_LIST_HEAD(&buf->queue);
 	buf->list_init_flag = 1;
+    spin_unlock_irqrestore(&pcdev->list_lock, flags);
+
 
 	return 0;
 }
@@ -851,15 +916,16 @@ static int mmp_start_streaming(struct vb2_queue *vq, unsigned int count)
 	 */
 	for (frame = 0; frame < pcdev->nbufs; frame++)
 		clear_bit(CF_FRAME_SOF0 + frame, &pcdev->flags);
-#if defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
+#if defined(CONFIG_MACH_HELANDELOS) || defined(CONFIG_MACH_WILCOX) || defined(CONFIG_MACH_CS02)
 	/* for ssg skip frames, set skip_frames to skip counts of frames*/
-	s5k_cam_mclk_en.skip_frames = SSG_SKIP_FRAMES;
-#endif
+	samsung_camera.skip_frames = SSG_SKIP_FRAMES;
+#endif 
 #if MAX_DMA_BUFS == 3
 	pcdev->frame_state.tribufs = 0;
 #endif
 
 	ret = mmp_read_setup(pcdev);
+
 out_unlock:
 	mutex_unlock(&pcdev->s_mutex);
 
@@ -894,10 +960,11 @@ static int mmp_stop_streaming(struct vb2_queue *vq)
 #endif
 	pcdev->state = S_IDLE;
 	ccic_ctlr_reset(pcdev);
-#if defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
 	ccic_config_phy(pcdev, 0);//zswan
-#endif
 	spin_lock_irqsave(&pcdev->list_lock, flags);
+	if (!list_empty(&pcdev->buffers))
+ 		list_del_init(&pcdev->buffers);
+	else
 	INIT_LIST_HEAD(&pcdev->buffers);
 	spin_unlock_irqrestore(&pcdev->list_lock, flags);
 #ifdef CONFIG_VIDEO_MRVL_CAM_DEBUG
@@ -1003,24 +1070,54 @@ static int check_ssg_frame_line_number (struct mmp_camera_dev *pcdev,
 
 	return 0;
 }
-#if defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
+
+#if defined(CONFIG_MACH_CS02) && defined(CONFIG_SOC_CAMERA_SR352)
+extern int sr352_cam_state;
+static int skip_ssg_eof1_eof2_frame (struct mmp_camera_dev *pcdev,
+				unsigned int frame, int width, int height ) {
+	if(sr352_cam_state == SR352_STATE_CAPTURE) {
+		ccic_stop_dma(pcdev);
+		//dev_info(pcdev->icd->parent, "When do capture, we try to skip the latter  frames,as long as we got a right frame -Size: %d x %d-!\n",width, height);
+	}
+	return 0;
+}
+#elif defined(CONFIG_MACH_DEGAS)
+extern int sr352_cam_state;
+static int skip_ssg_eof1_eof2_frame (struct mmp_camera_dev *pcdev,
+				unsigned int frame, int width, int height ) {
+	if(sr352_cam_state == SR352_STATE_CAPTURE) {
+		ccic_stop_dma(pcdev);
+		//dev_info(pcdev->icd->parent, "When do capture, we try to skip the latter  frames,as long as we got a right frame -Size: %d x %d-!\n",width, height);
+	}
+	return 0;
+}
+#elif defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_GOYA)
+extern int sr200pc20m_cam_state;
+static int skip_ssg_eof1_eof2_frame (struct mmp_camera_dev *pcdev,
+				unsigned int frame, int width, int height ) {
+	if(sr200pc20m_cam_state == SR200PC20M_STATE_CAPTURE) {
+		ccic_stop_dma(pcdev);
+		//dev_info(pcdev->icd->parent, "When do capture, we try to skip the latter  frames,as long as we got a right frame -Size: %d x %d-!\n",width, height);
+	}
+	return 0;
+}
+#else
 extern int s5k4ecgx_cam_state;
 static int skip_ssg_eof1_eof2_frame (struct mmp_camera_dev *pcdev,
 				unsigned int frame, int width, int height ) {
 	if(s5k4ecgx_cam_state == S5K4ECGX_STATE_CAPTURE) {
 		ccic_stop_dma(pcdev);
-		dev_info(pcdev->icd->parent, "When do capture, we try to skip the latter  frames,as long as we got a right frame -Size: %d x %d-!\n",width, height);
+		//dev_info(pcdev->icd->parent, "When do capture, we try to skip the latter  frames,as long as we got a right frame -Size: %d x %d-!\n",width, height);
 	}
 	return 0;
 }
+
 #endif
 static irqreturn_t mmp_camera_frameirq(int irq, void *data)
 {
 	struct mmp_camera_dev *pcdev = data;
 	struct vb2_buffer *vbuf;
-	volatile u32 irqs;
-	volatile u32 frame;
-	volatile u32 irqsraw;
+	volatile u32 irqs, frame,irqsraw;
 
 	#ifdef __DEBUG_ENABLE_RAWSTATUS
 	irqsraw = ccic_reg_read(pcdev, REG_IRQSTATRAW);
@@ -1037,15 +1134,12 @@ static irqreturn_t mmp_camera_frameirq(int irq, void *data)
 
 	if (irqs & IRQ_OVERFLOW) {
 		set_bit(CF_FRMAE_OVERFLOW, &pcdev->flags);
-	#ifdef __DEBUG_ENABLE_RAWSTATUS
-		dev_info(pcdev->icd->parent,
-			"irqsraw:0x%x\n", irqsraw);
-	#endif
-	#ifdef __DEBUG_ENABLE_OVERFLOWIRQ
-		dev_info(pcdev->icd->parent,
-			"irqs:0x%x, size:%dx%d\n",
-			irqs, ssg_width, ssg_height);
-	#endif
+	//#ifdef __DEBUG_ENABLE_RAWSTATUS
+		//dev_info(pcdev->icd->parent, "camera: Try to debug for Samsung, get __RAW__ irq status, status = 0x%x\n", irqsraw);
+	//#endif
+	//#ifdef __DEBUG_ENABLE_OVERFLOWIRQ
+		//dev_info(pcdev->icd->parent, "camera: Try to debug for Samsung, get  irq status, status = 0x%x, size: %dx%d\n", irqs,ssg_width,ssg_height);
+	//#endif
 	}
 
 	ccic_reg_write(pcdev, REG_IRQSTAT, irqs);
@@ -1065,30 +1159,30 @@ static irqreturn_t mmp_camera_frameirq(int irq, void *data)
 		if (irqs & (IRQ_EOF0 << frame) &&
 		#endif
 			test_bit(CF_FRAME_SOF0 + frame, &pcdev->flags)) {
-#if defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
-			if (s5k_cam_mclk_en.skip_frames > 0) {
-				s5k_cam_mclk_en.skip_frames--;
+#if defined(CONFIG_MACH_HELANDELOS) || defined(CONFIG_MACH_WILCOX) || defined(CONFIG_MACH_CS02) || defined(CONFIG_MACH_LT02) \
+		|| defined(CONFIG_MACH_BAFFIN) || defined(CONFIG_MACH_CT01) || defined(CONFIG_MACH_CS05) || defined(CONFIG_MACH_BAFFINQ)  \
+		|| defined(CONFIG_MACH_GOLDEN) || defined(CONFIG_MACH_GOYA) || defined(CONFIG_MACH_DEGAS)
+			if (samsung_camera.skip_frames > 0) {
+				samsung_camera.skip_frames--;
 				clear_bit(CF_FRAME_SOF0 + frame, &pcdev->flags);
-				dev_info(pcdev->icd->parent, "camera: ccic skip the frame: %d, flag = %d\n", frame, s5k_cam_mclk_en.skip_frames);
+				//dev_info(pcdev->icd->parent, "camera: ccic skip the frame: %d, flag = %d\n", frame, samsung_camera.skip_frames);
 				return IRQ_HANDLED;
 			}
-#endif
-	#ifdef __DEBUG_ENABLE_COUNTS_CHECK
+#endif 
+	#if 0//def __DEBUG_ENABLE_COUNTS_CHECK
 		#ifdef __DEBUG_DMA_DONE
 			check_ssg_frame_line_number(pcdev, frame, ssg_width, ssg_height);
 		#else
 			check_ssg_frame_byte_count(pcdev, frame, ssg_width, ssg_height);
 		#endif
 	#endif
-			if (!test_bit(CF_FRMAE_OVERFLOW, &pcdev->flags)) {
+			if (!test_bit(CF_FRMAE_OVERFLOW, &pcdev->flags))
 				mmp_frame_complete(pcdev, frame);
-			} else {
-				dev_info(pcdev->icd->parent, "abnormal frame drop\n");
+			else
 				clear_bit(CF_FRMAE_OVERFLOW, &pcdev->flags);
-			}
-#if defined(__DEBUG_ENABLE_SKIP_EOF_CHECK) && (defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7))
+	#ifdef __DEBUG_ENABLE_SKIP_EOF_CHECK
 			skip_ssg_eof1_eof2_frame(pcdev, frame, ssg_width, ssg_height);
-#endif
+	#endif
 			clear_bit(CF_FRAME_SOF0 + frame, &pcdev->flags);
 #ifdef CONFIG_VIDEO_MRVL_CAM_DEBUG
 			PEG(pcdev->mcd_root.mcd, MCD_DMA, MCD_DMA_EOF, 1);
@@ -1108,55 +1202,33 @@ static irqreturn_t mmp_camera_frameirq(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
+static irqreturn_t mmp_camera_frameirq(int irq, void *data);
+
 static int mmp_camera_add_device(struct soc_camera_device *icd)
 {
 	struct soc_camera_host *ici = to_soc_camera_host(icd->parent);
 	struct mmp_camera_dev *pcdev = ici->priv;
 	struct mmp_cam_pdata *pdata = pcdev->pdev->dev.platform_data;
 	struct v4l2_subdev *sd = soc_camera_to_subdev(icd);
-	struct v4l2_mbus_config cfg;
 	struct device *dev = &pcdev->pdev->dev;
 	int ret = 0;
 
 	if (pcdev->icd)
 		return -EBUSY;
-#if defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
-	if (pdata->init_pin)
-		pdata->init_pin(dev, 1);
-	else {
+
+	if (!pdata->init_pin || pdata->init_pin(dev, 1)) {
 		ret = -EINVAL;
 		dev_err(icd->parent,
 			"camera: ccic pins are not configured!: %d\n", ret);
 		return ret;
 	}
-#endif
+
 	pcdev->frame_state.frames = 0;
 	pcdev->frame_state.singles = 0;
 	pcdev->frame_state.delivered = 0;
 
 	pcdev->qos_idle.name = pcdev->pdev->name;
-#if defined(CONFIG_CPU_PXA988) && (defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7))
 	pm_qos_update_request(&pcdev->qos_idle, PM_QOS_CPUIDLE_BLOCK_AXI_VALUE);
-	#ifdef __ENABLE_DDR_MIN_312MHZ
-	pm_qos_update_request(&pcdev->qos_ddr, DDR_CONSTRAINT_LVL1);
-	#endif
-#else
-	pm_qos_update_request(&pcdev->qos_idle, PM_QOS_CPUIDLE_BLOCK_DDR_VALUE);
-#endif
-
-	ret = v4l2_subdev_call(sd, video, g_mbus_config, &cfg);
-	if ((ret < 0) && (ret != -ENOIOCTLCMD) && (ret != -ENODEV)) {
-		dev_err(icd->parent,
-			"camera: Failed to get mbus config: %d\n", ret);
-		return ret;
-	}
-
-	if (ret != -ENODEV) {
-		if (cfg.type == V4L2_MBUS_CSI2)
-			pdata->bus_type = V4L2_MBUS_CSI2_LANES;
-		else
-			pdata->bus_type = 0;
-	}
 
 	pcdev->icd = icd;
 	pcdev->state = S_IDLE;
@@ -1184,6 +1256,15 @@ static int mmp_camera_add_device(struct soc_camera_device *icd)
 	if ((ret < 0) && (ret != -ENOIOCTLCMD) && (ret != -ENODEV)) {
 		dev_info(icd->parent,
 			"camera: Failed to initialize subdev: %d\n", ret);
+		return ret;
+	}
+	
+
+	ret = devm_request_irq(&pcdev->pdev->dev, pcdev->irq,
+				mmp_camera_frameirq,
+				IRQF_SHARED, MMP_CAM_DRV_NAME, pcdev);
+	if (ret) {
+		dev_err(&pcdev->pdev->dev, "camera: IRQ request failed\n");
 		return ret;
 	}
 
@@ -1245,17 +1326,11 @@ static void mmp_camera_remove_device(struct soc_camera_device *icd)
 	ccic_power_down(pcdev);
 	// move clock control to s5k43_power
 	// ccic_disable_clk(pcdev);
+	devm_free_irq(dev, pcdev->irq, pcdev);
 	pcdev->icd = NULL;
 
-	pm_qos_update_request(&pcdev->qos_idle,
-				PM_QOS_CPUIDLE_BLOCK_DEFAULT_VALUE);
-	#ifdef __ENABLE_DDR_MIN_312MHZ
-	pm_qos_update_request(&pcdev->qos_ddr, PM_QOS_DEFAULT_VALUE);
-	#endif
-#if defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
 	if (pdata->init_pin)
 		pdata->init_pin(dev, 0);
-#endif
 
 #ifdef CONFIG_VIDEO_MRVL_CAM_DEBUG
 	printk(KERN_INFO "cam: dismount node debugfs/%s/%s\n",
@@ -1269,11 +1344,16 @@ static void mmp_camera_remove_device(struct soc_camera_device *icd)
 	mcd_entity_remove(&pcdev->mcd_sensor.entity);
 	PEG(pcdev->mcd_root.mcd, MCD_VDEV, MCD_VDEV_ACT, -1);
 #endif
+
+	pm_qos_update_request(&pcdev->qos_idle,
+				PM_QOS_CPUIDLE_BLOCK_DEFAULT_VALUE);
 }
 
 static int mmp_camera_set_bus_param(struct soc_camera_device *icd)
 {
 	struct soc_camera_host *ici = to_soc_camera_host(icd->parent);
+	struct soc_camera_link *icl = to_soc_camera_link(icd);
+	struct sensor_board_data *sdata = icl->priv;
 	struct mmp_camera_dev *pcdev = ici->priv;
 	struct device *dev = &pcdev->pdev->dev;
 	struct v4l2_subdev *sd = soc_camera_to_subdev(icd);
@@ -1285,6 +1365,11 @@ static int mmp_camera_set_bus_param(struct soc_camera_device *icd)
 		dev_err(dev, "%s %d\n", __func__, __LINE__);
 		return ret;
 	}
+
+	if (cfg.type == V4L2_MBUS_CSI2)
+		sdata->bus_type = V4L2_MBUS_CSI2;
+	else
+		sdata->bus_type = V4L2_MBUS_PARALLEL;
 
 	ret = v4l2_subdev_call(sd, video, s_mbus_config, &cfg);
 	if ((ret < 0) && (ret != -ENOIOCTLCMD) && (ret != -ENODEV)) {
@@ -1299,6 +1384,8 @@ static int mmp_camera_set_fmt(struct soc_camera_device *icd,
 			struct v4l2_format *f)
 {
 	struct soc_camera_host *ici = to_soc_camera_host(icd->parent);
+	struct soc_camera_link *icl = to_soc_camera_link(icd);
+	struct sensor_board_data *sdata = icl->priv;
 	struct mmp_camera_dev *pcdev = ici->priv;
 	struct mmp_cam_pdata *pdata = pcdev->pdev->dev.platform_data;
 	struct device *dev = &pcdev->pdev->dev;
@@ -1334,7 +1421,7 @@ static int mmp_camera_set_fmt(struct soc_camera_device *icd,
 		dev_err(dev, "camera: wrong code %s %d\n", __func__, __LINE__);
 		return -EINVAL;
 	}
-#if !defined(CONFIG_MACH_LT02) && !defined(CONFIG_MACH_COCOA7)//Vincent Wan marks it, no use for ssg but to waste a little of time.
+	#if 0//Vincent Wan marks it, no use for ssg but to waste a little of time.
 	/*
 	 * To get frame_rate
 	 */
@@ -1347,52 +1434,40 @@ static int mmp_camera_set_fmt(struct soc_camera_device *icd,
 	} else
 		pcdev->frame_rate =
 			inter.interval.numerator / inter.interval.denominator;
-#endif
+	#endif
 	/*
 	 * Update CSI2_DPHY3 value
 	 */
-	inter.pad = pdata->mclk_min; // Init inter.pad
-
-	if (pdata->dphy3_algo == 1)
+	if (sdata->dphy3_algo == 1)
 		/*
 		 * dphy3_algo == 1
 		 * Calculate CSI2_DPHY3 algo for PXA910
 		 */
-		pdata->dphy[0] = ((1 + inter.pad * 80 / 1000) & 0xff) << 8
+		sdata->dphy[0] = ((1 + inter.pad * 80 / 1000) & 0xff) << 8
 				| (1 + inter.pad * 35 / 1000);
-	else if (pdata->dphy3_algo == 2)
+	else if (sdata->dphy3_algo == 2)
 		/*
 		 * dphy3_algo == 2
 		 * Calculate CSI2_DPHY3 algo for PXA2128
 		 */
-		pdata->dphy[0] = ((2 + inter.pad * 110 / 1000) & 0xff) << 8
+		sdata->dphy[0] = ((2 + inter.pad * 110 / 1000) & 0xff) << 8
 				| (1 + inter.pad * 35 / 1000);
-	else{
+	else
 		/*
 		 * dphy3_algo == 0
 		 * Use default CSI2_DPHY3 value in platform data for PXA688
 		 */
-#if defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
-		if((mf.width == 1280 && mf.height == 720)
-				&& sr200pc20m_cam_state
-				!= SR200PC20M_STATE_CAPTURE ) {
-			pdata->dphy[0] = 0x1c0d;
-		}
-		else
-			pdata->dphy[0] = 0x1208;
-#endif
 		dev_dbg(dev, "camera: use the default CSI2_DPHY3 value\n");
-	}
-	dev_info(dev, "camera: DPHY sets: dphy3=0x%x, dphy5=0x%x, dphy6=0x%x\n",
-		pdata->dphy[0], pdata->dphy[1], pdata->dphy[2]);
+	dev_dbg(dev, "camera: DPHY sets: dphy3=0x%x, dphy5=0x%x, dphy6=0x%x\n",
+			sdata->dphy[0], sdata->dphy[1], sdata->dphy[2]);
 
 	pix->width = mf.width;
 	pix->height = mf.height;
 
 	ssg_width = mf.width;
 	ssg_height = mf.height;
-	//dev_info(dev, "camera: set_fmt: %c, width = %u, height = %u\n",
-		//pix->pixelformat, ssg_width, ssg_height);
+	dev_info(dev, "camera: set_fmt: %c, width = %u, height = %u\n",
+		pix->pixelformat, ssg_width, ssg_height);
 
 	pix->field = mf.field;
 	pix->colorspace = mf.colorspace;
@@ -1427,15 +1502,14 @@ static int mmp_camera_try_fmt(struct soc_camera_device *icd,
 
 	pix->bytesperline = soc_mbus_bytes_per_line(pix->width,
 						xlate->host_fmt);
-	if (pix->bytesperline < 0)
-		return pix->bytesperline;
+
 	if (pix->pixelformat == V4L2_PIX_FMT_JPEG) {
 		/*
 		 * Todo: soc_camera_try_fmt could clear
 		 * sizeimage, we can't get the value from
 		 * userspace, just hard coding
 		 */
-		pix->bytesperline = 2048;
+		pix->bytesperline = pix->width * 2;
 	} else
 		pix->sizeimage = pix->height * pix->bytesperline;
 
@@ -1585,10 +1659,7 @@ static int __devinit mmp_camera_probe(struct platform_device *pdev)
 	struct mmp_cam_pdata *pdata;
 	struct resource *res;
 	void __iomem *base;
-	int irq;
-	#ifdef __DEBUG_DDR_CCIC_PRIOTITY
-	int ddrpriority;
-	#endif
+	int irq,ddrpriority;
 	int err = 0;
 
 	pdata = pdev->dev.platform_data;
@@ -1605,36 +1676,25 @@ static int __devinit mmp_camera_probe(struct platform_device *pdev)
 
 	pcdev->pdev = pdev;
 
-	err = pdata->init_clk(&pdev->dev, 1);
+	err = pdata->init_clk(&pdev->dev);
 	if (err)
 		goto exit_clk;
-
-	/* for ssg s5k sensor workaround for power sequence */
-	#ifdef CONFIG_SOC_CAMERA_S5K4ECGX
-	s5k_cam_mclk_en.disable_clk = ccic_disable_clk;
-	s5k_cam_mclk_en.enable_clk = ccic_enable_clk;
-	s5k_cam_mclk_en.pcdev = pcdev;
-	#endif
-	#if defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
-	s5k_cam_mclk_en.disable_clk = ccic_disable_clk;
-	s5k_cam_mclk_en.enable_clk = ccic_enable_clk;
-	s5k_cam_mclk_en.pcdev = pcdev;
-	s5k_cam_mclk_en.skip_frames = 0;
-	#endif
+#if defined(CONFIG_MACH_HELANDELOS) || defined(CONFIG_MACH_WILCOX) || defined(CONFIG_MACH_CS02) || defined(CONFIG_MACH_LT02) \
+	|| defined(CONFIG_MACH_BAFFIN) || defined(CONFIG_MACH_CT01) || defined(CONFIG_MACH_CS05) || defined(CONFIG_MACH_BAFFINQ) \
+	|| defined(CONFIG_MACH_GOLDEN) || defined(CONFIG_MACH_GOYA)  || defined(CONFIG_MACH_DEGAS)
+	if (strcmp(pdata->name, "samsung_camera") == 0){
+		/* for ssg s5k sensor workaround for power sequence */
+		samsung_camera.pcdev = pcdev;
+		samsung_camera.skip_frames = 0;
+	}
+#endif
 	#ifdef __DEBUG_DDR_CCIC_PRIOTITY
 	ddrpriority = __raw_readl(DMCU_VIRT_BASE + DMCU_PORT_PRIORITY) ;
 	ddrpriority |= (0x01 << 30 | 0x03 << 12);
 	 __raw_writel(ddrpriority, DMCU_VIRT_BASE + DMCU_PORT_PRIORITY);
 	 #endif
 	//end workaround by Vincent wan.
-
-	#ifdef CONFIG_SOC_CAMERA_SR030PC50
-	sr030_cam_mclk_en.disable_clk = ccic_disable_clk;
-	sr030_cam_mclk_en.enable_clk = ccic_enable_clk;
-	sr030_cam_mclk_en.pcdev = pcdev;
-	sr030_cam_mclk_en.skip_frames = 0;
-	#endif
-
+	
 	INIT_LIST_HEAD(&pcdev->buffers);
 
 	spin_lock_init(&pcdev->list_lock);
@@ -1642,10 +1702,7 @@ static int __devinit mmp_camera_probe(struct platform_device *pdev)
 
 	pm_qos_add_request(&pcdev->qos_idle, PM_QOS_CPUIDLE_BLOCK,
 				PM_QOS_CPUIDLE_BLOCK_DEFAULT_VALUE);
-	#ifdef __ENABLE_DDR_MIN_312MHZ
-	pm_qos_add_request(&pcdev->qos_ddr, PM_QOS_DDR_DEVFREQ_MIN,
-				PM_QOS_DEFAULT_VALUE);
-	#endif
+
 	/*
 	 * Request the regions and ioremap
 	 */
@@ -1691,14 +1748,7 @@ static int __devinit mmp_camera_probe(struct platform_device *pdev)
 	}
 
 	pcdev->irq = irq;
-	err = devm_request_irq(&pdev->dev, pcdev->irq, mmp_camera_frameirq,
-				IRQF_SHARED, MMP_CAM_DRV_NAME, pcdev);
-	if (err) {
-		dev_err(&pdev->dev, "camera: Interrupt request failed\n");
-		goto exit_clk;
-	}
 
-	ccic_enable_clk(pcdev);
 	pcdev->soc_host.drv_name = MMP_CAM_DRV_NAME;
 	pcdev->soc_host.ops = &mmp_soc_camera_host_ops;
 	pcdev->soc_host.priv = pcdev;
@@ -1708,7 +1758,7 @@ static int __devinit mmp_camera_probe(struct platform_device *pdev)
 				vb2_dma_contig_init_ctx(&pdev->dev);
 	if (IS_ERR(pcdev->vb_alloc_ctx)) {
 		err = PTR_ERR(pcdev->vb_alloc_ctx);
-		goto exit_disable_clk;
+		goto exit_clk;
 	}
 
 	err = soc_camera_host_register(&pcdev->soc_host);
@@ -1718,17 +1768,11 @@ static int __devinit mmp_camera_probe(struct platform_device *pdev)
 	PEG(pcdev->mcd_root.mcd, MCD_VDEV, MCD_VDEV_REG, 1);
 #endif
 
-	ccic_disable_clk(pcdev);
-
 	return 0;
 
 exit_free_ctx:
 	vb2_dma_contig_cleanup_ctx(pcdev->vb_alloc_ctx);
-exit_disable_clk:
-	ccic_disable_clk(pcdev);
 exit_clk:
-	pdata->init_clk(&pdev->dev, 0);
-
 	return err;
 }
 
@@ -1738,10 +1782,8 @@ static int __devexit mmp_camera_remove(struct platform_device *pdev)
 	struct soc_camera_host *soc_host = to_soc_camera_host(&pdev->dev);
 	struct mmp_camera_dev *pcdev = container_of(soc_host,
 			struct mmp_camera_dev, soc_host);
-	struct mmp_cam_pdata *pdata = pcdev->pdev->dev.platform_data;
 
 	pm_qos_remove_request(&pcdev->qos_idle);
-	pdata->init_clk(&pdev->dev, 0);
 	soc_camera_host_unregister(soc_host);
 	vb2_dma_contig_cleanup_ctx(pcdev->vb_alloc_ctx);
 	pcdev->vb_alloc_ctx = NULL;
@@ -1788,14 +1830,8 @@ static int mmp_camera_suspend(struct device *dev)
 
 	ccic_disable_clk(pcdev);
 	ccic_power_down(pcdev);
-#ifdef CONFIG_SOC_CAMERA_SR030PC50
 	if (pdata->init_pin)
 		pdata->init_pin(dev, 0);
-#endif
-#if defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
-	if (pdata->init_pin)
-		pdata->init_pin(dev, 0);
-#endif
 
 	pm_qos_update_request(&pcdev->qos_idle,
 				PM_QOS_CPUIDLE_BLOCK_DEFAULT_VALUE);
@@ -1814,20 +1850,11 @@ static int mmp_camera_resume(struct device *dev)
 
 	if (icd == NULL || icd->use_count == 0)
 		return 0;
-#if defined(CONFIG_MACH_LT02) || defined(CONFIG_MACH_COCOA7)
-#ifdef CONFIG_CPU_PXA988
+
 	pm_qos_update_request(&pcdev->qos_idle, PM_QOS_CPUIDLE_BLOCK_AXI_VALUE);
-#endif
+
 	if (pdata->init_pin)
 		pdata->init_pin(dev, 1);
-#else
-#ifdef CONFIG_SOC_CAMERA_SR030PC50
-	if (pdata->init_pin)
-		pdata->init_pin(dev, 1);
-#else
-	pm_qos_update_request(&pcdev->qos_idle, PM_QOS_CPUIDLE_BLOCK_DDR_VALUE);
-#endif
-#endif
 	ccic_power_up(pcdev);
 	ccic_enable_clk(pcdev);
 

@@ -91,6 +91,14 @@ const static struct v4l2_fmtdesc mmp_formats[] = {
 	 .description = "BGR888, packed",
 	 .pixelformat = V4L2_PIX_FMT_BGR24,
 	},
+	{
+	 .description = "YUV420, semiplaner",
+	 .pixelformat = V4L2_PIX_FMT_NV12,
+	},
+	{
+	 .description = "YVU420, semiplaner",
+	 .pixelformat = V4L2_PIX_FMT_NV21,
+	},
 };
 #define NUM_OUTPUT_FORMATS (ARRAY_SIZE(mmp_formats))
 
@@ -130,6 +138,7 @@ struct mmp_overlay {
 	u8 global_alpha;
 	struct _sColorKeyNAlpha ckey_alpha;	/* fix me */
 	u32 dma_ctl0;
+	u32 yuv420sp_ctrl;
 	bool update;		/* if 1, update the overlay control info */
 
 	spinlock_t vbq_lock;	/* spinlock for videobuf queues */
@@ -453,6 +462,8 @@ static int mmp_ovly_try_format(struct v4l2_pix_format *pix)
 	switch (pix->pixelformat) {
 	case V4L2_PIX_FMT_YUV420:
 	case V4L2_PIX_FMT_YVU420:
+	case V4L2_PIX_FMT_NV12:
+	case V4L2_PIX_FMT_NV21:
 	default:
 		pix->colorspace = V4L2_COLORSPACE_JPEG;
 		bpp = 12;
@@ -524,6 +535,8 @@ int mmpvid_init(struct mmp_overlay *ovly)
 
 	reg = dma_ctrl_read(ovly->id, 0);
 	reg &= 0xef0fffe1;
+	ovly->yuv420sp_ctrl = 0;
+
 	switch (pix->pixelformat) {
 	case V4L2_PIX_FMT_YVU420:
 		reg |= CFG_DMA_SWAPUV(1);
@@ -536,6 +549,16 @@ int mmpvid_init(struct mmp_overlay *ovly)
 		ovly->uvpitch = pix->width >> 1;
 		ovly->y_size = pix->width * pix->height;
 		ovly->uv_size = ovly->y_size >> 2;
+		break;
+	case V4L2_PIX_FMT_NV21:
+		ovly->yuv420sp_ctrl = swap_spuv(ovly->id);
+	case V4L2_PIX_FMT_NV12:
+		reg |= CFG_DMAFORMAT(GMODE_YUV420SPLANAR) |
+			CFG_YUV2RGB_DMA(1) |
+			(mi->panel_rbswap << 4);
+		ovly->ypitch = pix->width;
+		ovly->uvpitch = pix->width;
+		ovly->y_size = pix->width * pix->height;
 		break;
 	case V4L2_PIX_FMT_YUV422P:
 		reg |= CFG_DMAFORMAT(GMODE_YUV422PLANAR) |
@@ -667,6 +690,7 @@ int mmpvid_apply_changes(struct mmp_overlay *ovly)
 			 &regs->v_size_z);
 
 		dma_ctrl_write(ovly->id, 0, ovly->dma_ctl0);
+		yuvsp_fmt_ctrl(yuvsp_mask(ovly->id), ovly->yuv420sp_ctrl);
 		ovly->update = 0;
 	}
 

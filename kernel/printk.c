@@ -46,6 +46,7 @@
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/printk.h>
+#include <mach/sec_debug.h>
 
 /*
  * Architectures can override it:
@@ -745,6 +746,35 @@ static void call_console_drivers(unsigned start, unsigned end)
 	_call_console_drivers(start_print, end, msg_level);
 }
 
+#ifdef CONFIG_SEC_LOG
+static void (*log_char_hook)(char c);
+
+void register_log_char_hook(void (*f) (char c))
+{
+	unsigned start;
+	unsigned long flags;
+
+	raw_spin_lock_irqsave(&logbuf_lock, flags);
+
+	start = min(con_start, log_start);
+	while (start != log_end)
+		f(__log_buf[start++ & (__LOG_BUF_LEN - 1)]);
+
+	log_char_hook = f;
+
+	raw_spin_unlock_irqrestore(&logbuf_lock, flags);
+}
+EXPORT_SYMBOL(register_log_char_hook);
+
+void sec_getlog_supply_kloginfo(void *klog_buf)
+{
+	pr_info("%s: 0x%p\n", __func__, klog_buf);
+	kernel_log_mark.p__log_buf = klog_buf;
+}
+EXPORT_SYMBOL(sec_getlog_supply_kloginfo);
+
+#endif
+
 static void emit_log_char(char c)
 {
 	LOG_BUF(log_end) = c;
@@ -755,6 +785,11 @@ static void emit_log_char(char c)
 		con_start = log_end - log_buf_len;
 	if (logged_chars < log_buf_len)
 		logged_chars++;
+
+#ifdef CONFIG_SEC_LOG
+	if (log_char_hook)
+		log_char_hook(c);
+#endif
 }
 
 /*
@@ -786,29 +821,29 @@ static bool printk_time = 0;
 #endif
 module_param_named(time, printk_time, bool, S_IRUGO | S_IWUSR);
 
-static bool always_kmsg_dump;
-module_param_named(always_kmsg_dump, always_kmsg_dump, bool, S_IRUGO | S_IWUSR);
-
 #if defined(CONFIG_PRINTK_CPU_ID)
-static int printk_cpu_id = 1;
+static bool printk_cpu_id = 1;
 #else
-static int printk_cpu_id = 0;
+static bool printk_cpu_id;
 #endif
 module_param_named(cpu, printk_cpu_id, bool, S_IRUGO | S_IWUSR);
 
 #if defined(CONFIG_PRINTK_PID)
-static int printk_pid = 1;
+static bool printk_pid = 1;
 #else
-static int printk_pid = 0;
+static bool printk_pid;
 #endif
 module_param_named(pid, printk_pid, bool, S_IRUGO | S_IWUSR);
 
 #if defined(CONFIG_PRINTK_COMM)
-static int printk_comm = 1;
+static bool printk_comm = 1;
 #else
-static int printk_comm = 0;
+static bool printk_comm;
 #endif
 module_param_named(comm, printk_comm, bool, S_IRUGO | S_IWUSR);
+
+static bool always_kmsg_dump;
+module_param_named(always_kmsg_dump, always_kmsg_dump, bool, S_IRUGO | S_IWUSR);
 
 /* Check if we have any console registered that can be called early in boot. */
 static int have_callable_console(void)
@@ -1062,23 +1097,26 @@ asmlinkage int vprintk(const char *fmt, va_list args)
 					emit_log_char(*tp);
 				printed_len += tlen;
 			}
+
 			if (printk_pid) {
 				/* Add the current process id */
 				char tbuf[10], *tp;
 				unsigned tlen;
 
-				tlen = sprintf(tbuf, "%6u ", current->pid);
+				tlen = sprintf(tbuf, "%u ", current->pid);
 
 				for (tp = tbuf; tp < tbuf + tlen; tp++)
 					emit_log_char(*tp);
 				printed_len += tlen;
 			}
+
 			if (printk_comm) {
 				/* Add the current process comm */
-				char tbuf[20]={0,}, *tp;
+				char tbuf[TASK_COMM_LEN + 4] = {0,}, *tp;
 				unsigned tlen;
 
-				tlen = snprintf(tbuf, sizeof(tbuf), "%s ", current->comm);
+				tlen = snprintf(tbuf, sizeof(tbuf), "(%s) ",
+						current->comm);
 
 				for (tp = tbuf; tp < tbuf + tlen; tp++)
 					emit_log_char(*tp);

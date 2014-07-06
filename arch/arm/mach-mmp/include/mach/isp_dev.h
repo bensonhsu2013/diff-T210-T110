@@ -26,12 +26,31 @@
 #ifndef ISP_DEV_H
 #define ISP_DEV_H
 
+#include <media/map_camera.h>
+#include <media/mrvl-camera.h>
+#include <linux/mvisp.h>
+
 enum mvisp_interface_type {
 	ISP_INTERFACE_PARALLEL_0,
 	ISP_INTERFACE_PARALLEL_1,
 	ISP_INTERFACE_CCIC_1,
 	ISP_INTERFACE_CCIC_2,
 };
+
+enum {
+	PCAM_IP_CCIC	= 0,
+	PCAM_IP_DXO,
+	PCAM_IP_SENSOR,
+	PCAM_IP_CNT,
+	PCAM_DEV_CCIC_END	= 2,
+	PCAM_DEV_DXO_END	= 1,
+};
+
+int plat_agent_register(struct hw_agent *agent);
+int plat_resrc_register(struct device *dev, struct resource *res,
+	const char *name, union agent_id mask,
+	int res_id, void *handle, void *priv);
+int sensor_set_clock(struct hw_agent *agent, int rate);
 
 struct mvisp_subdev_i2c_board_info {
 	struct i2c_board_info *board_info;
@@ -50,8 +69,12 @@ struct mvisp_platform_data {
 	bool ispdma_dummy_ena;
 	unsigned int isp_clknum;
 	unsigned int ccic_clknum;
+	unsigned int isp_clk_rate_num;
+	unsigned long isp_clk_rate[CLK_RATE_NUM];
+	unsigned int ccic_clk_rate_num;
+	unsigned long ccic_clk_rate[CLK_RATE_NUM];
 	char **clkname;
-	void (*init_pin)(struct device *dev, int on);
+	int (*init_pin)(struct device *dev, int on);
 	int (*mvisp_reset)(void *param);
 	int (*isp_pwr_ctrl)(int);
 };
@@ -62,7 +85,7 @@ int mmp3_isp_reset_hw(void *param);
 int isppwr_power_control(int on);
 #endif
 
-#ifdef CONFIG_CPU_PXA988
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 void __init pxa988_register_dxoisp(struct mvisp_platform_data *pdata);
 int pxa988_isp_reset_hw(void *param);
 int pxa988_isp_power_control(int on);

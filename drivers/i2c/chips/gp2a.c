@@ -34,16 +34,13 @@
 #include <linux/workqueue.h>
 #include <linux/uaccess.h>
 #include <linux/gp2a.h>
-
-#if defined(CONFIG_MACH_LT02)
-#include <mach/mfp-pxa986-lt02.h>
-#elif defined(CONFIG_MACH_COCOA7)
-#include <mach/mfp-pxa986-cocoa7.h>
-#else
+#if defined(CONFIG_MACH_HELANDELOS) || defined(CONFIG_MACH_WILCOX)
+#include <mach/mfp-pxa1088-delos.h>
+#elif defined(CONFIG_MACH_KYLE) || defined(CONFIG_MACH_ARUBA_TD) || defined(CONFIG_MACH_WARUBA) || defined(CONFIG_MACH_HARRISON) || defined(CONFIG_MACH_CS02) || defined(CONFIG_MACH_GOLDEN) || defined(CONFIG_MACH_GOYA)
 #include <mach/mfp-pxa988-aruba.h>
 #endif
 
-#include <linux/sensors_head.h>
+#include "sensors_head.h"
 #include <linux/regulator/machine.h>
 
 
@@ -64,9 +61,7 @@
 
 #define gp2a_dbgmsg(str, args...) pr_debug("%s: " str, __func__, ##args)
 
-#if defined(CONFIG_MACH_KYLE) || defined(CONFIG_MACH_ARUBA_TD)
 #define GP2AP002X_PROXIMITY_OFFSET
-#endif
 
 /* ADDSEL is LOW */
 #define REGS_PROX		0x0 /* Read  Only */
@@ -76,23 +71,22 @@
 #define REGS_OPMOD		0x4 /* Write Only */
 #define REGS_CON		0x6 /* Write Only */
 
-#if 0
-#if defined(CONFIG_MACH_KYLE_I)
-#define PROX_NONDETECT	0x2F
-#define PROX_DETECT		0x0F
-#elif defined(CONFIG_MACH_KYLE)
+#if defined(CONFIG_MACH_HELANDELOS) || defined(CONFIG_MACH_WILCOX)
+/* B1 mode */
 #define PROX_NONDETECT	0x40
 #define PROX_DETECT		0x20
-#elif defined(CONFIG_MACH_ARUBA_OPEN)
+#elif defined(CONFIG_MACH_CS02) || defined(CONFIG_MACH_GOLDEN) 
+/* Special B2 mode */
+#define PROX_NONDETECT	0x40
+#define PROX_DETECT		0x00
+#elif defined CONFIG_MACH_BAFFINQ
 #define PROX_NONDETECT	0x2F
-#define PROX_DETECT		0x0F
+#define PROX_DETECT		0x0C
 #else
-#define PROX_NONDETECT	0x40
-#define PROX_DETECT		0x20
-#endif
-#endif
+/* B1.5 mode */
 #define PROX_NONDETECT	0x2F
 #define PROX_DETECT		0x0F
+#endif
 
 
 #ifdef GP2AP002X_PROXIMITY_OFFSET
@@ -112,8 +106,6 @@ static int detect;
 struct workqueue_struct *prox_wq;
 
 struct gp2a_data;
-static struct regulator *prox_3_0;
-static struct regulator *proxLed;
 enum {
 	LIGHT_ENABLED = BIT(0),
 	PROXIMITY_ENABLED = BIT(1),
@@ -374,50 +366,7 @@ static struct device_attribute *proxi_attrs[] = {
 #endif
 	NULL,
 };
-static void proximity_regulator(int en)
-{
-	u8 ret;
-	if (!prox_3_0) {
-		prox_3_0 = regulator_get(NULL, "v_proxy_3v");
-		if (IS_ERR(prox_3_0)) {
-			pr_err("%s regulator get error!\n", __func__);
-			prox_3_0 = NULL;
-			return;
-		}
-	}
-	if (!proxLed) {
-		proxLed = regulator_get(NULL, "v_proxy_led_3v3");
-		if (IS_ERR(proxLed)) {
-			pr_err("%s regulator get error!\n", __func__);
-			proxLed = NULL;
-			return;
-		}
-	}
-	if(en)
-	{
-		//LDO Power On=============
-		regulator_set_voltage(prox_3_0, 3000000, 3000000);
-		regulator_enable(prox_3_0);
-		msleep(2);
 
-		regulator_set_voltage(proxLed, 3300000, 3300000);
-		regulator_enable(proxLed);
-		msleep(2);
-		printk("[GP2A]prox LDO power on\n");
-	}
-	else
-	{
-		ret = regulator_disable(prox_3_0);
-		if (ret) {
-			printk(KERN_ERR "%s: v_prox_3_0 disable failed (%d)\n",__func__, ret);
-		}
-		ret = regulator_disable(proxLed);
-		if (ret) {
-			printk(KERN_ERR "%s: v_proxLed disable failed (%d)\n",__func__, ret);
-		}
-		printk("[GP2A]prox LDO power off\n");
-	}
-}
 static ssize_t proximity_enable_show(struct device *dev,
 				 struct device_attribute *attr, char *buf)
 {
@@ -433,9 +382,6 @@ static ssize_t proximity_enable_store(struct device *dev,
 	struct gp2a_data *gp2a = dev_get_drvdata(dev);
 	bool new_value;
 	u8 value;
-#ifdef GP2AP002X_PROXIMITY_OFFSET
-	u8 err;
-#endif
 
 	if (sysfs_streq(buf, "1")) {
 		new_value = true;
@@ -456,6 +402,9 @@ static ssize_t proximity_enable_store(struct device *dev,
 			(gp2a->power_state & PROXIMITY_ENABLED) ? 1 : 0);
 #endif
 	if (new_value && !(gp2a->power_state & PROXIMITY_ENABLED)) {
+#ifdef GP2AP002X_PROXIMITY_OFFSET
+		int err;
+#endif		
 		pr_info("[TMP] %s, %d\n", __func__, __LINE__);
 #ifdef GP2AP002X_PROXIMITY_OFFSET
 		err = gp2a_cal_mode_read_file(&gp2a->cal_mode);
@@ -481,8 +430,7 @@ static ssize_t proximity_enable_store(struct device *dev,
 		input_sync(gp2a->proximity_input_dev);
 
 		gp2a->power_state |= PROXIMITY_ENABLED;
-//		gp2a->pdata->power(true);
-		proximity_regulator(1);
+		gp2a->pdata->power(true);
 		msleep(20);
 
 		value = 0x18;
@@ -520,11 +468,9 @@ static ssize_t proximity_enable_store(struct device *dev,
 		value = 0x02;
 		gp2a_i2c_write(gp2a, REGS_OPMOD, &value);
 		gp2a->power_state &= ~PROXIMITY_ENABLED;
-		//gp2a->pdata->power(false);
-		proximity_regulator(0);
+		gp2a->pdata->power(false);
 	}
 	mutex_unlock(&gp2a->power_lock);
-
 	return size;
 }
 
@@ -552,11 +498,7 @@ static void gp2a_prox_work_func(struct work_struct *work)
 		struct gp2a_data, work_prox);
 	u8 vo, value;
 	if (gp2a->irq != 0) {
-		#if defined(CONFIG_MACH_GEIM)
-			disable_irq_wake(gp2a->irq);
-		#else
-			disable_irq_wake(gp2a->irq);
-		#endif
+		disable_irq_wake(gp2a->irq);
 		disable_irq(gp2a->irq);
 	} else {
 		return ;
@@ -572,17 +514,12 @@ static void gp2a_prox_work_func(struct work_struct *work)
 			vo = 0x00;
 			value = detect;
 		}
-#ifdef ALPS_DEBUG
-		pr_info("%s: %d\n", __func__, gp2a->val_state);
-#endif
+		pr_info("%s: value %d\n", __func__, gp2a->val_state);
 		gp2a_i2c_write(gp2a, REGS_HYS, &value);
 		gp2a->val_state = vo;
 	}
 
-
-	input_report_abs(gp2a->proximity_input_dev,
-		ABS_DISTANCE,
-		gp2a->val_state);
+	input_report_abs(gp2a->proximity_input_dev, ABS_DISTANCE, gp2a->val_state);
 	input_sync(gp2a->proximity_input_dev);
 	msleep(20);
 
@@ -604,7 +541,7 @@ static void gp2a_prox_work_func(struct work_struct *work)
 irqreturn_t gp2a_irq_handler(int irq, void *data)
 {
 	struct gp2a_data *gp2a = data;
-	pr_info("%s:  work\n", __func__);
+	pr_info("%s entered.\n", __func__);
 	if (gp2a->irq != -1) {
 		schedule_work((struct work_struct *)&gp2a->work_prox);
 		wake_lock_timeout(&gp2a->prx_wake_lock, 3*HZ);
@@ -621,26 +558,26 @@ static int gp2a_setup_irq(struct gp2a_data *gp2a)
 	u8 value;
 
 	gp2a_dbgmsg("start\n");
-	printk("%s gp2a->i2c_client->irq:%d", __func__,gp2a->i2c_client->irq);
+	printk("%s gp2a->pdata->p_out:%d", __func__,gp2a->pdata->p_out/*->i2c_client->irq*/);
 
-	rc = gpio_request(gp2a->i2c_client->irq, "gpio_proximity_out");
+	rc = gpio_request(gp2a->pdata->p_out, "gpio_proximity_out");
 	if (rc < 0) {
 		pr_err("%s: gpio %d request failed (%d)\n",
-			__func__, gp2a->i2c_client->irq, rc);
+			__func__, gp2a->pdata->p_out, rc);
 		return rc;
 	}
 
-	rc = gpio_direction_input(gp2a->i2c_client->irq);
+	rc = gpio_direction_input(gp2a->pdata->p_out);
 	if (rc < 0) {
 		pr_err("%s: failed to set gpio %d as input (%d)\n",
-			__func__, gp2a->i2c_client->irq, rc);
+			__func__, gp2a->pdata->p_out, rc);
 		goto err_gpio_direction_input;
 	}
 
 	value = 0x18;
 	gp2a_i2c_write(gp2a, REGS_CON, &value);
-	irq = gpio_to_irq(gp2a->i2c_client->irq);
-	rc = request_irq(gp2a->i2c_client->irq,
+	irq = gp2a->i2c_client->irq;//gpio_to_irq(gp2a->i2c_client->irq);
+	rc = request_irq(irq,
 			 gp2a_irq_handler,
 			 IRQF_TRIGGER_FALLING,
 			 "proximity_int",
@@ -649,11 +586,11 @@ static int gp2a_setup_irq(struct gp2a_data *gp2a)
 	if (rc < 0) {
 		pr_err("%s: request_irq(%d) failed for gpio %d (%d)\n",
 			__func__, irq,
-			gp2a->i2c_client->irq, rc);
+			gp2a->pdata->p_out, rc);
 		goto err_request_irq;
 	} else{
 		pr_info("%s: request_irq(%d) success for gpio %d\n",
-			__func__, irq, gp2a->i2c_client->irq);
+			__func__, irq, gp2a->pdata->p_out);
 	}
 	/* start with interrupts disabled */
 	disable_irq(irq);
@@ -677,7 +614,7 @@ static int gp2a_setup_irq(struct gp2a_data *gp2a)
 
 err_request_irq:
 err_gpio_direction_input:
-	gpio_free(gp2a->i2c_client->irq);
+	gpio_free(gp2a->pdata->p_out);
 done:
 	return rc;
 }
@@ -688,7 +625,7 @@ static int gp2a_i2c_probe(struct i2c_client *client,
 	int ret = -ENODEV;
 	struct input_dev *input_dev;
 	struct gp2a_data *gp2a;
-//	struct gp2a_platform_data *pdata = client->dev.platform_data;
+	struct gp2a_platform_data *pdata = client->dev.platform_data;
 	u8 value;
 
 	pr_info("[TMP] %s, %d\n", __func__, __LINE__);
@@ -701,7 +638,7 @@ static int gp2a_i2c_probe(struct i2c_client *client,
 #endif
 	pr_info("%s: %02x %02x\n", __func__, nondetect, detect);
 
-#if 0 // no pdata here
+
 	if (!pdata) {
 		pr_err("%s: missing pdata!\n", __func__);
 		return ret;
@@ -714,9 +651,7 @@ static int gp2a_i2c_probe(struct i2c_client *client,
 
 	/* power on gp2a */
 	pdata->power(true);
-#endif
-	proximity_regulator(1);
-	msleep(20);
+	msleep(10);
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
 		pr_err("%s: i2c functionality check failed!\n", __func__);
 		return ret;
@@ -729,7 +664,7 @@ static int gp2a_i2c_probe(struct i2c_client *client,
 		return -ENOMEM;
 	}
 
-//	gp2a->pdata = pdata;
+	gp2a->pdata = pdata;
 	gp2a->i2c_client = client;
 	i2c_set_clientdata(client, gp2a);
 
@@ -768,19 +703,20 @@ static int gp2a_i2c_probe(struct i2c_client *client,
 
 	/* the timer just fires off a work queue request.  we need a thread
 	   to read the i2c (can be slow and blocking). */
-	INIT_WORK(&gp2a->work_prox, gp2a_prox_work_func);
+	INIT_WORK(&gp2a->work_prox, gp2a_prox_work_func);	
+				
 
-
-#if 0
+#if 1	
 	ret = gp2a_setup_irq(gp2a);
 
 	if (ret) {
 		pr_err("%s: could not setup irq\n", __func__);
 		goto err_setup_irq;
 	}
-#endif
+#else
 //===========================================
 printk("%s gp2a->i2c_client->irq:%d", __func__,GPIO_PS_VOUT);
+printk("%s gp2a->i2c_client->irq:%d", __func__,gp2a->i2c_client->irq);
 
 	//gpio_request(GPIO_PS_VOUT, "gpio_proximity_out");
 	//gpio_direction_input(GPIO_PS_VOUT);
@@ -801,7 +737,7 @@ printk("%s gp2a->i2c_client->irq:%d", __func__,GPIO_PS_VOUT);
 
 	value = 0x18;
 	gp2a_i2c_write(gp2a, REGS_CON, &value);
-
+	
 	gp2a->irq = gpio_to_irq(GPIO_PS_VOUT);
 	ret= request_irq(gp2a->irq, gp2a_irq_handler, IRQF_TRIGGER_RISING|IRQF_TRIGGER_FALLING, "proximity_int", gp2a);
 	if (ret < 0) {
@@ -831,6 +767,7 @@ printk("%s gp2a->i2c_client->irq:%d", __func__,GPIO_PS_VOUT);
 	value = 0x02;
 	gp2a_i2c_write(gp2a, REGS_OPMOD, &value);
 //==============================================
+#endif
 
 #if 1 //not yet ready
 	ret = sensors_register(&gp2a->proximity_dev, gp2a,
@@ -839,7 +776,7 @@ printk("%s gp2a->i2c_client->irq:%d", __func__,GPIO_PS_VOUT);
 		pr_info("%s: could not sensors_register\n", __func__);
 		goto exit_gp2a_sensors_register;
 	}
-#endif
+#endif	
 
 	/* set initial proximity value as 1 */
 	input_report_abs(gp2a->proximity_input_dev, ABS_DISTANCE, 1);
@@ -847,8 +784,7 @@ printk("%s gp2a->i2c_client->irq:%d", __func__,GPIO_PS_VOUT);
 
 	pr_info("[TMP] %s, %d\n", __func__, __LINE__);
 
-	//pdata->power(false);
-	proximity_regulator(0);
+	pdata->power(false);
 	goto done;
 
 	/* error, unwind it all */
@@ -900,9 +836,7 @@ static void gp2a_i2c_shutdown(struct i2c_client *client)
 		free_irq(gp2a->irq, gp2a);
 		gpio_free(gp2a->i2c_client->irq);
 
-		//gp2a->pdata->power(false);
-		if (gp2a->power_state & PROXIMITY_ENABLED)
-			proximity_regulator(0);
+		gp2a->pdata->power(false);
 
 		mutex_destroy(&gp2a->power_lock);
 

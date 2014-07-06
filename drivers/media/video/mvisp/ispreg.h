@@ -138,7 +138,27 @@ struct isp_reg_context {
 #define ISPDMA_CODEC_RAMCTRL		0x0228
 #define ISPDMA_CODEC_STAT			0x0230
 
+#define ISPDMA_DISPL_BASE		0x0100
+#define ISPDMA_CODEC_BASE		0x0200
 
+#define ISPDMA_SDCA	0x00
+#define ISPDMA_DCSZ	0x04
+#define ISPDMA_CTRL	0x08
+#define ISPDMA_DSTSZ	0x0C
+#define ISPDMA_DSTADDR	0x10
+#define ISPDMA_HSIZE	0x14
+#define ISPDMA_VSIZE	0x18
+#define ISPDMA_PITCH	0x1C
+#define ISPDMA_VBSZ	0x20
+#define ISPDMA_RAMCTRL	0x28
+#define ISPDMA_STAT	0x30
+#define ISPDMA_DBG1	0x34
+#define ISPDMA_DBG2	0x38
+#define ISPDMA_CTRL1	0x3C
+#define ISPDMA_DSTADDR_U	0x50
+#define ISPDMA_DSTSZ_U		0x54
+#define ISPDMA_DSTADDR_V	0x58
+#define ISPDMA_DSTSZ_V		0x5C
 
 #define FBTX_DMA_TIMER_VAL				0x80
 #define FBRX_DMA_TIMER_VAL				0x80
@@ -271,5 +291,9 @@ struct isp_reg_context {
 #define CCIC_IRQ_STATUS_EOF0			0x0001
 #define CCIC_IRQ_STATUS_EOF1			0x0002
 #define CCIC_IRQ_STATUS_EOF2			0x0004
+
+#define CCIC_CTRL1_2_FRAME	0x8000000
+#define CCIC_CTRL1_MAGIC_NUMBER	0x3C /* always set according to spec*/
+#define CCIC_CTRL1_DMA_128B	(1 << 25)
 
 #endif	/* ISP_REG_H */

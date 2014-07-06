@@ -25,8 +25,8 @@
 #include "sd.h"
 #include "sd_ops.h"
 
-#ifdef CONFIG_MACH_LT02
-#define _MMC_SAFE_ACCESS_
+#ifdef _MMC_SAFE_ACCESS_
+extern int mmc_is_available;
 #endif
 
 static const unsigned int tran_exp[] = {
@@ -679,8 +679,6 @@ MMC_DEV_ATTR(manfid, "0x%06x\n", card->cid.manfid);
 MMC_DEV_ATTR(name, "%s\n", card->cid.prod_name);
 MMC_DEV_ATTR(oemid, "0x%04x\n", card->cid.oemid);
 MMC_DEV_ATTR(serial, "0x%08x\n", card->cid.serial);
-MMC_DEV_ATTR(caps, "0x%08x\n", (unsigned int)(card->host->caps));
-MMC_DEV_ATTR(caps2, "0x%08x\n", card->host->caps2);
 
 
 static struct attribute *sd_std_attrs[] = {
@@ -696,8 +694,6 @@ static struct attribute *sd_std_attrs[] = {
 	&dev_attr_name.attr,
 	&dev_attr_oemid.attr,
 	&dev_attr_serial.attr,
-	&dev_attr_caps.attr,
-	&dev_attr_caps2.attr,
 	NULL,
 };
 
@@ -1057,16 +1053,16 @@ static void mmc_sd_detect(struct mmc_host *host)
 {
 	int err = 0;
 #ifdef CONFIG_MMC_PARANOID_SD_INIT
-	int retries = 5;
+        int retries = 5;
 #endif
 
 #ifdef _MMC_SAFE_ACCESS_
-	int  slowcount = 50;
+	int slowcount = 50;
 #endif
 
 	BUG_ON(!host);
 	BUG_ON(!host->card);
-
+       
 	mmc_claim_host(host);
 
 	/*
@@ -1086,29 +1082,24 @@ send_again:
 	}
 	if (!retries) {
 		printk(KERN_ERR "%s(%s): Unable to re-detect card (%d)\n",
-				__func__, mmc_hostname(host), err);
+		       __func__, mmc_hostname(host), err);
 	}
 #else
 	err = _mmc_detect_card_removed(host);
 #endif
-
 #ifdef _MMC_SAFE_ACCESS_
 	slowcount--;
-	if ((mmc_is_available == 0) && (err == 0) && (slowcount != 0)) {
-		/*wait 1s until sd card perfectly removed*/
+	if((mmc_is_available == 0) && (err == 0) && (slowcount != 0)){
 		mdelay(10);
 		goto send_again;
 	}
-#endif
-
+#endif	
 	mmc_release_host(host);
-
-#ifdef _MMC_SAFE_ACCESS_
-	if (err || (slowcount == 0 && mmc_is_available == 0)) {
+#ifdef	_MMC_SAFE_ACCESS_
+	if(err || (slowcount == 0 && mmc_is_available == 0)) {
 #else
 	if (err) {
 #endif
-
 		mmc_sd_remove(host);
 
 		mmc_claim_host(host);

@@ -20,7 +20,7 @@
  *      @file    inv_mpu_core.c
  *      @brief   A sysfs device driver for Invensense devices
  *      @details This driver currently works for the
- *               MPU3050/MPU6050/MPU9150/MPU6500 devices.
+ *               MPU3050/MPU6050/MPU9150/MPU6500/MPU9250 devices.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -67,6 +67,7 @@ static const struct inv_hw_s hw_info[INV_NUM_PARTS] = {
 	{ 63, "MPU3050"},
 	{117, "MPU6050"},
 	{118, "MPU9150"},
+	{118, "MPU9250"},
 	{119, "MPU6500"},
 };
 
@@ -1850,6 +1851,8 @@ static int inv_check_chip_type(struct inv_mpu_iio_s *st,
 		st->chip_type = INV_MPU6050;
 	else if (!strcmp(id->name, "mpu9150"))
 		st->chip_type = INV_MPU9150;
+	else if (!strcmp(id->name, "mpu9250"))
+		st->chip_type = INV_MPU9250;
 	else if (!strcmp(id->name, "mpu6500"))
 		st->chip_type = INV_MPU6500;
 	else
@@ -1896,6 +1899,12 @@ static int inv_check_chip_type(struct inv_mpu_iio_s *st,
 		st->chip_config.has_compass = 1;
 		st->num_channels = INV_CHANNEL_NUM_GYRO_ACCL_QUANTERNION_MAGN;
 		break;
+	case INV_MPU9250:
+		st->plat_data.sec_slave_type = SECONDARY_SLAVE_TYPE_COMPASS;
+		st->plat_data.sec_slave_id = COMPASS_ID_AK8963;
+		st->chip_config.has_compass = 1;
+		st->num_channels = INV_CHANNEL_NUM_GYRO_ACCL_QUANTERNION_MAGN;
+		break;
 	case INV_MPU3050:
 		if (SECONDARY_SLAVE_TYPE_ACCEL ==
 		    st->plat_data.sec_slave_type) {
@@ -1914,6 +1923,7 @@ static int inv_check_chip_type(struct inv_mpu_iio_s *st,
 	switch (st->chip_type) {
 	case INV_MPU6050:
 	case INV_MPU9150:
+	case INV_MPU9250:
 		result = inv_get_silicon_rev_mpu6050(st);
 		break;
 	case INV_MPU6500:
@@ -1952,13 +1962,16 @@ static int inv_check_chip_type(struct inv_mpu_iio_s *st,
 
 	if ((INV_MPU6050 == st->chip_type) ||
 	    (INV_MPU9150 == st->chip_type) ||
+	    (INV_MPU9250 == st->chip_type) ||
 	    (INV_MPU6500 == st->chip_type)) {
 		memcpy(&inv_attributes[t_ind], inv_mpu6050_attributes,
 		       sizeof(inv_mpu6050_attributes));
 		t_ind += ARRAY_SIZE(inv_mpu6050_attributes);
 	}
 
-	if ((INV_MPU6050 == st->chip_type) || (INV_MPU9150 == st->chip_type)) {
+	if ((INV_MPU6050 == st->chip_type) ||
+	    (INV_MPU9150 == st->chip_type) ||
+	    (INV_MPU9250 == st->chip_type)) {
 		memcpy(&inv_attributes[t_ind], inv_mpu6050_motion_attributes,
 		       sizeof(inv_mpu6050_motion_attributes));
 		t_ind += ARRAY_SIZE(inv_mpu6050_motion_attributes);
@@ -2017,9 +2030,11 @@ static int inv_mpu_probe(struct i2c_client *client,
 		dev_WARN(&client->adapter->dev,
 			 "Missing platform data for mpu\n");
 		}
+	else {
 	 /*power on LDO11 to provide 2.8v*/
 	if (pdata->set_power)
 		pdata->set_power(1);
+	}
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
 		result = -ENOSYS;
 		pr_err("I2c function error\n");
@@ -2094,7 +2109,7 @@ static int inv_mpu_probe(struct i2c_client *client,
 	}
 
 	if (INV_MPU6050 == st->chip_type || INV_MPU9150 == st->chip_type ||
-	    INV_MPU6500 == st->chip_type) {
+	    INV_MPU9250 == st->chip_type || INV_MPU6500 == st->chip_type) {
 		result = inv_create_dmp_sysfs(indio_dev);
 		if (result) {
 			pr_err("create dmp sysfs failed\n");
@@ -2177,6 +2192,7 @@ static const struct i2c_device_id inv_mpu_id[] = {
 	{"mpu3050", INV_MPU3050},
 	{"mpu6050", INV_MPU6050},
 	{"mpu9150", INV_MPU9150},
+	{"mpu9250", INV_MPU9250},
 	{"mpu6500", INV_MPU6500},
 	{}
 };

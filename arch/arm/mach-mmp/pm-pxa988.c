@@ -37,13 +37,23 @@
 #include <mach/pxa988_lowpower.h>
 #include <mach/regs-ciu.h>
 #include <mach/irqs.h>
+#include <mach/cputype.h>
 #include "common.h"
+#include <mach/gpio-edge.h>
+#ifdef CONFIG_SEC_GPIO_DVS
+#include <linux/secgpio_dvs.h>
+#endif
 
-static struct clk *vctcxo_clk;
 static struct wakeup_source system_wakeup;
 static int pmic_wakeup_detect;
+/*
+ *As history said, the detect_wakeup_status
+ *can be used by other modules.
+ */
 uint32_t detect_wakeup_status;
 EXPORT_SYMBOL(detect_wakeup_status);
+
+u32 sav_wucrs, sav_wucrm;
 
 void gpio_edge_wakeup_enable(void)
 {
@@ -223,18 +233,140 @@ static int pxa988_pm_check_constraint(void)
 	return ret;
 }
 
+#define WAKEUP_EVENTS_MASK (0xFF)
+static int check_gpio_wakeup_stat(char *buf, int len, size_t size)
+{
+	int i;
+
+	i = find_first_bit(gpio_wp_stat, gpio_edge_gpio_num);
+
+	if (i >= gpio_edge_gpio_num)
+		return -EINVAL;
+	len += snprintf(buf + len, size - len, "GPIO");
+	while (i < gpio_edge_gpio_num) {
+		len += snprintf(buf + len, size - len, "-%d", i);
+		i = find_next_bit(gpio_wp_stat, gpio_edge_gpio_num, i + 1);
+	}
+	len += snprintf(buf + len, size - len, ",");
+	for (i = 0; i < gpio_edge_gpio_num / 32; i++)
+		gpio_wp_stat[i] = 0;
+	return len;
+}
+
+static u32 wakeup_source_check(void)
+{
+	char *buf;
+	size_t size = PAGE_SIZE - 1;
+	int len = 0;
+	u32 real_wus = sav_wucrs & sav_wucrm;
+
+	pr_info("After SUSPEND");
+	pr_info("General wakeup source status:0x%x\n", sav_wucrs);
+	pr_info("General wakeup source mask:0x%x\n", sav_wucrm);
+
+	buf = (char *)__get_free_pages(GFP_NOIO, 0);
+	if (!buf) {
+		pr_err("memory alloc for wakeup check is failed!!\n");
+		return sav_wucrs;
+	}
+	if (!(real_wus & WAKEUP_EVENTS_MASK)) {
+		pr_err("System is Woken up by Unexpected Events!\n");
+		free_pages((unsigned long)buf, 0);
+		return sav_wucrs;
+	}
+
+	len = snprintf(buf, size, "System is woken up by:");
+	if (real_wus & (PMUM_WAKEUP0))
+		len += snprintf(buf + len, size - len, "GSM,");
+	if (real_wus & (PMUM_WAKEUP1))
+		len += snprintf(buf + len, size - len, "3G Base band,");
+	if (real_wus & PMUM_WAKEUP2) {
+		int ret = check_gpio_wakeup_stat(buf, len, size);
+		if (ret < 0)
+			pr_info("GPIO wakeup check failed!!!\n");
+		else
+			len = ret;
+	}
+	if (real_wus & PMUM_WAKEUP3) {
+		if (real_wus & PMUM_KEYPRESS)
+			len += snprintf(buf + len, size - len, "KeyPress,");
+		if (real_wus & PMUM_TRACKBALL)
+			len += snprintf(buf + len, size - len, "TRACKBALL,");
+		if (real_wus & PMUM_NEWROTARY)
+			len += snprintf(buf + len, size - len, "NEWROTARY,");
+	}
+	if (real_wus & PMUM_WAKEUP4) {
+		if (real_wus & PMUM_WDT)
+			len += snprintf(buf + len, size - len, "WDT,");
+		if (real_wus & PMUM_RTC_ALARM)
+			len += snprintf(buf + len, size - len, "RTC_ALARM,");
+		if (real_wus & PMUM_CP_TIMER_3)
+			len += snprintf(buf + len, size - len, "CP_TIMER_3,");
+		if (real_wus & PMUM_CP_TIMER_2)
+			len += snprintf(buf + len, size - len, "CP_TIMER_2,");
+		if (real_wus & PMUM_CP_TIMER_1)
+			len += snprintf(buf + len, size - len, "CP_TIMER_1,");
+		if (real_wus & PMUM_AP2_TIMER_3)
+			len += snprintf(buf + len, size - len, "AP2_TIMER_3,");
+		if (real_wus & PMUM_AP2_TIMER_2)
+			len += snprintf(buf + len, size - len, "AP2_TIMER_2,");
+		if (real_wus & PMUM_AP2_TIMER_1)
+			len += snprintf(buf + len, size - len, "AP2_TIMER_1,");
+		if (real_wus & PMUM_AP1_TIMER_3)
+			len += snprintf(buf + len, size - len, "AP1_TIMER_3,");
+		if (real_wus & PMUM_AP1_TIMER_2)
+			len += snprintf(buf + len, size - len, "AP1_TIMER_2,");
+		if (real_wus & PMUM_AP1_TIMER_1)
+			len += snprintf(buf + len, size - len, "AP1_TIMER_1,");
+	}
+	if (real_wus & PMUM_WAKEUP5)
+		len += snprintf(buf + len, size - len, "USB,");
+	if (real_wus & PMUM_WAKEUP6) {
+		if (real_wus & PMUM_SQU_SDH1)
+			len += snprintf(buf + len, size - len, "SQU_SDH1,");
+		if (real_wus & PMUM_SDH_23)
+			len += snprintf(buf + len, size - len, "SDH_23,");
+	}
+	if (real_wus & PMUM_WAKEUP7) {
+		len += snprintf(buf + len, size - len, "PMIC,");
+		pmic_wakeup_detect = 1;
+	}
+
+	snprintf(buf + (len - 1), size - len + 1, "\n");
+	pr_info("%s", buf);
+
+	free_pages((unsigned long)buf, 0);
+
+	return sav_wucrs;
+}
+#if defined(CONFIG_SEC_GPIO_DVS)&& defined(CONFIG_MACH_BAFFINQ)
+extern void  dvs_setting_sleep(void);
+#endif
 static int pxa988_pm_enter(suspend_state_t state)
 {
-	uint32_t awucrs = 0;
-	uint32_t awucrs_pmic_wakeup = PMUM_WAKEUP7;
 	uint32_t reg = 0;
+
+#ifdef CONFIG_SEC_GPIO_DVS
+	/************************ Caution !!! ****************************/
+	/* This function must be located in appropriate SLEEP position
+	 * in accordance with the specification of each BB vendor.
+	 */
+	/************************ Caution !!! ****************************/
+#if defined(CONFIG_SEC_GPIO_DVS)&& defined(CONFIG_MACH_BAFFINQ)
+	dvs_setting_sleep();
+#endif
+	gpio_dvs_check_sleepgpio();
+#endif
+
 	/*
 	 * pmic thread not completed, exit;
 	 * otherwise system can't be waked up
 	 */
 	reg = __raw_readl(ICU_INT_CONF(IRQ_PXA988_PMIC - IRQ_PXA988_START));
-	if ((reg & 0x3) == 0)
+	if ((reg & 0x3) == 0) {
+		pr_info("pmic thread not completed reg(0x%x)\n", reg);
 		return -EAGAIN;
+	}
 
 	/*
 	 * check if there is any constraint, it's not allowed
@@ -251,30 +383,28 @@ static int pxa988_pm_enter(suspend_state_t state)
 	}
 #endif
 
-	clk_disable(vctcxo_clk);
-
-	pr_info("BEFORE SUSPEND AWUCRS:%x\n", __raw_readl(MPMU_AWUCRS));
+	pr_info("========wake up events status =========\n");
+	pr_info("BEFORE SUSPEND AWUCRS:0x%x\n", __raw_readl(MPMU_AWUCRS));
 	pxa988_pm_suspend(0, PXA988_LPM_D2_UDR);
 
-	clk_enable(vctcxo_clk);
+	detect_wakeup_status = wakeup_source_check();
 
-	awucrs = __raw_readl(MPMU_AWUCRS);
-	detect_wakeup_status = awucrs;
-	pr_info("INT0:0x%x INT1:0x%x\n", __raw_readl(ICU_INT_STATUS_0),
-			__raw_readl(ICU_INT_STATUS_1));
-	if (awucrs & awucrs_pmic_wakeup) {
-		pr_info(" [%s]AWUCRS:%x PMIC WAKEUP DETECT\n",
-				__func__, awucrs);
-		pmic_wakeup_detect = 1;
+	if (cpu_is_pxa1088()) {
+		pr_info("INT0:0x%x INT1:0x%x, INT2:0x%x\n", \
+				__raw_readl(ICU_INT_STATUS_0),
+				__raw_readl(ICU_INT_STATUS_1),
+				__raw_readl(ICU_INT_STATUS_2));
 	} else
-		pr_info(" [%s]AWUCRS:%x OTHER WAKEUP DETECT\n",
-				__func__, awucrs);
+		pr_info("INT0:0x%x INT1:0x%x\n", \
+				__raw_readl(ICU_INT_STATUS_0),
+				__raw_readl(ICU_INT_STATUS_1));
+	pr_info("=======================================\n");
 
 	/*
 	* Note: In case that SDH wake up would happen together
 	* with PMIC or others, so check awucrs separately
 	*/
-	if (awucrs & (PMUM_SQU_SDH1|PMUM_SDH_23)) {
+	if (detect_wakeup_status & (PMUM_SQU_SDH1|PMUM_SDH_23)) {
 		pxa988_clr_sdh_wakeup();
 		pr_info(" Clear the WakeUp Event for SDH\n");
 	}
@@ -285,14 +415,14 @@ static int pxa988_pm_enter(suspend_state_t state)
 /* Called after noirq devices resume, before devices resume */
 static void pxa988_pm_finish(void)
 {
-	return 0;
 }
 
 static void pxa988_pm_wake(void)
 {
-	if (pmic_wakeup_detect)
+	if (pmic_wakeup_detect) {
 		__pm_wakeup_event(&system_wakeup, 5 * 1000);
-	pmic_wakeup_detect = 0;
+		pmic_wakeup_detect = 0;
+	}
 }
 
 static const struct platform_suspend_ops pxa988_pm_ops = {
@@ -311,13 +441,6 @@ static int __init pxa988_pm_init(void)
 
 	wakeup_source_init(&system_wakeup,
 			"system_wakeup_detect");
-
-	vctcxo_clk = clk_get(NULL, "VCTCXO");
-	if (IS_ERR(vctcxo_clk)) {
-		pr_err("unable to get VCTCXO\n");
-		return PTR_ERR(vctcxo_clk);
-	}
-	clk_enable(vctcxo_clk);
 
 	/*
 	 * These two bits are used to solve the corner case that

@@ -91,6 +91,13 @@ enum {
 	POWER_SUPPLY_CAPACITY_OTG_DISABLE,
 };
 
+#if defined(CONFIG_FUELGAUGE_88PM822)
+enum {
+	POWER_SUPPLY_PWR_RDY_FALSE = 0,
+	POWER_SUPPLY_PWR_RDY_TRUE,
+};
+#endif
+
 enum power_supply_property {
 	/* Properties of type `int' */
 	POWER_SUPPLY_PROP_STATUS = 0,
@@ -137,7 +144,6 @@ enum power_supply_property {
 	POWER_SUPPLY_PROP_TIME_TO_FULL_AVG,
 	POWER_SUPPLY_PROP_TYPE, /* use power_supply.type instead */
 #if defined(CONFIG_SPA) //book
-	/* *#0228# */
 	POWER_SUPPLY_PROP_BATT_VOL,
 	POWER_SUPPLY_PROP_BATT_VOL_AVER,
 	POWER_SUPPLY_PROP_BATT_TEMP,
@@ -145,7 +151,6 @@ enum power_supply_property {
 	POWER_SUPPLY_PROP_BATT_TEMP_AVER,
 	POWER_SUPPLY_PROP_BATT_TEMP_ADC_AVER,
 	POWER_SUPPLY_PROP_BATT_CHARGING_SOURCE,
-	/* *#0228# */
 	/* DFT */
 	POWER_SUPPLY_PROP_BATT_READ_RAW_SOC,
 	/* DFT */
@@ -159,6 +164,9 @@ enum power_supply_property {
 	POWER_SUPPLY_PROP_MODEL_NAME,
 	POWER_SUPPLY_PROP_MANUFACTURER,
 	POWER_SUPPLY_PROP_SERIAL_NUMBER,
+#if defined(CONFIG_FUELGAUGE_88PM822)
+	POWER_SUPPLY_PROP_POWER_STATUS,
+#endif
 };
 
 enum power_supply_type {

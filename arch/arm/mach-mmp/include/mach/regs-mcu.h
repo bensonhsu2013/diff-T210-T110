@@ -33,26 +33,31 @@
 #define DMCU_STATUS			(0x04)
 #define DMCU_DRAM_STATUS		(0x08)
 
+#define DMCU_DRAM_STATUS_PD		(4)
+#define DMCU_DRAM_STATUS_DPD		(2)
+#define DMCU_DRAM_STATUS_SR		(1)
+
 #define DMCU_MAP_CS0			(0x10)
 #define DMCU_MAP_CS1			(0x14)
+#define DMCU_MAP_CSx(cs)		(DMCU_MAP_CS0 + cs * 4)
 #define DMCU_MAP_VALID			(1u << 0)
 #define DMCU_CMD_CSSEL_CS0		(1u << 24)
 #define DMCU_CMD_CSSEL_CS1		(1u << 25)
-#ifdef CONFIG_CPU_PXA988
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 #define DMCU_MAP_CS2			(0x18)
 #define DMCU_MAP_CS3			(0x1c)
 #endif
 
 #define DMCU_SDRAM_CFG0_TYPE1		(0x20)
 #define DMCU_SDRAM_CFG1_TYPE1		(0x24)
-#ifdef CONFIG_CPU_PXA988
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 #define DMCU_SDRAM_CFG2_TYPE1		(0x28)
 #define DMCU_SDRAM_CFG3_TYPE1		(0x2c)
 #endif
 
 #define DMCU_SDRAM_CFG0_TYPE2		(0x30)
 #define DMCU_SDRAM_CFG1_TYPE2		(0x34)
-#ifdef CONFIG_CPU_PXA988
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 #define DMCU_SDRAM_CFG2_TYPE2		(0x38)
 #define DMCU_SDRAM_CFG3_TYPE2		(0x3c)
 #endif
@@ -94,7 +99,7 @@
 #define DMCU_USER_COMMAND1		(0x164)
 #define DMCU_MODE_RD_DATA		(0x170)
 
-#ifdef CONFIG_CPU_PXA988
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 #define DMCU_SMR1			(0x180)
 #define DMCU_SMR2			(0x184)
 #endif
@@ -106,7 +111,7 @@
 #define DMCU_PHY_CTRL10			(0x23c)
 #define DMCU_PHY_CTRL11			(0x240)
 
-#ifdef CONFIG_CPU_PXA988
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 #define DMCU_PHY_CTRL12			(0x244)
 #endif
 
@@ -130,7 +135,7 @@
 #define PHY_CTRL14_DLL_UPDATE		(1u << 30)
 #define PHY_CTRL14_PHY_SYNC		(1u << 31)
 
-#ifdef CONFIG_CPU_PXA988
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 #define DMCU_PHY_CTRL_TESTMODE		(0x400)
 #endif
 

@@ -158,6 +158,10 @@ static void mmp_tdma_disable_chan(struct mmp_tdma_chan *tdmac)
 {
 	writel(readl(tdmac->reg_base + TDCR) & ~TDCR_CHANEN,
 					tdmac->reg_base + TDCR);
+
+	/* disable irq */
+	writel(0, tdmac->reg_base + TDIMR);
+
 	tdmac->status = DMA_SUCCESS;
 }
 
@@ -568,13 +572,6 @@ static int __devinit mmp_tdma_probe(struct platform_device *pdev)
 	if (!tdev->base)
 		return -EADDRNOTAVAIL;
 
-	if (tdev->irq) {
-		ret = devm_request_irq(&pdev->dev, tdev->irq,
-			mmp_tdma_int_handler, IRQF_DISABLED, "tdma", tdev);
-		if (ret)
-			return ret;
-	}
-
 	dma_cap_set(DMA_SLAVE, tdev->device.cap_mask);
 	dma_cap_set(DMA_CYCLIC, tdev->device.cap_mask);
 
@@ -583,6 +580,13 @@ static int __devinit mmp_tdma_probe(struct platform_device *pdev)
 	/* initialize channel parameters */
 	for (i = 0; i < chan_num; i++) {
 		ret = mmp_tdma_chan_init(tdev, i, irq, type);
+		if (ret)
+			return ret;
+	}
+
+	if (tdev->irq) {
+		ret = devm_request_irq(&pdev->dev, tdev->irq,
+			mmp_tdma_int_handler, IRQF_DISABLED, "tdma", tdev);
 		if (ret)
 			return ret;
 	}

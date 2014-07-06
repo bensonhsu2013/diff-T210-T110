@@ -28,6 +28,9 @@
 #include <linux/rcupdate.h>
 #include "input-compat.h"
 
+#ifdef CONFIG_SEC_DEBUG
+#include <mach/sec_debug.h>
+#endif
 MODULE_AUTHOR("Vojtech Pavlik <vojtech@suse.cz>");
 MODULE_DESCRIPTION("Input core");
 MODULE_LICENSE("GPL");
@@ -242,7 +245,10 @@ static void input_handle_event(struct input_dev *dev,
 	case EV_KEY:
 		if (is_event_supported(code, dev->keybit, KEY_MAX) &&
 		    !!test_bit(code, dev->key) != value) {
-
+#if defined(CONFIG_SEC_DEBUG)
+                if(code == KEY_VOLUMEDOWN || code == KEY_VOLUMEUP || code == KEY_POWER)
+                        sec_debug_check_crash_key(code, value);
+#endif
 			if (value != 2) {
 				__change_bit(code, dev->key);
 				if (value)
@@ -1592,7 +1598,10 @@ static int input_dev_suspend(struct device *dev)
 
 	if (input_dev->users)
 		input_dev_toggle(input_dev, false);
-
+#if defined(CONFIG_SEC_DEBUG)	// send dummy release event to avoid invalid key crash case
+	sec_debug_check_crash_key(KEY_VOLUMEUP, 0);
+	sec_debug_check_crash_key(KEY_VOLUMEDOWN, 0);
+#endif
 	mutex_unlock(&input_dev->mutex);
 
 	return 0;

@@ -41,6 +41,7 @@
 
 #define ISP_VIDEO_MAX_BUFFERS		32
 #define MIN_DRV_BUF			1
+#define BUSY_BUF_NUM			2
 
 enum isp_video_pipe_far_end {
 	FAR_END_ISP_DISPLAY = 0,

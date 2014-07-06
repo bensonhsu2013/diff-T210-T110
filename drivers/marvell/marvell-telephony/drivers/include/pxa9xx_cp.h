@@ -19,7 +19,6 @@
 #define OFFSET_IN_ARBEL_IMAGE   4
 /* As agreed with CP side, reserve 0x800 byte for each key section.  */
 #define SHM_KEY_SECTION_LEN	0x800
-#define SMALL_CODE_SIGNARTURE   0x534c4344
 
 struct load_table_dynamic_part
 {
@@ -73,9 +72,8 @@ struct cp_load_table_head
 {
 	union{
 		struct load_table_dynamic_part dp;
-		UINT8  filler[LOAD_TABLE_OFFSET-OFFSET_IN_ARBEL_IMAGE-4];
+		UINT8  filler[LOAD_TABLE_OFFSET-OFFSET_IN_ARBEL_IMAGE];
 	};
-	UINT32 smallCodeSign;
 	UINT32 imageBegin;
 	UINT32 imageEnd;
 	char   Signature[16];

@@ -11,6 +11,7 @@ struct arm_vmregion_head {
 	struct list_head	vm_list;
 	unsigned long		vm_start;
 	unsigned long		vm_end;
+	struct page		*vm_pages;
 };
 
 struct arm_vmregion {

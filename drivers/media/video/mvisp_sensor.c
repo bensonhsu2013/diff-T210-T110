@@ -12,7 +12,6 @@
 #include <linux/slab.h>
 #include <linux/videodev2.h>
 #include <linux/delay.h>
-#include <linux/mvisp.h>
 #include <linux/slab.h>
 #include <linux/gpio.h>
 #include <linux/regulator/machine.h>
@@ -28,7 +27,9 @@
 #include <mach/camera.h>
 #include <mach/sensor-data.h>
 #include <linux/module.h>
-
+#ifdef CONFIG_VIDEO_VCM_AK7343
+#include <media/ak7343.h>
+#endif
 MODULE_DESCRIPTION("Marvell ISP sensor driver");
 MODULE_AUTHOR("Henry Zhao <xzhao10@marvell.com>");
 MODULE_LICENSE("GPL");
@@ -65,6 +66,7 @@ struct sensor_core {
 	enum sensor_output_type		output;
 	struct mutex			sensor_mutex;
 	u8				openflag;
+	struct v4l2_sensor_csi_dphy csi_dphy;
 };
 
 enum sensor_register_access_e {
@@ -286,7 +288,6 @@ static int sensor_power_on(struct sensor_power *power,
 {
 	struct sensor_platform_data *pdata = client->dev.platform_data;
 	int ret = 0;
-
 	if (sensor_id > pdata->sensor_num)
 		goto error;
 
@@ -305,6 +306,10 @@ static int sensor_power_on(struct sensor_power *power,
 		}
 	}
 	if (pdata->sensor_pwd[sensor_id].afvcc) {
+#ifdef CONFIG_VIDEO_VCM_AK7343
+		ak7343_io_power(client, 1);
+		udelay(1000);
+#endif
 		if (!power->af_vcc) {
 			power->af_vcc = regulator_get(&client->dev,
 					pdata->sensor_pwd[sensor_id].afvcc);
@@ -317,6 +322,10 @@ static int sensor_power_on(struct sensor_power *power,
 				pdata->sensor_pwd[sensor_id].afvcc_uV,
 				pdata->sensor_pwd[sensor_id].afvcc_uV);
 		regulator_enable(power->af_vcc);
+#ifdef CONFIG_VIDEO_VCM_AK7343
+		udelay(1000);
+		ak7343_io_power(client, 0);
+#endif
 	} else {
 		if (power->af_vcc)
 			regulator_put(power->af_vcc);
@@ -343,7 +352,7 @@ static int sensor_power_on(struct sensor_power *power,
 	/*    Enable voltage for Marvell ISP sensor*/
 	gpio_direction_output(power->pwdn,
 			pdata->sensor_pwd[sensor_id].pwdn_en);
-	mdelay(1);
+	udelay(1000);
 	gpio_direction_output(power->rst,
 			!pdata->sensor_pwd[sensor_id].rst_en);
 	mdelay(20);
@@ -784,6 +793,23 @@ static long sensor_register_access_l(struct v4l2_subdev *sd,
 	return ret;
 }
 
+static int sensor_set_csi_dphy(struct v4l2_subdev *sd,
+		struct v4l2_sensor_csi_dphy *u_dphy)
+{
+	struct sensor_core *core;
+	u32 len = sizeof(struct v4l2_sensor_csi_dphy);
+
+	if (!u_dphy || !sd)
+		return -EINVAL;
+
+	core = to_sensor_core(sd);
+
+	memcpy(&core->csi_dphy, u_dphy, len);
+	mvisp_set_fclk_dphy(sd, &core->csi_dphy);
+
+	return 0;
+}
+
 static long sensor_subdev_ioctl(struct v4l2_subdev *sd,
 			unsigned int cmd, void *arg)
 {
@@ -810,6 +836,10 @@ static long sensor_subdev_ioctl(struct v4l2_subdev *sd,
 	case VIDIOC_PRIVATE_SENSER_GET_DRIVER_NAME:
 		ret = sensor_get_driver_name(sd,
 			(struct v4l2_sensor_get_driver_name *)arg);
+		break;
+	case VIDIOC_PRIVATE_SENSER_SET_CSI_DPHY:
+		ret = sensor_set_csi_dphy(sd,
+			(struct v4l2_sensor_csi_dphy *)arg);
 		break;
 	default:
 		ret = -ENOIOCTLCMD;
@@ -994,6 +1024,7 @@ static int sensor_probe(struct i2c_client *client,
 	me = &sd->entity;
 	pads[SENSOR_PAD_SOURCE].flags = MEDIA_PAD_FL_SOURCE;
 	me->ops = &sensor_media_ops;
+	me->type = MEDIA_ENT_T_V4L2_SUBDEV_SENSOR;
 	ret = media_entity_init(me, MAX_SENSOR_PADS_NUM, pads, 0);
 	if (ret < 0)
 		goto sensor_media_init_error;

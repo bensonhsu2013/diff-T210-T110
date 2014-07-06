@@ -1234,7 +1234,7 @@ void clear_dispd_irq(struct pxa168fb_info *fbi)
 
 void irq_mask_eof(int id)
 {
-#if defined(CONFIG_CPU_PXA988)
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 	struct pxa168fb_info *fbi = gfx_info.fbi[id];
 	int irq_mask = display_done_imask(fbi->id);
 
@@ -1263,7 +1263,7 @@ void irq_mask_eof(int id)
 
 void irq_unmask_eof(int id)
 {
-#if defined(CONFIG_CPU_PXA988)
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 	struct pxa168fb_info *fbi = gfx_info.fbi[id];
 	int irq_mask = display_done_imask(fbi->id);
 #ifdef CONFIG_DISP_DFC

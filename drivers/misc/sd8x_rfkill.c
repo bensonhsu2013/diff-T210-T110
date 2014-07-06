@@ -101,17 +101,21 @@ static int sd8x_power_on(struct sd8x_rfkill_platform_data *pdata, int on)
 	}
 
 	if (on) {
-		if (gpio_power_down)
-			gpio_direction_output(gpio_power_down, 1);
+		if (gpio_power_down) {
+			msleep(5);
+ 			gpio_direction_output(gpio_power_down, 1);
+		}
 
 		if (gpio_reset) {
 			gpio_direction_output(gpio_reset, 0);
-			msleep(1);
+			msleep(5);
 			gpio_direction_output(gpio_reset, 1);
 		}
 	} else {
-		if (gpio_power_down)
-			gpio_direction_output(gpio_power_down, 0);
+		if (gpio_power_down) {
+			msleep(5);
+ 			gpio_direction_output(gpio_power_down, 0);
+		}
 	}
 
 	if (gpio_power_down)
@@ -152,6 +156,8 @@ static int sd8x_set_block(void *data, bool blocked)
 	else
 		return 0;
 
+	printk(KERN_INFO "sd8x set_power %s start\n", on ? "on" : "off");
+
 	/*
 	 * As we known, if SD8787 is working, we need to keep SDIO Host's
 	 * Source CLK free running.
@@ -173,8 +179,8 @@ static int sd8x_set_block(void *data, bool blocked)
 		goto out;
 
 	if (pdata->mmc) {
-		int retry = 5;
-		unsigned long timeout_secs = 5;
+		int retry = on ? 5 : 1;
+		unsigned long timeout_secs = on ? 2 : 1;
 		unsigned long timeout = msecs_to_jiffies(timeout_secs * 1000);
 
 		while (retry) {
@@ -197,7 +203,7 @@ static int sd8x_set_block(void *data, bool blocked)
 			if (ret)
 				goto out;
 		}
-		if (!retry) {
+		if (!retry && on) {
 			ret = -1;
 			printk(KERN_INFO "rfkill fails to wait mmc device %s\n",
 			       on ? "up" : "down");
@@ -220,6 +226,7 @@ out:
 		/* put_sync here to balance RPM ref */
 		pm_runtime_put_sync(host->mmc->parent);
 	}
+	printk(KERN_INFO "sd8x set_power %s end\n", on ? "on" : "off");
 
 	return ret;
 }
@@ -294,6 +301,7 @@ static int sd8x_rfkill_probe(struct platform_device *pdev)
 
 err_out:
 	sd8x_rfkill_free(pdata);
+	kfree(data);
 	return -1;
 }
 

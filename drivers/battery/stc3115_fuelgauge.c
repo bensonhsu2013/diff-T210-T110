@@ -15,8 +15,6 @@
 #include <linux/debugfs.h>
 #include <mach/mfp-pxa986-lt02.h>
 
-#define STC3115_DEBUG
-
 extern int MainTrim(struct i2c_client *client);
 
 static int fg_regs[] = {
@@ -191,32 +189,6 @@ static void STC311x_Reset(struct i2c_client *client)
 	STC31xx_WriteByte(client, STC311x_REG_CTRL, STC311x_SOFTPOR);  /*   set soft POR */
 }
 
-static void STC311x_Reset_VM_Adj(struct i2c_cleint *client)
-{
-	int value;
-
-	if(BattData.IDCode == STC311x_ID)
-		STC31xx_WriteByte(client, STC311x_REG_VM_ADJ_HIGH, 0);
-	else
-	{
-		value=STC31xx_ReadByte(client, STC311x_REG_MODE);
-		STC31xx_WriteByte(client, STC311x_REG_MODE, value | STC311x_CLR_VM_ADJ);
-	}
-}
-
-static void STC311x_Reset_CC_Adj(struct i2c_client *client)
-{
-	int value;
-
-	if(BattData.IDCode == STC311x_ID)
-		STC31xx_WriteByte(client, STC311x_REG_CC_ADJ_HIGH, 0);
-	else
-	{
-		value = STC31xx_ReadByte(client, STC311x_REG_MODE);
-		STC31xx_WriteByte(client, STC311x_REG_MODE, value | STC311x_CLR_CC_ADJ);
-	}
-}
-
 /*******************************************************************************
 * Function Name  : STC311x_Status
 * Description    :  Read the STC311x status
@@ -339,8 +311,8 @@ static int STC311x_Restore(struct i2c_client *client)
 #if 1
 	/* if restore from unexpected reset, restore SOC (system dependent) */
 	if (GG_Ram.reg.GG_Status == GG_RUNNING)
-		//if (GG_Ram.reg.SOC != 0)
-			STC31xx_WriteWord(client, STC311x_REG_SOC, GG_Ram.reg.SOC * 512);  /*   restore SOC */
+		if (GG_Ram.reg.SOC != 0)
+			STC31xx_WriteWord(client, STC311x_REG_SOC, GG_Ram.reg.HRSOC * 512);  /*   restore SOC */
 #else
 	/* rewrite ocv to start SOC with updated OCV curve */
 	STC31xx_WriteWord(client, STC311x_REG_OCV,ocv);
@@ -502,13 +474,6 @@ static int interpolate(int x, int n, int const *tabx, int const *taby )
 	return y;
 }
 
-static void STC311x_SetRamFlag(client)
-{
-	GG_Ram.reg.Flag = 1;
-	UpdateRamCrc();
-	STC311x_WriteRamData(client, GG_Ram.db);
-}
-
 static int STC311x_SaveVMCnf(struct i2c_client *client)
 {
 	int reg_mode;
@@ -560,127 +525,6 @@ static int CompensateSOC(int value, int temp)
 	return(v);
 }
 
-/*******************************************************************************
-* Function Name  : UpdateParam
-* Description    : update the algo parameters
-* Use            : BattData structure
-* Affect         : VM_cnf, CC_cnf
-*******************************************************************************/
-static void UpdateParam(struct i2c_client *client)
-{
-	float adapt;
-
-	/* adaptive algorithm at each mode change */
-	if ( BattData.GG_Mode != BattData.LastMode )
-	{
-		/* mode change detected */
-		if ( BattData.GG_Mode == CC_MODE)
-		{
-			/* switch to CC mode, update both VM_Coeff and CC_Coeff gains */
-			if (BattData.CC_adj<(-20)) BattData.CC_adj=-20;
-			if (BattData.CC_adj>20) BattData.CC_adj=20;
-			if ( (BattData.CC_adj<(-2)) || (BattData.CC_adj>2) )
-			{
-				if ((BattData.AvgTemperature/10)>TEMP_MIN_ADJ)
-				{
-					if (BattData.LastSOC<BattData.HRSOC)
-					{
-						GG_Ram.reg.VM_cnf -= (GG_Ram.reg.VM_cnf*BattData.CC_adj)/200;
-						GG_Ram.reg.CC_cnf -= (GG_Ram.reg.CC_cnf*BattData.CC_adj)/200;
-						BattData.Cnom -= (BattData.Cnom*BattData.CC_adj)/200;
-					}
-					else
-					{
-						GG_Ram.reg.VM_cnf += (GG_Ram.reg.VM_cnf*BattData.CC_adj)/200;
-						GG_Ram.reg.CC_cnf += (GG_Ram.reg.CC_cnf*BattData.CC_adj)/200;
-						BattData.Cnom += (BattData.Cnom*BattData.CC_adj)/200;
-					}
-				}
-				STC311x_Reset_CC_Adj(client);
-				STC311x_Reset_VM_Adj(client);
-				BattData.LastSOC=BattData.HRSOC;
-			}
-		}
-		BattData.LastMode=BattData.GG_Mode;
-	}
-}
-
-static void STC311x_SetSOC(struct i2c_client *client, int SOC)
-{
-	STC31xx_WriteWord(client,STC311x_REG_SOC,SOC);   /* 100% */
-}
-
-/*******************************************************************************
-* Function Name  : MM_FSM
-* Description    : process the Gas Gauge state machine in mixed mode
-* Input          : BattData
-* Return         :
-* Affect         : Global Gas Gauge data
-*******************************************************************************/
-static void MM_FSM(struct i2c_client *client)
-{
-
-	switch (BattData.BattState)
-	{
-	case BATT_CHARGING:
-		if (BattData.AvgCurrent < CHG_MIN_CURRENT)
-			BattData.BattState = BATT_ENDCHARG;        /* end of charge */
-		break;
-	case BATT_ENDCHARG:  /* end of charge state. check if fully charged or charge interrupted */
-		if ( BattData.Current > CHG_MIN_CURRENT )
-			BattData.BattState = BATT_CHARGING;
-		else if (BattData.AvgCurrent < CHG_END_CURRENT )
-			BattData.BattState = BATT_IDLE;     /* charge interrupted */
-		else if ( (BattData.Current > CHG_END_CURRENT ) && ( BattData.Voltage > BATT_CHG_VOLTAGE ) )
-			BattData.BattState = BATT_FULCHARG;  /* end of charge */
-		break;
-	case BATT_FULCHARG:  /* full charge state. wait for actual end of charge current */
-		if ( (BattData.Current > CHG_MIN_CURRENT))
-			BattData.BattState = BATT_CHARGING;  /* charge again */
-		else if ( BattData.AvgCurrent < CHG_END_CURRENT )
-		{
-			if ( BattData.AvgVoltage > BATT_CHG_VOLTAGE )
-			{
-				/* end of charge detected */
-				STC311x_SetSOC(client, MAX_HRSOC);
-				STC311x_Reset_VM_Adj(client);
-				STC311x_Reset_CC_Adj(client);
-				BattData.SOC=MAX_SOC;  /* 100% */
-				BattData.LastSOC=MAX_HRSOC;
-			}
-/*        if (BattData.Vmode==0) STC311x_ForceVM(); */
-			BattData.BattState = BATT_IDLE;     /* end of charge cycle */
-		}
-		break;
-	case BATT_IDLE:  /* no charging, no discharging */
-		if (BattData.Current > CHG_END_CURRENT)
-		{
-/*        if (BattData.Vmode==0) STC311x_ForceVM(); */
-			BattData.BattState = BATT_CHARGING; /* charging again */
-		}
-		else if (BattData.Current < APP_MIN_CURRENT)
-			BattData.BattState = BATT_DISCHARG; /* discharging again */
-		break;
-	case BATT_DISCHARG:
-		if (BattData.Current > APP_MIN_CURRENT)
-			BattData.BattState = BATT_IDLE;
-		else if (BattData.AvgVoltage < BATT_MIN_VOLTAGE)
-			BattData.BattState = BATT_LOWBATT;
-		break;
-	case BATT_LOWBATT:  /* battery nearly empty... */
-		if ( BattData.AvgVoltage > (BATT_MIN_VOLTAGE+50) )
-			BattData.BattState = BATT_IDLE;   /* idle */
-		else
-/*        if (BattData.Vmode==0) STC311x_ForceVM(); */
-			break;
-	default:
-		BattData.BattState = BATT_IDLE;   /* idle */
-
-	} /* end switch */
-
-	if (BattData.Adaptive) UpdateParam(client);
-}
-
 static void CompensateVM(struct i2c_client *client, int temp)
 {
 	int r;
@@ -690,29 +534,6 @@ static void CompensateVM(struct i2c_client *client, int temp)
 	GG_Ram.reg.VM_cnf = (BattData.VM_cnf * r) / 100;
 	STC311x_SaveVMCnf(client);  /* save new VM cnf values to STC311x */
 #endif
-}
-
-/*******************************************************************************
-* Function Name  : VM_FSM
-* Description    : process the Gas Gauge machine in voltage mode
-* Input          : BattData
-* Return         :
-* Affect         : Global Gas Gauge data
-*******************************************************************************/
-static void VM_FSM(struct i2c_client *client)
-{
-
-#define DELTA_TEMP 30   /* 3 C */
-
-	/* in voltage mode, monitor temperature to compensate voltage mode gain */
-
-	if ( ( BattData.AvgTemperature > (BattData.LastTemperature+DELTA_TEMP)) ||
-	     ( BattData.AvgTemperature < (BattData.LastTemperature-DELTA_TEMP)) )
-	{
-		BattData.LastTemperature = BattData.AvgTemperature;
-		CompensateVM(client, BattData.AvgTemperature);
-	}
-
 }
 
 /*******************************************************************************
@@ -806,7 +627,7 @@ static int STC311x_ReadBatteryData(struct i2c_client *client)
 
 static int STC31xx_Task(struct i2c_client *client, GasGauge_DataTypeDef *GG)
 {
-	int res, value;
+	int res;
 
 	BattData.Rsense = GG->Rsense;
 	BattData.Vmode = GG->Vmode;
@@ -818,6 +639,8 @@ static int STC31xx_Task(struct i2c_client *client, GasGauge_DataTypeDef *GG)
 	res = STC311x_ReadBatteryData(client);
 	if (res != 0)
 		return (-1);
+
+	dev_info(&client->dev, "STC31xxTask STC_Status [%x]\n", BattData.STC_Status);
 
 	STC311x_ReadRamData(client, GG_Ram.db);
 
@@ -840,7 +663,7 @@ static int STC31xx_Task(struct i2c_client *client, GasGauge_DataTypeDef *GG)
 			GG->Voltage = BattData.Voltage;
 			GG->SOC = (BattData.HRSOC * 10 + 256) / 512;
 		}
-//		GasGauge_Reset(client);
+		GasGauge_Reset(client);
 		return (-1);
 	}
 #endif
@@ -856,9 +679,6 @@ static int STC31xx_Task(struct i2c_client *client, GasGauge_DataTypeDef *GG)
 		BattData.SOC = 0;
 	else if (BattData.SOC < 30)
 		BattData.SOC = (BattData.SOC - 5) * 30 / 25;
-
-	if(GG->ForceExternalTemperature == 1)
-		BattData.Temperature = GG->ExternalTemperature;
 
 	if (GG_Ram.reg.GG_Status == GG_INIT)
 	{
@@ -895,95 +715,38 @@ static int STC31xx_Task(struct i2c_client *client, GasGauge_DataTypeDef *GG)
 		{
 			BattData.BattOnline = 1;
 		}
-
-		BattData.SOC = CompensateSOC(BattData.SOC, BattData.Temperature);
-
-		if (BattData.AvgVoltage < APP_MIN_VOLTAGE && BattData.SOC < 100)
-			BattData.SOC = 0;
-		else if (BattData.AvgVoltage < (APP_MIN_VOLTAGE+200)) {
-			BattData.SOC = BattData.SOC * (BattData.AvgVoltage - APP_MIN_VOLTAGE) / 200;
-			if (BattData.SOC < 0)
-				BattData.SOC = 0;
-		}
-
-		BattData.AccVoltage += (BattData.Voltage - BattData.AvgVoltage);
-		BattData.AccCurrent += (BattData.Current - BattData.AvgCurrent);
-		BattData.AccTemperature += (BattData.Temperature - BattData.AvgTemperature);
-		BattData.AccSOC +=  (BattData.SOC - BattData.AvgSOC);
-
-		BattData.AvgVoltage = (BattData.AccVoltage+AVGFILTER/2)/AVGFILTER;
-		BattData.AvgCurrent = (BattData.AccCurrent+AVGFILTER/2)/AVGFILTER;
-		BattData.AvgTemperature = (BattData.AccTemperature+AVGFILTER/2)/AVGFILTER;
-		BattData.AvgSOC = (BattData.AccSOC+AVGFILTER/2)/AVGFILTER;
-
-		/* ---------- process the Gas Gauge algorithm -------- */
-
-		if (BattData.Vmode)
-			VM_FSM(client);  /* in voltage mode */
-		else
-			MM_FSM(client);  /* in mixed mode */
-
-		//Lately fully compensation
-		if(BattData.BattState > BATT_IDLE && BattData.SOC >= 990 && BattData.SOC < 995 && BattData.AvgCurrent > 220)
-		{
-			BattData.SOC = 990;
-			STC311x_SetSOC(client, 50688);
-		}
-
-		GG->Voltage = BattData.Voltage;
-		GG->Current = BattData.Current;
-		GG->Temperature = BattData.Temperature;
-		GG->SOC = BattData.SOC;
-		GG->OCV = BattData.OCV;
-
-		GG->AvgVoltage = BattData.AvgVoltage;
-		GG->AvgCurrent = BattData.AvgCurrent;
-		GG->AvgTemperature = BattData.AvgTemperature;
-		GG->AvgSOC = BattData.AvgSOC;
-
-		if (BattData.Vmode)
-		{
-			/* no current value in voltage mode */
-			GG->Current = 0;
-			GG->AvgCurrent = 0;
-		}
-
-		GG->ChargeValue = (long) BattData.Cnom * BattData.AvgSOC / MAX_SOC;
-		if (GG->Current<APP_MIN_CURRENT && BattData.AvgCurrent != 0)
-		{
-			GG->State=BATT_DISCHARG;
-			value = GG->ChargeValue * 60 / (-BattData.AvgCurrent);  /* in minutes */
-			if (value < 0)
-				value=0;
-			GG->RemTime = value;
-		}
-		else
-		{
-			GG->RemTime = -1;   /* means no estimated time available */
-			if (GG->AvgCurrent>CHG_END_CURRENT)
-				GG->State=BATT_CHARGING;
-			else
-				GG->State=BATT_IDLE;
-		}
 	}
+
+	BattData.SOC = CompensateSOC(BattData.SOC, BattData.Temperature);
+
+	if (BattData.AvgVoltage < (APP_MIN_VOLTAGE + 200) && BattData.AvgVoltage > (APP_MIN_VOLTAGE - 500))
+		BattData.SOC = BattData.SOC * (BattData.AvgVoltage - APP_MIN_VOLTAGE) / 200;
+
+	BattData.AccVoltage += (BattData.Voltage - BattData.AvgVoltage);
+	BattData.AccCurrent += (BattData.Current - BattData.AvgCurrent);
+	BattData.AccTemperature += (BattData.Temperature - BattData.AvgTemperature);
+	BattData.AccSOC +=  (BattData.SOC - BattData.AvgSOC);
+
+	BattData.AvgVoltage = (BattData.AccVoltage+AVGFILTER/2)/AVGFILTER;
+	BattData.AvgCurrent = (BattData.AccCurrent+AVGFILTER/2)/AVGFILTER;
+	BattData.AvgTemperature = (BattData.AccTemperature+AVGFILTER/2)/AVGFILTER;
+	BattData.AvgSOC = (BattData.AccSOC+AVGFILTER/2)/AVGFILTER;
+
+	GG->Voltage = BattData.Voltage;
+	GG->Current = BattData.Current;
+	GG->Temperature = BattData.Temperature;
+	GG->SOC = BattData.SOC;
+	GG->OCV = BattData.OCV;
+
+	GG->AvgVoltage = BattData.AvgVoltage;
+	GG->AvgCurrent = BattData.AvgCurrent;
+	GG->AvgTemperature = BattData.AvgTemperature;
+	GG->AvgSOC = BattData.AvgSOC;
 
 	GG_Ram.reg.HRSOC = BattData.HRSOC;
 	GG_Ram.reg.SOC = (BattData.SOC + 5) / 10;
 	UpdateRamCrc();
 	STC311x_WriteRamData(client, GG_Ram.db);
-
-#ifdef STC3115_DEBUG // For debug log
-	printk("STC3115:%s vol=%d, curr=%d, temp=%d, SOC=%d, ocv=%d, "
-	       "avg_vol=%d, avd_curr=%d,avg_temp=%d, avg_soc=%d, GGsts=%c, "
-	       "STCsts=0x%x, ExtTemp=%d, Count=%d, HRSOC=%d, CC_cnf=0x%x,\n"
-	       "VM_cnf=0x%x, CC_adj=0x%x, VM_adj=0x%x, Online=%d, BattSts=%d\n",
-	       __func__, GG->Voltage, GG->Current, GG->Temperature, GG->SOC, GG->OCV,
-	       GG->AvgVoltage, GG->AvgCurrent, GG->AvgTemperature, GG->AvgSOC, GG_Ram.reg.GG_Status,
-	       BattData.STC_Status, GG->ForceExternalTemperature, BattData.ConvCounter, BattData.HRSOC,
-	       BattData.CC_cnf, BattData.VM_cnf, BattData.CC_adj, BattData.VM_adj, BattData.BattOnline,
-	       BattData.BattState);
-
-#endif
 
 	if (GG_Ram.reg.GG_Status == GG_RUNNING)
 		return 1;
@@ -1007,7 +770,6 @@ static void STC31xx_Work(struct i2c_client *client)
 	GasGaugeData.Rsense = get_battery_data(fuelgauge).Rsense;
 	GasGaugeData.RelaxCurrent = get_battery_data(fuelgauge).RelaxCurrent;
 	GasGaugeData.Adaptive = get_battery_data(fuelgauge).Adaptive;
-	GasGaugeData.ForceExternalTemperature = get_battery_data(fuelgauge).ForceExternalTemperature;
 
 	for(Loop = 0; Loop < NTEMP; Loop++)
 		GasGaugeData.CapDerating[Loop] = get_battery_data(fuelgauge).CapDerating[Loop];
@@ -1018,34 +780,20 @@ static void STC31xx_Work(struct i2c_client *client)
 
 	res = STC31xx_Task(client, &GasGaugeData);
 
-	if ((fuelgauge->pdata->check_jig_status()) && (GG_Ram.reg.Flag != 1))
-		STC311x_SetRamFlag(client);
 	if (res > 0)
 	{
-		fuelgauge->info.batt_soc = GasGaugeData.SOC;
+		fuelgauge->info.batt_soc = GasGaugeData.SOC + 5;
 		fuelgauge->info.batt_voltage = GasGaugeData.Voltage;
 		fuelgauge->info.batt_avgvoltage = GasGaugeData.AvgVoltage;
 		fuelgauge->info.batt_ocv = GasGaugeData.OCV;
 		fuelgauge->info.batt_current = GasGaugeData.Current;
 		fuelgauge->info.batt_avgcurrent = GasGaugeData.AvgCurrent;
 		fuelgauge->info.temperature = GasGaugeData.Temperature;
-	} else {
-		fuelgauge->info.batt_voltage = GasGaugeData.Voltage;
-		fuelgauge->info.batt_soc = GasGaugeData.SOC;
 	}
-
-	/* prevent early power off */
-	if (fuelgauge->info.batt_soc < 10) {
-		if (fuelgauge->info.batt_voltage < 3400)
-			fuelgauge->info.vol_count++;
-		else
-			fuelgauge->info.vol_count = 0;
-
-		if (fuelgauge->info.vol_count <= 3) {
-			pr_info("%s: prevent early power off : %d\n", __func__,
-				fuelgauge->info.batt_voltage);
-			fuelgauge->info.batt_soc = 10;
-		}
+	else if(res == -1)
+	{
+		fuelgauge->info.batt_voltage = GasGaugeData.Voltage;
+		fuelgauge->info.batt_soc = GasGaugeData.SOC + 5;
 	}
 }
 
@@ -1149,9 +897,8 @@ bool sec_hal_fg_init(struct i2c_client *client)
 
 	stc311x_get_version(client);
 
-	ret = MainTrim(client);
 
-	fuelgauge->pdata->check_vf_callback();
+	ret = MainTrim(client);
 
 	GasGaugeData.Vmode = get_battery_data(fuelgauge).Vmode;
 	GasGaugeData.Alm_SOC = get_battery_data(fuelgauge).Alm_SOC;
@@ -1162,7 +909,6 @@ bool sec_hal_fg_init(struct i2c_client *client)
 	GasGaugeData.Rsense = get_battery_data(fuelgauge).Rsense;
 	GasGaugeData.RelaxCurrent = get_battery_data(fuelgauge).RelaxCurrent;
 	GasGaugeData.Adaptive = get_battery_data(fuelgauge).Adaptive;
-	GasGaugeData.ForceExternalTemperature = get_battery_data(fuelgauge).ForceExternalTemperature;
 
 	for(Loop = 0; Loop < NTEMP; Loop++)
 		GasGaugeData.CapDerating[Loop] = get_battery_data(fuelgauge).CapDerating[Loop];
@@ -1177,30 +923,18 @@ bool sec_hal_fg_init(struct i2c_client *client)
 
 	if (ret > 0)
 	{
-		fuelgauge->info.batt_soc = GasGaugeData.SOC;
+		fuelgauge->info.batt_soc = GasGaugeData.SOC + 5;
 		fuelgauge->info.batt_voltage = GasGaugeData.Voltage;
 		fuelgauge->info.batt_avgvoltage = GasGaugeData.AvgVoltage;
 		fuelgauge->info.batt_ocv = GasGaugeData.OCV;
 		fuelgauge->info.batt_current = GasGaugeData.Current;
 		fuelgauge->info.batt_avgcurrent = GasGaugeData.AvgCurrent;
 		fuelgauge->info.temperature = GasGaugeData.Temperature;
-	} else {
+	}
+	else if(ret == -1)
+	{
 		fuelgauge->info.batt_voltage = GasGaugeData.Voltage;
 		fuelgauge->info.batt_soc = GasGaugeData.SOC;
-	}
-
-	/* prevent early power off */
-	if (fuelgauge->info.batt_soc < 10) {
-		if (fuelgauge->info.batt_voltage < 3450)
-			fuelgauge->info.vol_count++;
-		else
-			fuelgauge->info.vol_count = 0;
-
-		if (fuelgauge->info.vol_count <= 3) {
-			pr_info("%s: prevent early power off : %d\n", __func__,
-				fuelgauge->info.batt_voltage);
-			fuelgauge->info.batt_soc = 10;
-		}
 	}
 
 	(void) debugfs_create_file("stc3115_regs",
@@ -1215,11 +949,11 @@ bool sec_hal_fg_reset(struct i2c_client *client)
 
 	GasGauge_Reset(client);
 
-	msleep(1000);
+	mdelay(1000);
 
-	STC311x_Startup(client);
+	STC31xx_Work(client);
 
-	msleep(200);
+	mdelay(2000);
 
 	return true;
 }
@@ -1281,13 +1015,13 @@ bool sec_hal_fg_get_property(struct i2c_client *client,
 {
 	int res;
 	struct sec_fuelgauge_info *fuelgauge = i2c_get_clientdata(client);
-	int temp_value;
+
+	STC31xx_Work(client);
 
 	switch (psp) {
 
 	/* Cell voltage (VCELL, mV) */
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
-		STC31xx_Work(client);
 		val->intval = fuelgauge->info.batt_voltage;
 		break;
 
@@ -1323,13 +1057,7 @@ bool sec_hal_fg_get_property(struct i2c_client *client,
 
 	/* Target Temperature */
 	case POWER_SUPPLY_PROP_TEMP_AMBIENT:
-		if ((fuelgauge->info.temperature > 470) &&
-		    (fuelgauge->info.temperature < 510))
-			temp_value = 60;
-		else
-			temp_value = 40;
-
-		val->intval = fuelgauge->info.temperature - temp_value;
+		val->intval = fuelgauge->info.temperature - 40;
 		break;
 	default:
 		return false;

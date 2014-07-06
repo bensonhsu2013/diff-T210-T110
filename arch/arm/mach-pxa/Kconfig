@@ -724,16 +724,4 @@ config PXA_HAVE_ISA_IRQS
 config PXA310_ULPI
 	bool
 
-config BT_W8787
-	bool "Enable W8787 driver"
-	default n
-	help
-	  Adds Marvell driver for Marvell W8787 chipset
-
-config BT_MGMT
-	bool "Bluetooth Mgmt"
-	default n
-	help
-	  This is for bluetooth mgmt
-
 endif

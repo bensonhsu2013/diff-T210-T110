@@ -26,6 +26,7 @@
 #include <linux/mfd/core.h>
 #include <linux/mfd/88pm80x.h>
 #include <linux/rtc.h>
+#include <linux/reboot.h>
 
 #if defined(CONFIG_RTC_CHN_ALARM_BOOT)
 #include <linux/reboot.h>
@@ -48,11 +49,12 @@
 #define PM800_RTC_EXPIRE2_2		(0xDE)
 #define PM800_RTC_EXPIRE2_3		(0xDF)
 #define PM800_RTC_EXPIRE2_4		(0xE0)
-#define PM800_USER_DATA3		(0xEA)
-#define PM800_USER_DATA2		(0xEB)
 
 #define PM800_POWER_DOWN_LOG1	(0xE5)
 #define PM800_POWER_DOWN_LOG2	(0xE6)
+#define PM800_CHG_WAKEUP	(1 << 1)
+
+static int is_usb;
 
 struct pm80x_rtc_info {
 	struct pm80x_chip *chip;
@@ -137,10 +139,9 @@ static int pm80x_rtc_read_time(struct device *dev, struct rtc_time *tm)
 {
 	struct pm80x_rtc_info *info = dev_get_drvdata(dev);
 	unsigned char buf[4];
-	unsigned long ticks, base, data;
+	unsigned long ticks, data;
+	long base;
 
-printk("pm80x_rtc_read_time\n");
-	
 	regmap_raw_read(info->map, PM800_USER_DATA2, buf, 4);
 	base = (buf[3] << 24) | (buf[2] << 16) | (buf[1] << 8) | buf[0];
 	dev_dbg(info->dev, "%x-%x-%x-%x\n", buf[0], buf[1], buf[2], buf[3]);
@@ -159,7 +160,9 @@ static int pm80x_rtc_set_time(struct device *dev, struct rtc_time *tm)
 {
 	struct pm80x_rtc_info *info = dev_get_drvdata(dev);
 	unsigned char buf[4];
-	unsigned long ticks, base, data;
+	unsigned long ticks, data;
+	long base;
+
 	if ((tm->tm_year < 70) || (tm->tm_year > 138)) {
 		dev_dbg(info->dev,
 			"Set time %d out of range. Please set time between 1970 to 2038.\n",
@@ -193,8 +196,6 @@ static int pm80x_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 	unsigned long ticks, base, data;
 	int ret;
 	unsigned int val;
-
-printk("pm80x_rtc_read_alarm\n");
 
 	regmap_raw_read(info->map, PM800_USER_DATA2, buf, 4);
 	base = (buf[3] << 24) | (buf[2] << 16) | (buf[1] << 8) | buf[0];
@@ -260,6 +261,7 @@ static int pm80x_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 		regmap_update_bits(info->map, PM800_RTC_CONTROL, mask,
 				   PM800_ALARM | PM800_ALARM_WAKEUP);
 	}
+	
 	return 0;
 }
 
@@ -293,7 +295,7 @@ static int __devinit pm80x_rtc_probe(struct platform_device *pdev)
 	struct pm80x_rtc_info *info;
 	struct rtc_time tm;
 	unsigned long ticks = 0;
-	int irq, ret;
+	int irq, ret, power_log;
 	unsigned long now_ticks = 0, default_ticks = 0;
 	struct rtc_time default_time; 
 
@@ -397,6 +399,12 @@ static int __devinit pm80x_rtc_probe(struct platform_device *pdev)
 			info->rtc_dev->dev.platform_data = &pdata->rtc_wakeup;
 	}
 
+#if defined(CONFIG_RTC_CHN_ALARM_BOOT) && defined(CONFIG_SPA)
+	if(spa_lpm_charging_mode_get())
+	{
+		INIT_WORK(&reboot_work, pm80x_rtc_reboot_work);
+	}
+#endif
 	ret = pm80x_request_irq(chip, info->irq, rtc_update_handler,
 				IRQF_ONESHOT, "rtc", info);
 	if (ret < 0) {
@@ -405,15 +413,12 @@ static int __devinit pm80x_rtc_probe(struct platform_device *pdev)
 		goto out_rtc;
 	}
 
-#if defined(CONFIG_RTC_CHN_ALARM_BOOT) && defined(CONFIG_SPA)
-	if(spa_lpm_charging_mode_get())
-	{
-		INIT_WORK(&reboot_work, pm80x_rtc_reboot_work);
-#if 0
-		pm80x_rtc_alarm_irq_enable(&pdev->dev, 1);
-#endif
+	ret = regmap_read(info->map, PM800_POWER_UP_LOG, &power_log);
+	if (ret < 0) {
+		dev_err(info->dev, "Failed to power up log: %d\n", ret);
+		goto out_rtc;
 	}
-#endif
+	is_usb = power_log & PM800_CHG_WAKEUP;
 
 	device_init_wakeup(&pdev->dev, 1);
 

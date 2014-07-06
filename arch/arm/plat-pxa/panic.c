@@ -9,60 +9,111 @@
  *  publishhed by the Free Software Foundation.
  */
 
-#include <linux/regdump_ops.h>
-#include <linux/notifier.h>
+#include <linux/reboot.h>
 #include <linux/kexec.h>
 #include <linux/kdebug.h>
 #include <linux/kobject.h>
 #include <linux/io.h>
+#include <linux/delay.h>
 #include <asm/cacheflush.h>
 #include <asm/setup.h>
-#include <asm/hardware/gic.h>
-#include <mach/addr-map.h>
 
-static int has_died;
+#include <mach/regs-coresight.h>
+#include <mach/cputype.h>
+#include <linux/regdump_ops.h>
+
 static void *indicator;
 static DEFINE_RAW_SPINLOCK(panic_lock);
-static int
-panic_flush(struct notifier_block *this, unsigned long event, void *ptr)
+extern void arm_machine_flush_console(void);
+extern void (*arm_pm_restart)(char str, const char *cmd);
+#define PANIC_TIMER_STEP 100
+
+extern int sec_crash_key_panic;
+extern int sec_debug_panic_dump(char *);
+extern int i2c_set_pio_mode(void);
+
+void panic_flush(struct pt_regs *regs)
 {
-	struct membank *bank;
-	u32 icdispr;
+	struct pt_regs fixed_regs;
 	int i;
 
-	for (i = 0; i < 4; i++) {
-		icdispr = readl_relaxed(GIC_DIST_VIRT_BASE + GIC_DIST_PENDING_SET + (i << 2));
-		pr_info("Pending interrupt status(%d): 0x%x\n", i, icdispr);
-	}
+	hardlockup_enable = 0;
+	raw_spin_lock(&panic_lock);
 
-	raw_spin_lock_irq(&panic_lock);
-	if (has_died)
-		goto out;
+	for (i = 0; i < nr_cpu_ids; i++)
+		coresight_dump_pcsr(i);
 
-	printk(KERN_EMERG "EMMD: ready to flush cache\n");
+	if (cpu_is_pxa1088())
+		dump_reg_to_console();
+
+	printk(KERN_EMERG "EMMD: ready to perform memory dump\n");
+
+#ifndef CONFIG_SEC_DEBUG
 	memset(indicator, 0 ,PAGE_SIZE);
 	*(unsigned long *)indicator = 0x454d4d44;
+#endif
 
-	crash_update(NULL);
+	crash_setup_regs(&fixed_regs, regs);
+	crash_save_vmcoreinfo();
+	machine_crash_shutdown(&fixed_regs);
 
-	has_died = 1;
-	flush_cache_all();
-	for (i = 0; i < meminfo.nr_banks; i ++) {
-		bank = &meminfo.bank[i];
-		if (bank->size)
-			outer_flush_range(bank->start, bank->size);
+#ifdef CONFIG_SEC_DEBUG
+	if (sec_crash_key_panic) {
+		sec_debug_panic_dump("Crash Key");
+	} else {
+		sec_debug_panic_dump("");
 	}
-	printk(KERN_EMERG "EMMD: update mm done\n");
-out:
-	raw_spin_unlock_irq(&panic_lock);
+#endif
 
-	return NOTIFY_DONE;
+	printk(KERN_EMERG "EMMD: done\n");
+	arm_machine_flush_console();
+
+	flush_cache_all();
+	outer_flush_all();
+
+	if (panic_timeout > 0) {
+		/*
+		 * Delay timeout seconds before rebooting the machine.
+		 * We can't use the "normal" timers since we just panicked.
+		 */
+		printk(KERN_EMERG "Rebooting in %d seconds..", panic_timeout);
+
+		for (i = 0; i < panic_timeout * 1000; i += PANIC_TIMER_STEP)
+			mdelay(PANIC_TIMER_STEP);
+	}
+
+	printk(KERN_EMERG "EMMD: update mm done\n");
+	if (panic_timeout != 0) {
+		i2c_set_pio_mode();
+		/*
+		 * This will not be a clean reboot, with everything
+		 * shutting down.  But if there is a chance of
+		 * rebooting the system it will be rebooted.
+		 */
+		arm_pm_restart(0, NULL);
+	}
+
+	raw_spin_unlock(&panic_lock);
+	while (1)
+		cpu_relax();
 }
 
-static struct notifier_block panic_flush_block = {
-	.notifier_call = panic_flush,
+static int dump_reg_handler(struct notifier_block *self,
+			     unsigned long val,
+			     void *data)
+{
+	struct die_args *args = data;
+
+	crash_update(args->regs);
+	return 0;
+}
+
+static struct notifier_block die_dump_reg_notifier = {
+	.notifier_call = dump_reg_handler,
+	.priority = 200
 };
 
+#if (defined CONFIG_PM)
 static ssize_t panic_store(struct kobject *kobj, struct kobj_attribute *attr,
 			   const char *buf, size_t len)
 {
@@ -96,18 +147,22 @@ static struct attribute_group attr_group = {
 	.attrs = g,
 };
 
+#endif /* CONFIG_PM */
+
 static int __init pxa_panic_notifier(void)
 {
 	struct page *page;
+#if (defined CONFIG_PM)
 	if (sysfs_create_group(power_kobj, &attr_group))
 		return -1;
+#endif
 
+#ifndef CONFIG_SEC_DEBUG
 	page = pfn_to_page(crashk_res.end >> PAGE_SHIFT);
 	indicator = page_address(page);
+#endif
 
-	register_die_notifier(&panic_flush_block);
-	atomic_notifier_chain_register(&panic_notifier_list, &panic_flush_block);
-	has_died = 0;
+	panic_on_oops = 1;
 	return 0;
 }
 

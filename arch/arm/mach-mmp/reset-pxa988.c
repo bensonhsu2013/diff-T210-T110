@@ -12,7 +12,6 @@
 
 #include <linux/kernel.h>
 #include <linux/smp.h>
-#include <linux/delay.h>
 
 #include <asm/io.h>
 #include <asm/hardware/gic.h>
@@ -22,10 +21,15 @@
 #include <mach/regs-ciu.h>
 #include <mach/regs-apmu.h>
 #include <mach/reset-pxa988.h>
-#include <mach/regs-coresight.h>
+#ifdef CONFIG_DEBUG_FS
 #include <mach/pxa988_lowpower.h>
+#include <mach/clock-pxa988.h>
+#endif
 
-#ifdef CONFIG_SMP
+#ifdef CONFIG_TZ_HYPERVISOR
+#include "./tzlc/pxa_tzlc.h"
+#endif
+
 static u32 *reset_handler;
 
 /*
@@ -38,33 +42,42 @@ void pxa_cpu_reset(u32 cpu)
 {
 	u32 tmp;
 
-	BUG_ON(cpu != 1);
+	/*
+	 * only need to confirm it's not core0, since the caller will validate
+	 * cpu id.
+	 */
+	BUG_ON(cpu == 0);
+
+#ifdef CONFIG_ARM_ERRATA_802022
+	pxa988_set_reset_handler(__pa(pxa988_hotplug_handler), cpu);
+#endif
 
 	tmp = readl(PMU_CC2_AP);
-	if (tmp & CPU1_CORE_RST) {
-		/* Core 1 first bootup, we need to release core from reset */
-		tmp &= ~(CPU1_CORE_RST | CPU1_DBG_RST | CPU1_WDOG_RST);
+
+	if ((tmp & CPU_CORE_RST(cpu)) == CPU_CORE_RST(cpu)) {
+		/* secondary core bootup, we need to release it from reset */
+#ifdef CONFIG_CPU_PXA988
+		tmp &= ~(CPU_CORE_RST(cpu)
+			| CPU_DBG_RST(cpu) | CPU_WDOG_RST(cpu));
+#elif defined(CONFIG_CPU_PXA1088)
+		tmp &= ~(CPU_CORE_RST(cpu)
+			| CPU_DBG_RST(cpu) | CPU_POR_RST(cpu));
+#endif
 		writel(tmp, PMU_CC2_AP);
 	} else {
+#ifdef CONFIG_ARM_ERRATA_802022
+		pxa988_set_reset_handler(__pa(pxa988_hotplug_handler), cpu);
+#endif
 		pxa988_gic_raise_softirq(cpumask_of(cpu), 1);
-		check_and_swrst_core1();
 	}
 }
 
 /* This function is called from platform_secondary_init in platform.c */
 void __cpuinit pxa_secondary_init(u32 cpu)
 {
-#ifdef CONFIG_CORESIGHT_SUPPORT
-	static int bootup = 1;
-
-	/* restore the coresight registers when hotplug in */
-	if (!bootup)
-		v7_coresight_restore();
-	else
-		bootup = 0;
+#ifdef CONFIG_DEBUG_FS
+	pxa988_cpu_dcstat_event(cpu, CPU_IDLE_EXIT, PXA988_MAX_LPM_INDEX);
 #endif
-
-	core1_c2 = 1;
 
 #ifdef CONFIG_PM
 	/* Use resume handler as the default handler when hotplugin */
@@ -77,42 +90,13 @@ void pxa988_set_reset_handler(u32 fn, u32 cpu)
 	reset_handler[cpu] = fn;
 }
 
-
-/*
- * Check if core1 successfully exits from c2.
- * If not, send a software reset to it.
- * If it's still in c2, panic
- */
-void check_and_swrst_core1(void)
-{
-	u32 timeout;
-	u32 pmu_cc2_ap;
-	bool reset = 0;
-
-check:
-	timeout = 3000;
-	while(timeout-- && !core1_c2)
-		udelay(1);
-
-	if (timeout == 0) {
-		if (reset)
-			panic("Even software reset can't wakeup core1!\n");
-		else {
-			printk(KERN_WARNING "CPU1 can't be woken up!\n");
-			pmu_cc2_ap = __raw_readl(PMU_CC2_AP);
-			__raw_writel(pmu_cc2_ap | CPU1_CORE_RST, PMU_CC2_AP);
-			udelay(1);
-			__raw_writel(pmu_cc2_ap & ~CPU1_CORE_RST, PMU_CC2_AP);
-			reset = 1;
-			goto check;
-		}
-	}
-}
-
-
 void __init pxa_cpu_reset_handler_init(void)
 {
 	int cpu;
+#ifdef CONFIG_TZ_HYPERVISOR
+	tzlc_cmd_desc cmd_desc;
+	tzlc_handle tzlc_hdl;
+#endif
 
 	/* Assign the address for saving reset handler */
 	reset_handler_pa = pm_reserve_pa + PAGE_SIZE;
@@ -126,10 +110,22 @@ void __init pxa_cpu_reset_handler_init(void)
 	__cpuc_flush_dcache_area((void *)&reset_handler_pa,
 				sizeof(reset_handler_pa));
 	outer_clean_range(__pa(&reset_handler_pa),
-		__pa(&reset_handler_pa + sizeof(reset_handler_pa)));
+		__pa(&reset_handler_pa + 1));
 
+/*
+ * with TrustZone enabled, CIU_WARM_RESET_VECTOR is used by TrustZone software,
+ * and kernel use CIU_SW_SCRATCH_REG to save the cpu reset entry.
+*/
+#ifdef CONFIG_TZ_HYPERVISOR
+	tzlc_hdl = pxa_tzlc_create_handle();
+	cmd_desc.op = TZLC_CMD_SET_WARM_RESET_ENTRY;
+	cmd_desc.args[0] = __pa(pxa988_cpu_reset_entry);
+	pxa_tzlc_cmd_op(tzlc_hdl, &cmd_desc);
+	pxa_tzlc_destroy_handle(tzlc_hdl);
+#else
 	/* We will reset from DDR directly by default */
-	writel(__pa(pxa988_cpu_reset_entry), CIU_CA9_WARM_RESET_VECTOR);
+	writel(__pa(pxa988_cpu_reset_entry), CIU_WARM_RESET_VECTOR);
+#endif
 
 #ifdef CONFIG_PM
 	/* Setup the resume handler for the first core */
@@ -146,15 +142,6 @@ void __init pxa_cpu_reset_handler_init(void)
 	__cpuc_flush_dcache_area((void *)&secondary_cpu_handler,
 				sizeof(secondary_cpu_handler));
 	outer_clean_range(__pa(&secondary_cpu_handler),
-		__pa(&secondary_cpu_handler + sizeof(secondary_cpu_handler)));
+		__pa(&secondary_cpu_handler + 1));
 #endif
 }
-
-#elif defined(CONFIG_PM)
-
-/* Set resume handler directly for UP if CONFIG_PM is enabled */
-void __init pxa_cpu_reset_handler_init(void)
-{
-	writel(__pa(pxa988_cpu_resume_handler), CIU_CA9_WARM_RESET_VECTOR);
-}
-#endif

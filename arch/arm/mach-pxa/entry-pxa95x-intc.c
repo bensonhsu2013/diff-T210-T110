@@ -31,4 +31,3 @@ void pxa95x_handle_irq_intc(struct pt_regs * regs)
 		asm_do_IRQ(irqnr, regs);
 	}
 }
-

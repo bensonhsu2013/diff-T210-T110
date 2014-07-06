@@ -21,7 +21,7 @@
 #include <mach/irqs.h>
 #include <plat/mfp.h>
 
-#ifdef CONFIG_CPU_PXA988
+#if defined(CONFIG_CPU_PXA988) || defined(CONFIG_CPU_PXA1088)
 #define ICU_IRQ_ENABLE	((1 << 6) | (1 << 4) | (1 << 0))
 #define ICU_IRQ_GPIO_EDGE (IRQ_PXA988_GPIO_EDGE - IRQ_PXA988_START)
 #endif
@@ -31,7 +31,7 @@ static struct list_head gpio_edge_list;
 /* The virtual address of the GPIO Edge Unit */
 static void __iomem *gpio_edge_base;
 /* The total number of GPIOs in the SoC */
-static int gpio_edge_gpio_num;
+int gpio_edge_gpio_num;
 /* The total number of MFPs in the SoC */
 static int gpio_edge_mfp_num;
 /* The gpio edge detect is enabled */
@@ -164,6 +164,8 @@ void mmp_gpio_edge_enable(void)
  * and call the handler if exist. Disable all the edge wakeup source in the
  * list. Call the function after exit low power mode.
  */
+unsigned long gpio_wp_stat[6];
+
 void mmp_gpio_edge_disable(void)
 {
 	struct gpio_edge_desc *e;
@@ -183,8 +185,10 @@ void mmp_gpio_edge_disable(void)
 	gpio_edge_wakeup_disable();
 	gpio_edge_icu_disable();
 
-	for (i = 0; i < (gpio_edge_gpio_num / 32); i++)
+	for (i = 0; i < (gpio_edge_gpio_num / 32); i++) {
 		gpioe_rer[i] = __raw_readl(gpio_edge_base + i * 4);
+		gpio_wp_stat[i] = gpioe_rer[i];
+	}
 
 	list_for_each_entry(e, &gpio_edge_list, list) {
 		if (test_and_clear_bit(e->gpio, gpioe_rer) && e->handler)

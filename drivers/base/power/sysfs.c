@@ -118,12 +118,7 @@ static ssize_t control_store(struct device * dev, struct device_attribute *attr,
 	cp = memchr(buf, '\n', n);
 	if (cp)
 		len = cp - buf;
-	if (!strcmp("galcore", dev_name(dev)))
-		printk("%s rt pre-acquired dev_pwr_lock\n", dev_name(dev));
 	device_lock(dev);
-	if (!strcmp("galcore", dev_name(dev)))
-		printk("%s rt post-acquired dev_pwr_lock\n", dev_name(dev));
-
 	if (len == sizeof ctrl_auto - 1 && strncmp(buf, ctrl_auto, len) == 0)
 		pm_runtime_allow(dev);
 	else if (len == sizeof ctrl_on - 1 && strncmp(buf, ctrl_on, len) == 0)

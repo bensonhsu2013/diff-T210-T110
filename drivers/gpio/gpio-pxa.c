@@ -60,6 +60,8 @@
 
 #define BANK_OFF(n)	(((n) < 3) ? (n) << 2 : 0x100 + (((n) - 3) << 2))
 
+static int irq_base;
+
 int pxa_last_gpio;
 
 #ifdef CONFIG_OF
@@ -191,14 +193,14 @@ static inline int __pxa_irq_to_gpio(int irq) { return -1; }
 static inline int __mmp_gpio_to_irq(int gpio)
 {
 	if (gpio_is_mmp_type(gpio_type))
-		return MMP_GPIO_TO_IRQ(gpio);
+		return gpio + irq_base;
 	return -1;
 }
 
 static inline int __mmp_irq_to_gpio(int irq)
 {
 	if (gpio_is_mmp_type(gpio_type))
-		return irq - MMP_GPIO_TO_IRQ(0);
+		return irq - irq_base;
 	return -1;
 }
 #else
@@ -282,6 +284,60 @@ static void pxa_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
 				(value ? GPSR_OFFSET : GPCR_OFFSET));
 }
 
+#ifdef CONFIG_DEBUG_FS
+#include <linux/seq_file.h>
+static void pxa_gpio_dbg_show_one(struct seq_file *s,
+        struct gpio_chip *chip, unsigned offset, unsigned gpio)
+{
+        const char *label = gpiochip_is_requested(chip, offset);
+        struct pxa_gpio_chip *pxa_chip =
+                container_of(chip, struct pxa_gpio_chip, chip);
+        bool is_out;
+        uint32_t tmp,  mask = 1 << offset;
+        tmp = readl_relaxed(pxa_chip->regbase + GPDR_OFFSET);
+		is_out = tmp & mask;
+        seq_printf(s, " gpio-%-3d (%-20.20s) %s %s",
+                   gpio, label ?: "(null)",
+                   is_out ? "out" : "in ",
+                   chip->get
+                   ? (chip->get(chip, offset) ? "hi" : "lo")
+                   : "?  ");
+        if (label && !is_out) {
+                int             irq = gpio_to_irq(gpio);
+                struct irq_desc *desc = irq_to_desc(irq);
+                /* This races with request_irq(), set_irq_type(),
+                 * and set_irq_wake() ... but those are "rare".
+                 */
+                if (irq >= 0 && desc->action) {
+                        char *trigger;
+                        u32 bitmask = GPIO_bit(gpio);
+                        if (pxa_chip->irq_edge_rise & bitmask)
+                                trigger = "edge-rising";
+                        else if (pxa_chip->irq_edge_fall & bitmask)
+                                trigger = "edge-falling";
+                        else
+                                trigger = "edge-undefined";
+                        seq_printf(s, " irq-%d %s%s",
+                                   irq, trigger,
+                                   irqd_is_wakeup_set(&desc->irq_data)
+                                   ? " wakeup" : "");
+                }
+        }
+}
+
+static void  pxa_gpio_dbg_show(struct seq_file *s, struct gpio_chip *chip)
+{
+
+        unsigned                i;
+        unsigned                gpio = chip->base;
+
+        for (i = 0; i < chip->ngpio; i++, gpio++) {
+                pxa_gpio_dbg_show_one(s, chip, i, gpio);
+                seq_printf(s, "\n");
+        }
+}
+#endif
+
 static int __devinit pxa_init_gpio_chip(int gpio_end,
 					int (*set_wake)(unsigned int, unsigned int))
 {
@@ -309,6 +365,7 @@ static int __devinit pxa_init_gpio_chip(int gpio_end,
 		c->get = pxa_gpio_get;
 		c->set = pxa_gpio_set;
 		c->to_irq = pxa_gpio_to_irq;
+		c->dbg_show = pxa_gpio_dbg_show;
 
 		/* number of GPIOs on last bank may be less than 32 */
 		c->ngpio = (gpio + 31 > gpio_end) ? (gpio_end - gpio + 1) : 32;
@@ -488,13 +545,11 @@ static int pxa_gpio_nums(void)
 
 #ifdef CONFIG_ARCH_MMP
 	if (cpu_is_pxa168() || cpu_is_pxa910() ||
-	    cpu_is_pxa988() || cpu_is_pxa986()) {
+	    cpu_is_pxa988() || cpu_is_pxa986() ||
+	    cpu_is_pxa1088()) {
 		count = 127;
 		gpio_type = MMP_GPIO;
-	} else if (cpu_is_mmp2()) {
-		count = 191;
-		gpio_type = MMP_GPIO;
-	} else if (cpu_is_mmp3()) {
+	} else if (cpu_is_mmp2() || cpu_is_mmp3() || cpu_is_eden()) {
 		count = 191;
 		gpio_type = MMP_GPIO;
 	}
@@ -524,7 +579,7 @@ const struct irq_domain_ops pxa_irq_domain_ops = {
 #ifdef CONFIG_OF
 static int __devinit pxa_gpio_probe_dt(struct platform_device *pdev)
 {
-	int ret, nr_banks, nr_gpios, irq_base;
+	int ret, nr_banks, nr_gpios;
 	struct device_node *prev, *next, *np = pdev->dev.of_node;
 	const struct of_device_id *of_id =
 				of_match_device(pxa_gpio_dt_ids, &pdev->dev);
@@ -579,8 +634,6 @@ static int __devinit pxa_gpio_probe(struct platform_device *pdev)
 
 	ret = pxa_gpio_probe_dt(pdev);
 	if (ret < 0) {
-		int irq_base;
-
 		pxa_last_gpio = pxa_gpio_nums();
 		irq_base = irq_alloc_descs(-1, 0, pxa_last_gpio, 0);
 		if (IS_ERR_VALUE(irq_base)) {
@@ -685,6 +738,21 @@ static int __init pxa_gpio_init(void)
 	return platform_driver_register(&pxa_gpio_driver);
 }
 postcore_initcall(pxa_gpio_init);
+
+#ifdef CONFIG_SEC_GPIO_DVS
+int pxa_direction_get(unsigned int* gpdr)
+{
+	struct pxa_gpio_chip *c;
+	int gpio, i = 0;
+
+	for_each_gpio_chip(gpio, c) {
+		gpdr[i] = readl_relaxed(c->regbase + GPDR_OFFSET);
+		i++;
+	}
+
+	return 0;
+}
+#endif
 
 #ifdef CONFIG_PM
 static int pxa_gpio_suspend(void)

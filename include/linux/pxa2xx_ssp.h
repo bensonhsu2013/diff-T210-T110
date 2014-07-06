@@ -164,8 +164,8 @@ enum pxa_ssp_type {
 	PXA168_SSP,
 	PXA910_SSP,
 	PXA988_SSP,
+	EDEN_SSP,
 	CE4100_SSP,
-	MMP_SSP,
 };
 
 struct ssp_device {

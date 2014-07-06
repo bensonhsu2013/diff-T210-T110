@@ -71,6 +71,9 @@ struct sec_battery_info {
 	struct wake_lock monitor_wake_lock;
 	struct workqueue_struct *monitor_wqueue;
 	struct delayed_work monitor_work;
+#if defined(CONFIG_SEC_GPIO_DVS)
+	struct delayed_work initdvs_work;
+#endif
 	unsigned int polling_count;
 	unsigned int polling_time;
 	bool polling_in_sleep;
